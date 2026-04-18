@@ -53,6 +53,9 @@ func TestReadWriteEditAndListTools(t *testing.T) {
 	if got := string(data); got != "line1\nchanged\ndone" {
 		t.Fatalf("unexpected edited content %q", got)
 	}
+	if diff, _ := manager.Run(ctx, Request{Name: "read", Arguments: string(readArgs)}); diff.Content == "" {
+		t.Fatal("expected read result content")
+	}
 
 	listResult, err := manager.Run(ctx, Request{Name: "list_tools", Arguments: `{}`})
 	if err != nil {
@@ -62,6 +65,37 @@ func TestReadWriteEditAndListTools(t *testing.T) {
 		if !strings.Contains(listResult.Content, toolName) {
 			t.Fatalf("expected tool %q in list output", toolName)
 		}
+	}
+}
+
+func TestWriteAndEditIncludeDiffMetadata(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root)
+	ctx := context.Background()
+
+	writeArgs, _ := json.Marshal(map[string]any{
+		"path":    "notes.txt",
+		"content": "alpha\nbeta",
+	})
+	writeResult, err := manager.Run(ctx, Request{Name: "write", Arguments: string(writeArgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff, _ := writeResult.Metadata["diff"].(string); !strings.Contains(diff, "@@") {
+		t.Fatalf("expected unified diff in write metadata, got %#v", writeResult.Metadata)
+	}
+
+	editArgs, _ := json.Marshal(map[string]any{
+		"path":     "notes.txt",
+		"old_text": "beta",
+		"new_text": "gamma",
+	})
+	editResult, err := manager.Run(ctx, Request{Name: "edit", Arguments: string(editArgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff, _ := editResult.Metadata["diff"].(string); !strings.Contains(diff, "-beta") || !strings.Contains(diff, "+gamma") {
+		t.Fatalf("expected edit diff metadata, got %#v", editResult.Metadata)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	udiff "github.com/aymanbagabas/go-udiff"
 	"github.com/lutefd/luc/internal/provider"
 )
 
@@ -193,6 +194,10 @@ func (t *writeTool) Run(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	before, beforeErr := os.ReadFile(path)
+	if beforeErr != nil && !errors.Is(beforeErr, os.ErrNotExist) {
+		return Result{}, beforeErr
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return Result{}, err
 	}
@@ -205,6 +210,7 @@ func (t *writeTool) Run(ctx context.Context, req Request) (Result, error) {
 		Metadata: map[string]any{
 			"path":  path,
 			"bytes": len(args.Content),
+			"diff":  buildDiff(path, string(before), args.Content),
 		},
 	}, nil
 }
@@ -278,7 +284,8 @@ func (t *editTool) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	content := string(data)
+	before := string(data)
+	content := before
 	totalReplacements := 0
 	for _, edit := range args.Edits {
 		if edit.OldText == "" {
@@ -308,6 +315,7 @@ func (t *editTool) Run(ctx context.Context, req Request) (Result, error) {
 		Metadata: map[string]any{
 			"path":         path,
 			"replacements": totalReplacements,
+			"diff":         buildDiff(path, before, content),
 		},
 	}, nil
 }
@@ -391,4 +399,9 @@ func (t *listToolsTool) Run(ctx context.Context, req Request) (Result, error) {
 		lines = append(lines, fmt.Sprintf("- %s: %s", spec.Name, spec.Description))
 	}
 	return Result{Content: strings.Join(lines, "\n")}, nil
+}
+
+func buildDiff(path, before, after string) string {
+	diff := udiff.Unified(path, path, before, after)
+	return strings.TrimSpace(diff)
 }
