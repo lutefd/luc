@@ -1,0 +1,55 @@
+package workspace
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestDetectFindsGitRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	nested := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := Detect(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Root != root {
+		t.Fatalf("expected git root %q, got %q", root, info.Root)
+	}
+	if !info.HasGit {
+		t.Fatalf("expected HasGit true")
+	}
+}
+
+func TestDetectFallsBackToCWD(t *testing.T) {
+	cwd := t.TempDir()
+	info, err := Detect(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Root != cwd {
+		t.Fatalf("expected root %q, got %q", cwd, info.Root)
+	}
+	if info.HasGit {
+		t.Fatalf("expected HasGit false")
+	}
+	for _, dir := range []string{
+		filepath.Join(cwd, ".luc", "history"),
+		filepath.Join(cwd, ".luc", "logs"),
+		filepath.Join(cwd, ".luc", "prompts"),
+	} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("expected state dir %q: %v", dir, err)
+		}
+	}
+}
