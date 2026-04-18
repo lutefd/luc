@@ -25,6 +25,7 @@ type ProviderConfig struct {
 type UIConfig struct {
 	InspectorPosition string `yaml:"inspector_position"`
 	InspectorOpen     bool   `yaml:"inspector_open"`
+	Theme             string `yaml:"theme"`
 }
 
 type partialConfig struct {
@@ -44,6 +45,7 @@ type partialProviderConfig struct {
 type partialUIConfig struct {
 	InspectorPosition *string `yaml:"inspector_position"`
 	InspectorOpen     *bool   `yaml:"inspector_open"`
+	Theme             *string `yaml:"theme"`
 }
 
 func Default() Config {
@@ -57,7 +59,8 @@ func Default() Config {
 		},
 		UI: UIConfig{
 			InspectorPosition: "auto",
-			InspectorOpen:     true,
+			InspectorOpen:     false,
+			Theme:             "light",
 		},
 	}
 }
@@ -121,6 +124,9 @@ func mergeFile(path string, cfg *Config) error {
 	}
 	if partial.UI.InspectorOpen != nil {
 		cfg.UI.InspectorOpen = *partial.UI.InspectorOpen
+	}
+	if partial.UI.Theme != nil {
+		cfg.UI.Theme = *partial.UI.Theme
 	}
 
 	return nil

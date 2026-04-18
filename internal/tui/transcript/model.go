@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/theme"
 )
@@ -26,14 +28,24 @@ type Model struct {
 	blocks   []Block
 	cache    map[string]string
 	theme    theme.Theme
+	renderer RenderFunc
 }
 
-func New(th theme.Theme) Model {
+type RenderFunc func(width int, text string) (string, error)
+
+func New(th theme.Theme, variant string) Model {
 	vp := viewport.New(0, 0)
 	return Model{
 		viewport: vp,
 		cache:    make(map[string]string),
 		theme:    th,
+		renderer: func(width int, text string) (string, error) {
+			renderer, err := theme.NewMarkdownRenderer(width, variant)
+			if err != nil {
+				return "", err
+			}
+			return renderer.Render(text)
+		},
 	}
 }
 
@@ -53,23 +65,23 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
-		m.blocks = append(m.blocks, Block{ID: payload.ID, Kind: "user", Content: payload.Content, State: "done"})
+		m.blocks = append(m.blocks, Block{ID: payload.ID, Kind: "user", Content: cleanText(payload.Content), State: "done"})
 	case "message.assistant.delta":
 		payload := decode[history.MessageDeltaPayload](ev.Payload)
 		block := m.findOrAdd(payload.ID, "assistant")
-		block.Content += payload.Delta
+		block.Content += cleanText(payload.Delta)
 		block.State = "streaming"
 	case "message.assistant.final":
 		payload := decode[history.MessagePayload](ev.Payload)
 		block := m.findOrAdd(payload.ID, "assistant")
-		block.Content = payload.Content
+		block.Content = cleanText(payload.Content)
 		block.State = "done"
 	case "tool.requested":
 		payload := decode[history.ToolCallPayload](ev.Payload)
 		m.blocks = append(m.blocks, Block{
 			ID:      payload.ID,
 			Kind:    "tool",
-			Content: fmt.Sprintf("%s %s", payload.Name, payload.Arguments),
+			Content: cleanText(fmt.Sprintf("%s %s", payload.Name, payload.Arguments)),
 			State:   "pending",
 			Meta:    map[string]string{"name": payload.Name},
 		})
@@ -80,7 +92,10 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		if payload.Error != "" {
 			block.State = "error"
 		}
-		block.Content = payload.Content
+		block.Content = cleanText(payload.Content)
+		if diff, ok := payload.Metadata["diff"].(string); ok && diff != "" {
+			block.Content = block.Content + "\n\n" + diffPreview(cleanText(diff), 12)
+		}
 		if block.Meta == nil {
 			block.Meta = map[string]string{}
 		}
@@ -91,7 +106,7 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		if ev.Kind == "system.error" {
 			kind = "error"
 		}
-		m.blocks = append(m.blocks, Block{ID: payload.ID, Kind: kind, Content: payload.Content, State: "done"})
+		m.blocks = append(m.blocks, Block{ID: payload.ID, Kind: kind, Content: cleanText(payload.Content), State: "done"})
 	case "reload.finished":
 		payload := decode[history.ReloadPayload](ev.Payload)
 		m.blocks = append(m.blocks, Block{
@@ -133,7 +148,7 @@ func (m *Model) render() {
 
 	var views []string
 	for _, block := range m.blocks {
-		key := fmt.Sprintf("%s:%s:%d", block.Kind, block.Content, m.width)
+		key := fmt.Sprintf("%s:%s:%s:%d", block.Kind, block.State, block.Content, m.width)
 		if block.State == "done" {
 			if cached, ok := m.cache[key]; ok {
 				views = append(views, cached)
@@ -141,7 +156,7 @@ func (m *Model) render() {
 			}
 		}
 
-		rendered := m.renderBlock(block)
+		rendered := m.safeRenderBlock(block)
 		if block.State == "done" {
 			m.cache[key] = rendered
 		}
@@ -152,22 +167,32 @@ func (m *Model) render() {
 	m.viewport.GotoBottom()
 }
 
+func (m Model) safeRenderBlock(block Block) (rendered string) {
+	defer func() {
+		if r := recover(); r != nil {
+			rendered = lipgloss.NewStyle().Width(max(20, m.width-4)).Render(cleanText(block.Content))
+		}
+	}()
+	return m.renderBlock(block)
+}
+
 func (m Model) renderBlock(block Block) string {
-	width := max(20, m.width-2)
+	width := max(20, m.width-4)
 	switch block.Kind {
 	case "user":
-		return lipgloss.NewStyle().Width(width).Render(m.theme.UserBubble.Render("You") + "\n" + block.Content)
+		body := lipgloss.NewStyle().Width(width).Render(block.Content)
+		return lipgloss.JoinVertical(lipgloss.Left, m.theme.UserLabel.Render("You"), body)
 	case "assistant":
 		content := block.Content
 		if block.State == "done" {
-			renderer, err := theme.NewMarkdownRenderer(width)
-			if err == nil {
-				if rendered, renderErr := renderer.Render(content); renderErr == nil {
+			if rendered, err := m.renderer(width, content); err == nil {
+				if strings.TrimSpace(rendered) != "" {
 					content = rendered
 				}
 			}
 		}
-		return lipgloss.NewStyle().Width(width).Render(m.theme.AgentBubble.Render("Luc") + "\n" + content)
+		body := lipgloss.NewStyle().Width(width).Render(content)
+		return lipgloss.JoinVertical(lipgloss.Left, m.theme.AssistantLabel.Render("Luc"), m.theme.AssistantBody.Render(body))
 	case "tool":
 		title := block.Meta["name"]
 		if title == "" {
@@ -177,16 +202,45 @@ func (m Model) renderBlock(block Block) string {
 		if content == "" {
 			content = block.State
 		}
-		style := m.theme.ToolBubble
+		style := m.theme.ToolCard
 		if block.State == "error" {
-			style = m.theme.ErrorBubble
+			style = m.theme.ErrorCard
 		}
-		return lipgloss.NewStyle().Width(width).Render(style.Render("Tool: "+title) + "\n" + content)
+		card := lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.theme.ToolTitle.Render("Tool "+title),
+			lipgloss.NewStyle().Width(width-2).Render(content),
+		)
+		return style.Width(width).Render(card)
 	case "error":
-		return lipgloss.NewStyle().Width(width).Render(m.theme.ErrorBubble.Render("Error") + "\n" + block.Content)
+		card := lipgloss.JoinVertical(lipgloss.Left, m.theme.ToolTitle.Render("Error"), block.Content)
+		return m.theme.ErrorCard.Width(width).Render(card)
 	default:
 		return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(block.Content))
 	}
+}
+
+func cleanText(s string) string {
+	clean := ansi.Strip(s)
+	clean = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case unicode.IsControl(r):
+			return -1
+		default:
+			return r
+		}
+	}, clean)
+	return strings.TrimRight(clean, "\r")
+}
+
+func diffPreview(diff string, maxLines int) string {
+	lines := strings.Split(strings.TrimSpace(diff), "\n")
+	if len(lines) <= maxLines {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:maxLines], "\n") + "\n..."
 }
 
 func decode[T any](payload any) T {

@@ -22,6 +22,7 @@ provider:
   model: global-model
 ui:
   inspector_open: false
+  theme: dark
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +58,9 @@ ui:
 	}
 	if cfg.UI.InspectorPosition != "right" {
 		t.Fatalf("expected project inspector position, got %q", cfg.UI.InspectorPosition)
+	}
+	if cfg.UI.Theme != "dark" {
+		t.Fatalf("expected global theme override, got %q", cfg.UI.Theme)
 	}
 }
 

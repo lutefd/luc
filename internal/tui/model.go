@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,21 +21,21 @@ type submitDoneMsg struct{ err error }
 type reloadDoneMsg struct{ err error }
 
 type keyMap struct {
-	Send          key.Binding
-	TogglePane    key.Binding
-	RotateTab     key.Binding
-	ScrollUp      key.Binding
-	ScrollDown    key.Binding
-	Reload        key.Binding
-	Quit          key.Binding
+	Send       key.Binding
+	Newline    key.Binding
+	TogglePane key.Binding
+	ScrollUp   key.Binding
+	ScrollDown key.Binding
+	Reload     key.Binding
+	Quit       key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Send, k.TogglePane, k.RotateTab, k.Reload, k.Quit}
+	return []key.Binding{k.Send, k.Newline, k.TogglePane, k.Reload, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Send, k.TogglePane, k.RotateTab, k.ScrollUp, k.ScrollDown, k.Reload, k.Quit}}
+	return [][]key.Binding{{k.Send, k.Newline, k.TogglePane, k.ScrollUp, k.ScrollDown, k.Reload, k.Quit}}
 }
 
 type Model struct {
@@ -44,7 +43,6 @@ type Model struct {
 	transcript    transcript.Model
 	inspector     inspector.Model
 	input         textarea.Model
-	help          help.Model
 	keys          keyMap
 	theme         theme.Theme
 	width         int
@@ -54,26 +52,33 @@ type Model struct {
 }
 
 func New(controller *kernel.Controller) Model {
-	th := theme.Default()
+	variant := theme.ResolveVariant(controller.Config().UI.Theme)
+	th := theme.Default(variant)
 	input := textarea.New()
-	input.Placeholder = "Ask luc to inspect or change the workspace. Ctrl+S to send."
+	input.Placeholder = "Tell luc what to inspect or change..."
 	input.Focus()
-	input.SetHeight(4)
+	input.SetHeight(3)
 	input.ShowLineNumbers = false
-	input.Prompt = "│ "
+	input.Prompt = "> "
+	input.CharLimit = 0
+	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "alt+enter"), key.WithHelp("shift+enter", "newline"))
+	input.FocusedStyle.Base = th.InputText
+	input.FocusedStyle.CursorLine = th.InputText
+	input.FocusedStyle.Placeholder = th.InputPlaceholder
+	input.FocusedStyle.Prompt = th.InputPrompt
+	input.BlurredStyle = input.FocusedStyle
 
 	model := Model{
 		controller:    controller,
-		transcript:    transcript.New(th),
-		inspector:     inspector.New(controller.Workspace(), controller.Session().SessionID, controller.Config().Provider.Model),
+		transcript:    transcript.New(th, variant),
+		inspector:     inspector.New(controller.Workspace(), controller.Session().SessionID, controller.Config().Provider.Model, th),
 		input:         input,
-		help:          help.New(),
 		theme:         th,
-		inspectorOpen: true,
+		inspectorOpen: controller.Config().UI.InspectorOpen,
 		keys: keyMap{
-			Send:       key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "send")),
-			TogglePane: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "toggle inspector")),
-			RotateTab:  key.NewBinding(key.WithKeys("ctrl+]"), key.WithHelp("ctrl+]", "next inspector tab")),
+			Send:       key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
+			Newline:    key.NewBinding(key.WithKeys("shift+enter", "alt+enter"), key.WithHelp("shift+enter", "newline")),
+			TogglePane: key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "details")),
 			ScrollUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
 			ScrollDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdown", "scroll down")),
 			Reload:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload")),
@@ -111,13 +116,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "Sending..."
 			m.input.Reset()
+			m.input.SetValue("")
+			m.input.Focus()
 			return m, submitCmd(m.controller, value)
 		case key.Matches(msg, m.keys.TogglePane):
 			m.inspectorOpen = !m.inspectorOpen
 			m.resize()
-			return m, nil
-		case key.Matches(msg, m.keys.RotateTab):
-			m.inspector.NextTab()
 			return m, nil
 		case key.Matches(msg, m.keys.ScrollUp):
 			m.transcript.UpdateViewport(msg)
@@ -146,6 +150,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case submitDoneMsg:
 		if msg.err != nil {
 			m.status = msg.err.Error()
+		} else {
+			m.status = "Ready"
 		}
 		return m, nil
 	case reloadDoneMsg:
@@ -161,52 +167,105 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	header := m.theme.Header.Render(fmt.Sprintf("luc  %s  %s", m.controller.Workspace().Root, m.controller.Config().Provider.Model))
-	status := m.theme.Muted.Render(m.status)
-
-	transcriptView := lipgloss.NewStyle().Width(m.transcriptWidth()).Height(max(1, m.height-9)).Render(m.transcript.View())
-	body := transcriptView
-	if m.inspectorOpen {
-		inspectorView := lipgloss.NewStyle().
-			Width(m.inspectorWidth()).
-			Height(max(1, m.height-9)).
-			Border(lipgloss.NormalBorder(), true, false, false, true).
-			BorderForeground(lipgloss.Color("#4a6d7c")).
-			Render(m.inspector.View())
-		body = lipgloss.JoinHorizontal(lipgloss.Top, transcriptView, inspectorView)
+	header := m.renderHeader()
+	body := m.renderBody()
+	footer := m.renderFooter()
+	view := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	if m.width <= 0 || m.height <= 0 {
+		return view
 	}
-
-	footer := lipgloss.JoinVertical(
-		lipgloss.Left,
-		lipgloss.NewStyle().BorderTop(true).BorderForeground(lipgloss.Color("#4a6d7c")).Render(m.input.View()),
-		m.theme.Footer.Render(m.help.View(m.keys)),
-		status,
-	)
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	return m.theme.App.Width(m.width).Height(m.height).Render(view)
 }
 
 func (m *Model) resize() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	transcriptHeight := max(1, m.height-9)
+	transcriptHeight := max(1, m.bodyHeight())
 	m.transcript.SetSize(m.transcriptWidth(), transcriptHeight)
-	if m.inspectorOpen {
-		m.inspector.SetSize(m.inspectorWidth(), transcriptHeight)
-	}
-	m.input.SetWidth(max(20, m.width-4))
+	m.inspector.SetSize(m.inspectorWidth(), m.inspectorHeight())
+	m.input.SetWidth(max(24, m.transcriptWidth()-4))
 }
 
 func (m Model) transcriptWidth() int {
-	if !m.inspectorOpen {
-		return max(20, m.width-2)
+	if !m.hasSidebar() {
+		return max(24, m.width-4)
 	}
-	return max(20, int(float64(m.width)*0.66)-1)
+	return max(24, m.width-m.inspectorWidth()-3)
 }
 
 func (m Model) inspectorWidth() int {
-	return max(20, m.width-m.transcriptWidth()-1)
+	switch {
+	case m.width < 120:
+		if m.inspectorOpen {
+			return max(24, m.width-4)
+		}
+		return 0
+	case m.inspectorOpen:
+		return 42
+	default:
+		return 30
+	}
+}
+
+func (m Model) inspectorHeight() int {
+	if m.width < 120 && m.inspectorOpen {
+		return max(8, m.height/3)
+	}
+	return max(1, m.bodyHeight())
+}
+
+func (m Model) bodyHeight() int {
+	return max(1, m.height-8)
+}
+
+func (m Model) hasSidebar() bool {
+	return m.inspectorOpen
+}
+
+func (m Model) renderHeader() string {
+	usable := max(0, m.width-2)
+	ruleWidth := max(4, usable-36)
+	brand := m.theme.HeaderBrand.Render("luc")
+	rule := m.theme.HeaderRule.Render(strings.Repeat("/", ruleWidth))
+	meta := m.theme.HeaderMeta.Render(fmt.Sprintf("%s • %s", m.controller.Workspace().Root, m.controller.Config().Provider.Model))
+	return lipgloss.JoinHorizontal(lipgloss.Center, brand, " ", rule, " ", meta)
+}
+
+func (m Model) renderBody() string {
+	transcriptView := m.theme.Body.Width(m.transcriptWidth()).Height(m.bodyHeight()).Render(m.transcript.View())
+
+	switch {
+	case m.width < 120 && m.inspectorOpen:
+		detail := m.inspector.DetailView()
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			transcriptView,
+			lipgloss.NewStyle().Height(m.inspectorHeight()).Render(detail),
+		)
+	case m.hasSidebar():
+		sidebar := m.inspector.SummaryView()
+		if m.inspectorOpen {
+			sidebar = m.inspector.DetailView()
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, transcriptView, " ", sidebar)
+	default:
+		return transcriptView
+	}
+}
+
+func (m Model) renderFooter() string {
+	frame := m.theme.InputFrame.Width(max(24, m.transcriptWidth())).Render(m.input.View())
+	statusStyle := m.theme.StatusReady
+	switch {
+	case strings.Contains(strings.ToLower(m.status), "error"):
+		statusStyle = m.theme.StatusError
+	case strings.Contains(strings.ToLower(m.status), "send"), strings.Contains(strings.ToLower(m.status), "reload"):
+		statusStyle = m.theme.StatusBusy
+	}
+	hints := m.theme.Footer.Render("enter send  •  shift+enter newline  •  ctrl+o details  •  ctrl+r reload  •  ctrl+c quit")
+	status := statusStyle.Render(strings.TrimSpace(m.status))
+	return lipgloss.JoinVertical(lipgloss.Left, frame, hints, status)
 }
 
 func waitForEvent(ch <-chan history.EventEnvelope) tea.Cmd {
