@@ -72,6 +72,8 @@ Tool capability notes:
 - `client_actions` means the tool may emit `client_action` events and receive `client_result` responses over stdin/stdout.
 - Structured request envelopes include `tool_name`, typed `arguments`, `workspace`, `session_id`, `agent_id`, `host_capabilities`, and optional `view_context`.
 - Supported structured tool stdout event types today are `stdout`, `stderr`, `progress`, `client_action`, `result`, `done`, and `error`.
+- Structured tool stdout field names are exact: `stdout`, `stderr`, and `progress` use `text`; `client_action` uses `action`; `result` uses `result`; `error` uses `error`; `done` should set `done: true`.
+- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
 - Structured tools should emit a `result` event carrying the final tool payload, then emit `done` to terminate the stream.
 
 Template variables available in `command` and `ui.collapsed_summary`:
@@ -179,9 +181,12 @@ For `exec` providers:
 - `command` is required.
 - Relative command paths resolve from the provider manifest directory.
 - The adapter receives one JSON request on stdin and emits JSONL provider events on stdout.
-- Supported streamed event types today are `thinking`, `text_delta`, `tool_call`, and `done`.
+- Provider request envelopes include `request` and `host_capabilities`.
+- Supported streamed event types today are `thinking`, `text_delta`, `tool_call`, `client_action`, and `done`.
+- `thinking` and `text_delta` use `text`; `tool_call` uses `tool_call` with `id`, `name`, and JSON-string `arguments`; `client_action` uses `action`; fatal adapter failures may also return an `error` string.
 - Tool execution still happens inside luc; the adapter only translates the upstream API into luc provider events.
 - Providers may declare `capabilities: [client_actions]` to request host-owned UI actions and receive `client_result` responses back over stdin/stdout.
+- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
 - Capability-enabled provider requests include `host_capabilities` alongside the normal provider request envelope.
 
 ### Runtime UI
@@ -228,8 +233,11 @@ Supported runtime UI primitives in this slice:
 
 Runtime UI notes:
 
+- Runtime commands are registered into luc's command palette alongside the built-in commands.
 - Runtime views are host-owned and read-only in this slice.
 - A view's `source_tool` runs when the view opens or refreshes.
+- `render: markdown` uses luc's built-in glamour-based terminal markdown renderer.
+- `modal.open` and `confirm.request` are host-rendered dialog actions; they do not provide arbitrary custom TUI layout injection.
 - Approval policies only auto-intercept tools when `ui.approvals_mode: policy`.
 - In `trusted` mode, normal tool execution is unchanged; explicit client confirmation requests still render.
 
@@ -275,8 +283,11 @@ Hook notes:
 }
 ```
 
-- Supported hook stdout event types are `log`, `progress`, `done`, and `error`.
-- Hook stdout field names are exact: `log` uses `text` (luc also accepts `message` as a compatibility alias), `progress` uses `progress` (or `message`), `error` uses `error` (or `message`), and `done` should set `done: true`.
+- Parseable hook stdout event types today are `log`, `progress`, `client_action`, `done`, and `error`.
+- Hooks may emit `client_action` only when `runtime.capabilities` includes `client_actions`. That lets a hook request host-owned actions such as `view.refresh` after it updates state.
+- Hook stdin starts with one JSON request envelope line. When `client_actions` is enabled, luc keeps stdin open and sends `client_result` envelopes back on later lines.
+- Hook stdout field names are exact: `log` uses `text` (luc also accepts `message` as a compatibility alias), `progress` uses `progress` (or `message`), `client_action` uses `action`, `error` uses `error` (or `message`), and `done` should set `done: true`.
+- Supported hook `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
 - Hook failures are logged and surfaced through `hook.failed` history events, but they do not break the session.
 
 ### Skills
@@ -429,12 +440,15 @@ Changes are picked up on:
 These runtime surfaces work today without recompiling:
 
 - tools
-- providers (OpenAI-compatible manifests)
+- providers (`openai-compatible` and `exec`)
+- runtime UI manifests (commands, views, approval policies)
+- hooks
 - skills
 - themes
 - system prompt
 
 These still need core code changes today:
 
-- custom TUI overlays/modals
-- custom command-palette actions from external manifests
+- arbitrary custom TUI layout injection beyond the documented runtime actions and view surfaces
+- new runtime action kinds beyond `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`
+- modifying the built-in `Overview` tab directly instead of adding a runtime `inspector_tab` or `page`

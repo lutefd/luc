@@ -1,8 +1,10 @@
 package extensions
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -87,7 +89,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(capabilityTools), "schema: luc.tool/v1", "structured_io", "client_actions") {
+	if !containsAll(string(capabilityTools), "schema: luc.tool/v1", "structured_io", "client_actions", "`modal.open`", "`command.run`", "`client_action` uses `action`") {
 		t.Fatalf("expected capability tool reference to cover structured exec tools, got %q", string(capabilityTools))
 	}
 
@@ -103,7 +105,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(runtimeActions), "modal.open", "confirm.request", "view.open", "view.refresh", "command.run") {
+	if !containsAll(string(runtimeActions), "modal.open", "confirm.request", "view.open", "view.refresh", "command.run", "Tools, providers, and hooks with `client_actions`", "command palette", "built-in dialog surface") {
 		t.Fatalf("expected runtime UI actions reference to include host-owned action guidance, got %q", string(runtimeActions))
 	}
 
@@ -111,7 +113,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(hookPatterns), "message.assistant.final", "tool.finished", "\"workspace\": {\"root\":", "`message` as a compatibility alias", "`done: true`") {
+	if !containsAll(string(hookPatterns), "message.assistant.final", "tool.finished", "\"workspace\": {\"root\":", "`message` as a compatibility alias", "`done: true`", "`client_action`", "`view.refresh`", "`client_result`", "`modal.open`", "`command.run`") {
 		t.Fatalf("expected hook patterns reference to include concrete hook protocol guidance, got %q", string(hookPatterns))
 	}
 }
@@ -141,6 +143,72 @@ func TestEnsureGlobalRuntimeDoesNotOverwriteExistingAssets(t *testing.T) {
 	}
 }
 
+func TestEnsureGlobalRuntimeMirrorsEmbeddedBootstrapAssetsExactly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := EnsureGlobalRuntime(); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(home, ".luc")
+	expected := map[string]string{}
+	err := fs.WalkDir(bootstrapAssets, bootstrapAssetRoot, func(assetPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if assetPath == bootstrapAssetRoot || d.IsDir() {
+			return nil
+		}
+		relPath := filepath.FromSlash(strings.TrimPrefix(assetPath, bootstrapAssetRoot+"/"))
+		data, err := fs.ReadFile(bootstrapAssets, assetPath)
+		if err != nil {
+			return err
+		}
+		expected[relPath] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		relPath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		got[relPath] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d bootstrapped files, got %d\nexpected=%v\ngot=%v", len(expected), len(got), sortedKeys(expected), sortedKeys(got))
+	}
+	for relPath, want := range expected {
+		gotContent, ok := got[relPath]
+		if !ok {
+			t.Fatalf("expected bootstrapped file %q to exist; got=%v", relPath, sortedKeys(got))
+		}
+		if gotContent != want {
+			t.Fatalf("expected bootstrapped file %q to match embedded asset", relPath)
+		}
+	}
+}
+
 func containsAll(s string, needles ...string) bool {
 	for _, needle := range needles {
 		if !strings.Contains(s, needle) {
@@ -148,4 +216,13 @@ func containsAll(s string, needles ...string) bool {
 		}
 	}
 	return true
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

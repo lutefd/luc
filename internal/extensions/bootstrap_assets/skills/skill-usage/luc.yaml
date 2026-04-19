@@ -1,0 +1,3 @@
+interface:
+  display_name: "Skill Usage"
+  short_description: "Explain how luc discovers, catalogs, loads, and reuses skills."
