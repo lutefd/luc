@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,6 +24,7 @@ type ToolDef struct {
 	Description    string
 	Schema         json.RawMessage
 	Command        string
+	Capabilities   []string
 	TimeoutSeconds int
 	UI             ToolUI
 	SourcePath     string
@@ -77,16 +79,17 @@ type ProviderModelDef struct {
 }
 
 type ProviderDef struct {
-	ID         string
-	Name       string
-	Type       string
-	BaseURL    string
-	APIKeyEnv  string
-	Command    string
-	Args       []string
-	Env        map[string]string
-	Models     []ProviderModelDef
-	SourcePath string
+	ID           string
+	Name         string
+	Type         string
+	BaseURL      string
+	APIKeyEnv    string
+	Command      string
+	Args         []string
+	Env          map[string]string
+	Capabilities []string
+	Models       []ProviderModelDef
+	SourcePath   string
 }
 
 func LoadToolDefs(workspaceRoot string) ([]ToolDef, error) {
@@ -486,9 +489,15 @@ func parseToolDef(path string) (ToolDef, error) {
 		Name           string `yaml:"name" json:"name"`
 		Description    string `yaml:"description" json:"description"`
 		Schema         any    `yaml:"schema" json:"schema"`
+		InputSchema    any    `yaml:"input_schema" json:"input_schema"`
 		Command        string `yaml:"command" json:"command"`
 		TimeoutSeconds int    `yaml:"timeout_seconds" json:"timeout_seconds"`
 		UI             ToolUI `yaml:"ui" json:"ui"`
+		Runtime        struct {
+			Kind         string   `yaml:"kind" json:"kind"`
+			Command      string   `yaml:"command" json:"command"`
+			Capabilities []string `yaml:"capabilities" json:"capabilities"`
+		} `yaml:"runtime" json:"runtime"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return ToolDef{}, fmt.Errorf("%s: %w", path, err)
@@ -499,13 +508,27 @@ func parseToolDef(path string) (ToolDef, error) {
 	if strings.TrimSpace(raw.Description) == "" {
 		return ToolDef{}, fmt.Errorf("%s: description is required", path)
 	}
-	if strings.TrimSpace(raw.Command) == "" {
+	command := strings.TrimSpace(firstNonEmpty(raw.Runtime.Command, raw.Command))
+	if command == "" {
 		return ToolDef{}, fmt.Errorf("%s: command is required", path)
+	}
+	if kind := strings.TrimSpace(firstNonEmpty(raw.Runtime.Kind, "exec")); kind != "exec" {
+		return ToolDef{}, fmt.Errorf("%s: unsupported runtime kind %q", path, kind)
 	}
 
 	schema := json.RawMessage(`{"type":"object","properties":{}}`)
-	if raw.Schema != nil {
-		schemaData, err := json.Marshal(raw.Schema)
+	schemaSource := raw.Schema
+	if version, ok := raw.Schema.(string); ok {
+		if strings.TrimSpace(version) != "luc.tool/v1" {
+			return ToolDef{}, fmt.Errorf("%s: unsupported tool schema version %q", path, version)
+		}
+		schemaSource = raw.InputSchema
+	}
+	if raw.Schema == nil && raw.InputSchema != nil {
+		schemaSource = raw.InputSchema
+	}
+	if schemaSource != nil {
+		schemaData, err := json.Marshal(schemaSource)
 		if err != nil {
 			return ToolDef{}, fmt.Errorf("%s: invalid schema: %w", path, err)
 		}
@@ -515,7 +538,8 @@ func parseToolDef(path string) (ToolDef, error) {
 		Name:           raw.Name,
 		Description:    raw.Description,
 		Schema:         schema,
-		Command:        raw.Command,
+		Command:        command,
+		Capabilities:   luruntime.NormalizeCapabilities(raw.Runtime.Capabilities),
 		TimeoutSeconds: raw.TimeoutSeconds,
 		UI:             raw.UI,
 		SourcePath:     path,
@@ -529,16 +553,17 @@ func parseProviderDef(path string) (ProviderDef, error) {
 	}
 
 	var raw struct {
-		ID        string            `yaml:"id" json:"id"`
-		Name      string            `yaml:"name" json:"name"`
-		Type      string            `yaml:"type" json:"type"`
-		Kind      string            `yaml:"kind" json:"kind"`
-		BaseURL   string            `yaml:"base_url" json:"base_url"`
-		APIKeyEnv string            `yaml:"api_key_env" json:"api_key_env"`
-		Command   string            `yaml:"command" json:"command"`
-		Args      []string          `yaml:"args" json:"args"`
-		Env       map[string]string `yaml:"env" json:"env"`
-		Models    []struct {
+		ID           string            `yaml:"id" json:"id"`
+		Name         string            `yaml:"name" json:"name"`
+		Type         string            `yaml:"type" json:"type"`
+		Kind         string            `yaml:"kind" json:"kind"`
+		BaseURL      string            `yaml:"base_url" json:"base_url"`
+		APIKeyEnv    string            `yaml:"api_key_env" json:"api_key_env"`
+		Command      string            `yaml:"command" json:"command"`
+		Args         []string          `yaml:"args" json:"args"`
+		Env          map[string]string `yaml:"env" json:"env"`
+		Capabilities []string          `yaml:"capabilities" json:"capabilities"`
+		Models       []struct {
 			ID          string `yaml:"id" json:"id"`
 			Name        string `yaml:"name" json:"name"`
 			Description string `yaml:"description" json:"description"`
@@ -597,16 +622,17 @@ func parseProviderDef(path string) (ProviderDef, error) {
 	}
 
 	return ProviderDef{
-		ID:         id,
-		Name:       strings.TrimSpace(firstNonEmpty(raw.Name, id)),
-		Type:       providerType,
-		BaseURL:    baseURL,
-		APIKeyEnv:  strings.TrimSpace(raw.APIKeyEnv),
-		Command:    command,
-		Args:       append([]string(nil), raw.Args...),
-		Env:        mapsClone(raw.Env),
-		Models:     models,
-		SourcePath: path,
+		ID:           id,
+		Name:         strings.TrimSpace(firstNonEmpty(raw.Name, id)),
+		Type:         providerType,
+		BaseURL:      baseURL,
+		APIKeyEnv:    strings.TrimSpace(raw.APIKeyEnv),
+		Command:      command,
+		Args:         append([]string(nil), raw.Args...),
+		Env:          mapsClone(raw.Env),
+		Capabilities: luruntime.NormalizeCapabilities(raw.Capabilities),
+		Models:       models,
+		SourcePath:   path,
 	}, nil
 }
 

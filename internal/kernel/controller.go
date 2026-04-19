@@ -23,6 +23,7 @@ import (
 	"github.com/lutefd/luc/internal/provider"
 	execprovider "github.com/lutefd/luc/internal/provider/exec"
 	"github.com/lutefd/luc/internal/provider/openai"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	luctstate "github.com/lutefd/luc/internal/state"
 	"github.com/lutefd/luc/internal/tools"
 	"github.com/lutefd/luc/internal/workspace"
@@ -58,6 +59,8 @@ type Controller struct {
 	provider  provider.Provider
 	registry  *provider.Registry
 	tools     *tools.Manager
+	uiBroker  luruntime.UIBroker
+	hostCaps  []string
 
 	session history.SessionMeta
 	events  chan history.EventEnvelope
@@ -165,7 +168,11 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		events:       make(chan history.EventEnvelope, 256),
 		skills:       skills,
 		loadedSkills: make(map[string]struct{}),
+		hostCaps:     luruntime.DefaultHostCapabilities(),
 	}
+	controller.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
+		controller.logger.Ring.Add("info", fmt.Sprintf(format, args...))
+	})
 	controller.version.Store(1)
 	controller.systemPrompt = controller.loadSystemPrompt()
 
@@ -214,6 +221,30 @@ func (c *Controller) Registry() *provider.Registry {
 		return c.registry
 	}
 	return provider.DefaultRegistry()
+}
+
+func (c *Controller) HostCapabilities() []string {
+	out := make([]string, len(c.hostCaps))
+	copy(out, c.hostCaps)
+	return out
+}
+
+func (c *Controller) SetUIBroker(broker luruntime.UIBroker) {
+	if broker == nil {
+		broker = luruntime.NewDefaultBroker(c.config.UI.ApprovalsMode, func(format string, args ...any) {
+			c.logger.Ring.Add("info", fmt.Sprintf(format, args...))
+		})
+	}
+	c.uiBroker = broker
+}
+
+func (c *Controller) UIBroker() luruntime.UIBroker {
+	if c.uiBroker == nil {
+		c.uiBroker = luruntime.NewDefaultBroker(c.config.UI.ApprovalsMode, func(format string, args ...any) {
+			c.logger.Ring.Add("info", fmt.Sprintf(format, args...))
+		})
+	}
+	return c.uiBroker
 }
 
 // SwitchModel hot-swaps the active model. If the model belongs to a
@@ -408,6 +439,11 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.tools = toolManager
 	c.registry = registry
 	c.provider = client
+	if _, ok := c.uiBroker.(*luruntime.DefaultBroker); ok || c.uiBroker == nil {
+		c.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
+			c.logger.Ring.Add("info", fmt.Sprintf(format, args...))
+		})
+	}
 	version := c.version.Add(1)
 	c.emit("reload.finished", history.ReloadPayload{Version: version})
 	c.logger.Ring.Add("info", fmt.Sprintf("reload finished: runtime version %d", version))
@@ -747,11 +783,12 @@ func runtimeProviderDef(def extensions.ProviderDef) provider.ProviderDef {
 			switch runtimeDef.Type {
 			case "exec":
 				return execprovider.New(cfg, execprovider.Spec{
-					Name:    runtimeDef.Name,
-					Command: runtimeDef.Command,
-					Args:    runtimeDef.Args,
-					Env:     runtimeDef.Env,
-					Dir:     filepath.Dir(runtimeDef.SourcePath),
+					Name:         runtimeDef.Name,
+					Command:      runtimeDef.Command,
+					Args:         runtimeDef.Args,
+					Env:          runtimeDef.Env,
+					Dir:          filepath.Dir(runtimeDef.SourcePath),
+					Capabilities: runtimeDef.Capabilities,
 				})
 			default:
 				runtimeCfg := cfg

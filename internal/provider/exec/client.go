@@ -19,11 +19,12 @@ import (
 )
 
 type Spec struct {
-	Name    string
-	Command string
-	Args    []string
-	Env     map[string]string
-	Dir     string
+	Name         string
+	Command      string
+	Args         []string
+	Env          map[string]string
+	Dir          string
+	Capabilities []string
 }
 
 type Client struct {
@@ -41,6 +42,7 @@ func New(cfg config.ProviderConfig, spec Spec) (*Client, error) {
 	spec.Args = append([]string(nil), spec.Args...)
 	spec.Env = cloneEnv(spec.Env)
 	spec.Dir = strings.TrimSpace(spec.Dir)
+	spec.Capabilities = append([]string(nil), spec.Capabilities...)
 	if spec.Dir == "" {
 		spec.Dir = "."
 	}

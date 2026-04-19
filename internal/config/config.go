@@ -9,8 +9,9 @@ import (
 )
 
 type Config struct {
-	Provider ProviderConfig `yaml:"provider"`
-	UI       UIConfig       `yaml:"ui"`
+	Provider   ProviderConfig   `yaml:"provider"`
+	UI         UIConfig         `yaml:"ui"`
+	Extensions ExtensionsConfig `yaml:"extensions"`
 }
 
 type ProviderConfig struct {
@@ -26,11 +27,17 @@ type UIConfig struct {
 	InspectorPosition string `yaml:"inspector_position"`
 	InspectorOpen     bool   `yaml:"inspector_open"`
 	Theme             string `yaml:"theme"`
+	ApprovalsMode     string `yaml:"approvals_mode"`
+}
+
+type ExtensionsConfig struct {
+	HooksEnabled bool `yaml:"hooks_enabled"`
 }
 
 type partialConfig struct {
-	Provider partialProviderConfig `yaml:"provider"`
-	UI       partialUIConfig       `yaml:"ui"`
+	Provider   partialProviderConfig   `yaml:"provider"`
+	UI         partialUIConfig         `yaml:"ui"`
+	Extensions partialExtensionsConfig `yaml:"extensions"`
 }
 
 type partialProviderConfig struct {
@@ -46,6 +53,11 @@ type partialUIConfig struct {
 	InspectorPosition *string `yaml:"inspector_position"`
 	InspectorOpen     *bool   `yaml:"inspector_open"`
 	Theme             *string `yaml:"theme"`
+	ApprovalsMode     *string `yaml:"approvals_mode"`
+}
+
+type partialExtensionsConfig struct {
+	HooksEnabled *bool `yaml:"hooks_enabled"`
 }
 
 func Default() Config {
@@ -61,6 +73,10 @@ func Default() Config {
 			InspectorPosition: "auto",
 			InspectorOpen:     false,
 			Theme:             "light",
+			ApprovalsMode:     "trusted",
+		},
+		Extensions: ExtensionsConfig{
+			HooksEnabled: true,
 		},
 	}
 }
@@ -127,6 +143,12 @@ func mergeFile(path string, cfg *Config) error {
 	}
 	if partial.UI.Theme != nil {
 		cfg.UI.Theme = *partial.UI.Theme
+	}
+	if partial.UI.ApprovalsMode != nil {
+		cfg.UI.ApprovalsMode = *partial.UI.ApprovalsMode
+	}
+	if partial.Extensions.HooksEnabled != nil {
+		cfg.Extensions.HooksEnabled = *partial.Extensions.HooksEnabled
 	}
 
 	return nil
