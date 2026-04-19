@@ -2,6 +2,11 @@
 
 `luc` can now load several extension types at runtime without recompiling.
 
+On a clean install, first launch bootstraps the global `~/.luc` tree and seeds
+the bundled helper skills `runtime-extension-authoring`, `skill-usage`, and
+`theme-creator` there if they are missing. Existing user files are left
+untouched.
+
 Lookup order:
 
 1. Global user layer: `~/.luc/...`
@@ -68,6 +73,84 @@ ui:
   default_collapsed: true
   collapsed_summary: Found TODO matches for {{ .pattern }} in {{ .path }}.
 ```
+
+### Providers
+
+Runtime providers live in:
+
+- `~/.luc/providers`
+- `<workspace>/.luc/providers`
+
+Supported manifest formats:
+
+- `.yaml`
+- `.yml`
+- `.json`
+
+Providers currently support two runtime types:
+
+- `openai-compatible` (default): static `base_url` + optional `api_key_env`
+- `exec`: launch a local adapter command that speaks luc's provider JSON protocol over stdio
+
+Example:
+
+```yaml
+id: openrouter
+name: OpenRouter
+base_url: https://openrouter.ai/api/v1
+api_key_env: OPENROUTER_API_KEY
+models:
+  - id: openai/gpt-5
+    name: GPT-5
+    description: Routed through OpenRouter.
+    context_k: 400
+  - id: openai/gpt-5-thinking
+    name: GPT-5 thinking
+    description: Routed reasoning model.
+    context_k: 400
+    reasoning: true
+```
+
+For private gateways that do not require auth, omit `api_key_env` entirely:
+
+```yaml
+name: Local Gateway
+base_url: http://localhost:8080/v1
+models:
+  - id: local-model
+    name: Local Model
+```
+
+Notes:
+
+- Provider `id` defaults to the manifest filename when omitted.
+- Project manifests override global manifests with the same provider `id`.
+- Manifest `base_url` and `api_key_env` define the runtime transport for that provider.
+
+`exec` provider example:
+
+```yaml
+id: meli
+name: Meli Gateway
+type: exec
+command: ./adapter.sh
+args: [--stream]
+env:
+  GATEWAY_MODE: internal
+models:
+  - id: claude-opus-4-7
+    name: Claude Opus 4.7
+  - id: gpt-5.4-2026-03-05
+    name: GPT-5.4
+```
+
+For `exec` providers:
+
+- `command` is required.
+- Relative command paths resolve from the provider manifest directory.
+- The adapter receives one JSON request on stdin and emits JSONL provider events on stdout.
+- Supported streamed event types today are `thinking`, `text_delta`, `tool_call`, and `done`.
+- Tool execution still happens inside luc; the adapter only translates the upstream API into luc provider events.
 
 ### Skills
 
@@ -188,12 +271,12 @@ Changes are picked up on:
 These runtime surfaces work today without recompiling:
 
 - tools
+- providers (OpenAI-compatible manifests)
 - skills
 - themes
 - system prompt
 
 These still need core code changes today:
 
-- custom providers
 - custom TUI overlays/modals
 - custom command-palette actions from external manifests

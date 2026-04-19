@@ -25,9 +25,37 @@ func builtinSkills() []Skill {
 			Name:        "theme-creator",
 			DisplayName: "Theme Creator",
 			Description: "Create or update luc themes that can be inserted at runtime.",
-			Prompt: "Create luc themes under `~/.luc/themes` as YAML or JSON manifests. " +
-				"Prefer inheriting from `light` or `dark` and overriding only the required colors. " +
-				"Keep the palette intentional, mention the theme name to set in config, and remind the user they can reload with `luc reload` or `ctrl+r`.",
+			Prompt: `Create luc themes as YAML or JSON manifests. Follow these rules:
+
+LOCATION
+- Prefer ` + "`~/.luc/themes/<name>.yaml`" + ` for user-wide themes.
+- Use ` + "`<workspace>/.luc/themes/<name>.yaml`" + ` only when the user wants a project-local override. Workspace themes take precedence over home themes with the same name.
+- The filename (sans extension) is the theme ID used to select it.
+
+MANIFEST SHAPE
+- Required: ` + "`inherits: light|dark`" + ` — sets the base palette the custom overrides merge onto.
+- ` + "`colors`" + ` map overrides only the keys you care about; unlisted keys fall through to the inherited variant.
+- Available color keys: ` + "`bg`, `panel`, `panel_alt`, `line`, `accent`, `accent_alt`, `text`, `muted`, `subtle`, `success`, `warn`, `blue`, `cyan`, `error_text`, `diff_add_bg`, `diff_add_fg`, `diff_del_bg`, `diff_del_fg`" + `.
+- Colors must be hex strings ("#RRGGBB"). Empty values are treated as "not overridden".
+
+HOW THE RENDERING WORKS (so you choose colors that actually show up)
+- ` + "`bg`" + ` is applied to the terminal itself via OSC 11 (tea.View.BackgroundColor). It paints EVERY cell of the alt-screen that no style explicitly overrides. Pick a ` + "`bg`" + ` that reads well with ` + "`text`" + ` — it is the dominant surface color.
+- Every text surface (messages, labels, status, header, footer, input, sidebar, palette frame) is rendered with ONLY a foreground color. No per-cell background painting. The OSC 11 canvas shows through.
+- The ONLY surfaces that paint their own background are genuine highlights: ` + "`PaletteActive`" + ` (selection) uses ` + "`accent`" + ` as bg with ` + "`bg`" + ` as fg; ` + "`DiffAdd`/`DiffDel`" + ` use their dedicated diff colors. If you want your theme to feel "alive", ` + "`accent`" + ` is the color you style most aggressively.
+- Never try to force a different "panel" or container color by mixing OSC 11 with per-cell Background — terminals render OSC 11 and SGR 48;2 through different paths, and identical hex comes out as visibly different shades. Bands result. If you want the sidebar or palette to contrast, change their foreground role colors, not their backgrounds.
+
+CHECKLIST BEFORE SAVING
+- ` + "`text`" + ` vs ` + "`bg`" + ` contrast passes WCAG AA (4.5:1 for body text).
+- ` + "`muted`" + ` and ` + "`subtle`" + ` are dimmer than ` + "`text`" + ` but still readable — they're used heavily in the footer, hints, and inspector labels.
+- ` + "`accent`" + ` contrasts with ` + "`bg`" + ` AND with itself-as-bg (selection text uses ` + "`bg`" + ` color on ` + "`accent`" + ` background).
+- ` + "`diff_add_bg`/`diff_add_fg`" + ` contrast with each other; same for del.
+- ` + "`error_text`" + ` and ` + "`warn`" + ` contrast with ` + "`bg`" + `.
+
+ACTIVATION
+- Switch at runtime via ` + "`ctrl+p`" + ` → "Switch theme…" (theme.switch command) — the new theme takes effect immediately for the current session.
+- ` + "`ctrl+p`" + ` → "Reset theme to default" (theme.reset) restores the built-in ` + "`light`" + ` theme.
+- Runtime switches are NOT persisted. For the theme to stick across launches, set ` + "`ui.theme: <name>`" + ` in ` + "`~/.config/luc/config.yaml`" + ` or the workspace's ` + "`.luc/config.yaml`" + `.
+- ` + "`luc reload`" + ` or ` + "`ctrl+r`" + ` picks up edits to an already-active theme file.`,
 			SourcePath: "builtin:theme-creator",
 		},
 	}

@@ -1,6 +1,6 @@
 ---
 name: runtime-extension-authoring
-description: How luc expands itself at runtime through tools, themes, prompts, and skills.
+description: How luc expands itself at runtime through tools, providers, themes, prompts, and skills.
 ---
 When the task is about extending luc, prefer runtime extension mechanisms before
 proposing core code changes.
@@ -13,6 +13,7 @@ Use this lookup order:
 Supported runtime extension types:
 
 - Tools in `~/.luc/tools` and `<workspace>/.luc/tools`
+- Providers in `~/.luc/providers` and `<workspace>/.luc/providers`
 - Skills in `~/.luc/skills`, `<workspace>/.luc/skills`, `~/.agents/skills`, and `<workspace>/.agents/skills`
 - Themes in `~/.luc/themes` and `<workspace>/.luc/themes`
 - System prompt overrides in `~/.luc/prompts/system.md` and `<workspace>/.luc/prompts/system.md`
@@ -21,9 +22,14 @@ Rules:
 
 - Prefer `~/.luc` when the capability should apply across projects.
 - Use project `.luc` only for repo-specific overrides or specialized workflow.
-- Do not suggest recompiling for tools, skills, or themes unless runtime limits make that unavoidable.
+- Do not suggest recompiling for tools, providers, skills, or themes unless runtime limits make that unavoidable.
 - If creating a runtime tool, provide a manifest with `name`, `description`, `command`, `schema`, and optional `ui`.
 - If a tool should not flood the transcript, set `ui.default_collapsed: true`.
+- If creating a runtime provider, use either:
+  `type: openai-compatible` with `id`, `name`, `base_url`, optional `api_key_env`, and `models`; or
+  `type: exec` with `id`, `name`, `command`, optional `args`, optional `env`, and `models`.
+- For `type: exec`, assume the adapter receives one JSON request on stdin and emits JSONL provider events on stdout.
+- The adapter should translate upstream model/tool semantics into luc events; luc still executes the actual tools and renders the existing UI cards.
 - If creating a runtime skill, treat `skill-name/SKILL.md` as the canonical instruction body.
 - Use `skill-name/luc.yaml` only for metadata such as `interface.display_name` and `interface.short_description`.
 - If a skill needs bundled references or scripts, keep them in the same skill directory and assume they will be read through `read_skill_resource`.
@@ -32,5 +38,5 @@ Rules:
 
 Current limits:
 
-- Runtime tools, skills, themes, and prompts are supported.
-- Runtime providers and custom runtime modals/overlays are not yet manifest-driven.
+- Runtime tools, providers, skills, themes, and prompts are supported.
+- Custom runtime modals/overlays are not yet manifest-driven.
