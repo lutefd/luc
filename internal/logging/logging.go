@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/charmbracelet/log"
+	log "charm.land/log/v2"
 )
 
 type Entry struct {
