@@ -238,6 +238,62 @@ delivery:
 	}
 }
 
+func TestControllerHookClientActionPublishesViewRefresh(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "text_delta", Text: "final"},
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "hooks", "refresh.yaml"), `schema: luc.hook/v1
+id: refresh_view
+description: Refresh the cowboy tab.
+events:
+  - message.assistant.final
+runtime:
+  kind: exec
+  command: ./refresh.py
+  capabilities:
+    - structured_io
+    - client_actions
+delivery:
+  mode: async
+  timeout_seconds: 5
+`)
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "hooks", "refresh.py"), "#!/usr/bin/env python3\nimport json, sys\n_ = sys.stdin.readline()\nsys.stdout.write(json.dumps({\"type\":\"client_action\",\"action\":{\"id\":\"refresh_1\",\"kind\":\"view.refresh\",\"view_id\":\"cowboy\"}})+\"\\n\")\nsys.stdout.flush()\n_ = sys.stdin.readline()\nsys.stdout.write('{\"type\":\"done\",\"done\":true}\\n')\nsys.stdout.flush()\n")
+	if err := os.Chmod(filepath.Join(root, ".luc", "hooks", "refresh.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &approvingBroker{}
+	controller.SetUIBroker(broker)
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForHookAction(t, broker, "view.refresh", "cowboy")
+	if broker.action.Kind != "view.refresh" || broker.action.ViewID != "cowboy" {
+		t.Fatalf("expected hook to publish view.refresh action, got %#v", broker.action)
+	}
+}
+
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -260,6 +316,18 @@ func waitForHookLog(t *testing.T, controller *Controller, needle string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for log entry %q", needle)
+}
+
+func waitForHookAction(t *testing.T, broker *approvingBroker, kind, viewID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if broker.action.Kind == kind && broker.action.ViewID == viewID {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for action %q on view %q", kind, viewID)
 }
 
 func logEntriesContain(entries []logging.Entry, needle string) bool {

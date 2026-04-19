@@ -226,7 +226,11 @@ func (c *Controller) runHook(ev history.EventEnvelope, hook luruntime.HookSubscr
 		c.failHook(hook, ev.Kind, err)
 		return
 	}
-	_ = stdin.Close()
+	stdinOpen := luruntime.HasCapability(hook.Runtime.Capabilities, luruntime.CapabilityClientAction)
+	if !stdinOpen {
+		_ = stdin.Close()
+	}
+	encoder := json.NewEncoder(stdin)
 
 	decoder := json.NewDecoder(stdout)
 	done := false
@@ -255,6 +259,34 @@ func (c *Controller) runHook(ev history.EventEnvelope, hook luruntime.HookSubscr
 			if progress := kernelFirstNonEmpty(event.Progress, event.Message); progress != "" {
 				c.logger.Ring.Add("info", fmt.Sprintf("hook %s: %s", hook.ID, progress))
 			}
+		case "client_action":
+			if !luruntime.HasCapability(hook.Runtime.Capabilities, luruntime.CapabilityClientAction) {
+				c.failHook(hook, ev.Kind, errors.New("hook emitted client_action without client_actions capability"))
+				return
+			}
+			if event.Action == nil {
+				c.failHook(hook, ev.Kind, errors.New("hook client_action is missing action payload"))
+				return
+			}
+			action := *event.Action
+			if strings.TrimSpace(action.ID) == "" {
+				action.ID = nextID("hook_action")
+			}
+			var uiResult luruntime.UIResult
+			if action.Blocking {
+				uiResult, err = c.recordingUIBroker().Request(ctx, action)
+			} else {
+				err = c.recordingUIBroker().Publish(action)
+				uiResult = luruntime.UIResult{ActionID: action.ID, Accepted: err == nil}
+			}
+			if err != nil {
+				c.failHook(hook, ev.Kind, err)
+				return
+			}
+			if err := encoder.Encode(luruntime.ClientResultEnvelope{Type: "client_result", Result: uiResult}); err != nil {
+				c.failHook(hook, ev.Kind, err)
+				return
+			}
 		case "done":
 			done = true
 		case "error":
@@ -267,6 +299,9 @@ func (c *Controller) runHook(ev history.EventEnvelope, hook luruntime.HookSubscr
 		if done {
 			break
 		}
+	}
+	if stdinOpen {
+		_ = stdin.Close()
 	}
 
 	if err := cmd.Wait(); err != nil {

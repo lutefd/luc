@@ -43,6 +43,7 @@ type HookEvent struct {
 	Type     string         `json:"type"`
 	Text     string         `json:"text,omitempty"`
 	Message  string         `json:"message,omitempty"`
+	Action   *UIAction      `json:"action,omitempty"`
 	Progress string         `json:"progress,omitempty"`
 	Error    string         `json:"error,omitempty"`
 	Data     map[string]any `json:"data,omitempty"`
