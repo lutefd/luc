@@ -42,50 +42,31 @@ func (c *Client) Name() string {
 }
 
 type stream struct {
-	body    io.Closer
-	scanner *bufio.Scanner
-	pending []provider.Event
-	calls   map[int]provider.ToolCall
+	body          io.Closer
+	scanner       *bufio.Scanner
+	pending       []provider.Event
+	calls         map[int]provider.ToolCall
+	thinkingShown bool
 }
 
 func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
-	payload := chatCompletionRequest{
-		Model:       req.Model,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-		Messages:    make([]chatMessage, 0, len(req.Messages)+1),
-		Tools:       make([]chatTool, 0, len(req.Tools)),
+	payload := responseRequest{
+		Model:           firstNonEmpty(req.Model, c.model),
+		Instructions:    req.System,
+		Temperature:     req.Temperature,
+		MaxOutputTokens: req.MaxTokens,
+		Stream:          true,
+		Input:           responseInputFromProvider(req.Messages),
+		Tools:           responseToolsFromProvider(req.Tools),
 	}
-
-	if req.System != "" {
-		payload.Messages = append(payload.Messages, chatMessage{
-			Role:    "system",
-			Content: req.System,
-		})
-	}
-
-	for _, msg := range req.Messages {
-		payload.Messages = append(payload.Messages, chatMessageFromProvider(msg))
-	}
-
-	for _, spec := range req.Tools {
-		payload.Tools = append(payload.Tools, chatTool{
-			Type: "function",
-			Function: chatToolFunction{
-				Name:        spec.Name,
-				Description: spec.Description,
-				Parameters:  spec.Schema,
-			},
-		})
-	}
+	applyModelCompatibility(&payload)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/responses", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -127,45 +108,67 @@ func (s *stream) Recv() (provider.Event, error) {
 
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
-			for i := 0; i < len(s.calls); i++ {
-				call := s.calls[i]
-				if call.ID == "" {
-					call.ID = fmt.Sprintf("tool_%d", i)
-				}
-				s.pending = append(s.pending, provider.Event{
-					Type:     "tool_call",
-					ToolCall: call,
-				})
-			}
-			s.pending = append(s.pending, provider.Event{Type: "done", Completed: true})
-			return s.Recv()
+			return provider.Event{Type: "done", Completed: true}, nil
 		}
 
-		var chunk chatCompletionChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		var ev responseStreamEvent
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 			return provider.Event{}, err
 		}
-		if len(chunk.Choices) == 0 {
-			continue
+
+		switch ev.Type {
+		case "response.created", "response.in_progress":
+			s.queueThinking()
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+			"response.reasoning_summary_part.added", "response.reasoning_text.done":
+			s.queueThinking()
+		case "response.output_text.delta":
+			if ev.Delta != "" {
+				return provider.Event{Type: "text_delta", Text: ev.Delta}, nil
+			}
+		case "response.output_item.added":
+			if ev.Item.Type == "function_call" {
+				s.calls[ev.OutputIndex] = toolCallFromResponseItem(ev.Item, ev.OutputIndex)
+			}
+			if strings.HasPrefix(ev.Item.Type, "reasoning") {
+				s.queueThinking()
+			}
+		case "response.function_call_arguments.delta":
+			call := s.calls[ev.OutputIndex]
+			if call.ID == "" && ev.CallID != "" {
+				call.ID = ev.CallID
+			}
+			if call.Name == "" && ev.Name != "" {
+				call.Name = ev.Name
+			}
+			call.Arguments += ev.Delta
+			s.calls[ev.OutputIndex] = call
+		case "response.function_call_arguments.done":
+			call := s.calls[ev.OutputIndex]
+			if ev.Item.Type == "function_call" {
+				call = toolCallFromResponseItem(ev.Item, ev.OutputIndex)
+			}
+			if call.ID == "" && ev.CallID != "" {
+				call.ID = ev.CallID
+			}
+			if call.Name == "" && ev.Name != "" {
+				call.Name = ev.Name
+			}
+			if ev.Arguments != "" {
+				call.Arguments = ev.Arguments
+			}
+			if call.ID == "" {
+				call.ID = fmt.Sprintf("tool_%d", ev.OutputIndex)
+			}
+			return provider.Event{Type: "tool_call", ToolCall: call}, nil
+		case "response.completed":
+			return provider.Event{Type: "done", Completed: true}, nil
+		case "response.failed", "error":
+			return provider.Event{}, streamError(ev)
 		}
 
-		choice := chunk.Choices[0]
-		if choice.Delta.Content != "" {
-			return provider.Event{Type: "text_delta", Text: choice.Delta.Content}, nil
-		}
-
-		for _, tc := range choice.Delta.ToolCalls {
-			call := s.calls[tc.Index]
-			if tc.ID != "" {
-				call.ID = tc.ID
-			}
-			if tc.Function.Name != "" {
-				call.Name = tc.Function.Name
-			}
-			if tc.Function.Arguments != "" {
-				call.Arguments += tc.Function.Arguments
-			}
-			s.calls[tc.Index] = call
+		if len(s.pending) > 0 {
+			return s.Recv()
 		}
 	}
 
@@ -176,6 +179,14 @@ func (s *stream) Recv() (provider.Event, error) {
 	return provider.Event{}, io.EOF
 }
 
+func (s *stream) queueThinking() {
+	if s.thinkingShown {
+		return
+	}
+	s.thinkingShown = true
+	s.pending = append(s.pending, provider.Event{Type: "thinking", Text: "Thinking..."})
+}
+
 func (s *stream) Close() error {
 	if s.body == nil {
 		return nil
@@ -183,96 +194,168 @@ func (s *stream) Close() error {
 	return s.body.Close()
 }
 
-type chatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []chatTool    `json:"tools,omitempty"`
-	Temperature float32       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream"`
+type responseRequest struct {
+	Model           string         `json:"model"`
+	Instructions    string         `json:"instructions,omitempty"`
+	Input           []any          `json:"input,omitempty"`
+	Tools           []responseTool `json:"tools,omitempty"`
+	Temperature     float32        `json:"temperature,omitempty"`
+	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
+	Stream          bool           `json:"stream"`
 }
 
-type chatMessage struct {
-	Role       string                `json:"role"`
-	Content    any                   `json:"content,omitempty"`
-	Name       string                `json:"name,omitempty"`
-	ToolCallID string                `json:"tool_call_id,omitempty"`
-	ToolCalls  []chatMessageToolCall `json:"tool_calls,omitempty"`
-}
-
-type chatTool struct {
-	Type     string           `json:"type"`
-	Function chatToolFunction `json:"function"`
-}
-
-type chatToolFunction struct {
+type responseTool struct {
+	Type        string          `json:"type"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      bool            `json:"strict"`
 }
 
-type chatToolCall struct {
-	ID       string           `json:"id,omitempty"`
-	Type     string           `json:"type"`
-	Function chatToolFunction `json:"function"`
+type responseMessageInput struct {
+	Type    string                `json:"type"`
+	Role    string                `json:"role"`
+	Content []responseContentPart `json:"content"`
 }
 
-type chatMessageToolCall struct {
-	ID       string                  `json:"id,omitempty"`
-	Type     string                  `json:"type"`
-	Function chatMessageToolFunction `json:"function"`
+type responseContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
-type chatMessageToolFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+type responseFunctionCallItem struct {
+	Type      string `json:"type"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
-type chatCompletionChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
+type responseFunctionCallOutputItem struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Output string `json:"output"`
 }
 
-func chatMessageFromProvider(msg provider.Message) chatMessage {
-	out := chatMessage{
-		Role:       msg.Role,
-		Name:       msg.Name,
-		ToolCallID: msg.ToolCallID,
-	}
+type responseStreamEvent struct {
+	Type        string              `json:"type"`
+	Delta       string              `json:"delta"`
+	Name        string              `json:"name"`
+	Arguments   string              `json:"arguments"`
+	CallID      string              `json:"call_id"`
+	OutputIndex int                 `json:"output_index"`
+	Item        responseStreamItem  `json:"item"`
+	Error       *responseErrorField `json:"error"`
+}
 
-	switch {
-	case len(msg.ToolCalls) > 0:
-		out.ToolCalls = make([]chatMessageToolCall, 0, len(msg.ToolCalls))
-		for _, call := range msg.ToolCalls {
-			out.ToolCalls = append(out.ToolCalls, chatMessageToolCall{
-				ID:   call.ID,
-				Type: "function",
-				Function: chatMessageToolFunction{
+type responseStreamItem struct {
+	Type      string `json:"type"`
+	ID        string `json:"id,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+type responseErrorField struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+}
+
+func responseInputFromProvider(messages []provider.Message) []any {
+	out := make([]any, 0, len(messages))
+	for _, msg := range messages {
+		switch {
+		case len(msg.ToolCalls) > 0:
+			for _, call := range msg.ToolCalls {
+				out = append(out, responseFunctionCallItem{
+					Type:      "function_call",
+					CallID:    call.ID,
 					Name:      call.Name,
 					Arguments: call.Arguments,
-				},
+				})
+			}
+		case msg.Role == "tool":
+			out = append(out, responseFunctionCallOutputItem{
+				Type:   "function_call_output",
+				CallID: msg.ToolCallID,
+				Output: msg.Content,
+			})
+		default:
+			contentType := "input_text"
+			if msg.Role == "assistant" {
+				contentType = "output_text"
+			}
+			out = append(out, responseMessageInput{
+				Type: "message",
+				Role: msg.Role,
+				Content: []responseContentPart{{
+					Type: contentType,
+					Text: msg.Content,
+				}},
 			})
 		}
-	case msg.Role == "tool":
-		out.Content = msg.Content
-	default:
-		out.Content = msg.Content
 	}
-
 	return out
+}
+
+func responseToolsFromProvider(specs []provider.ToolSpec) []responseTool {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]responseTool, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, responseTool{
+			Type:        "function",
+			Name:        spec.Name,
+			Description: spec.Description,
+			Parameters:  spec.Schema,
+			Strict:      false,
+		})
+	}
+	return out
+}
+
+func applyModelCompatibility(req *responseRequest) {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	if req.Temperature != 0 && isGPT5Model(model) {
+		req.Temperature = 0
+	}
+}
+
+func isGPT5Model(model string) bool {
+	return strings.HasPrefix(model, "gpt-5")
+}
+
+func toolCallFromResponseItem(item responseStreamItem, outputIndex int) provider.ToolCall {
+	call := provider.ToolCall{
+		ID:        item.CallID,
+		Name:      item.Name,
+		Arguments: item.Arguments,
+	}
+	if call.ID == "" {
+		call.ID = fmt.Sprintf("tool_%d", outputIndex)
+	}
+	return call
+}
+
+func streamError(ev responseStreamEvent) error {
+	if ev.Error == nil {
+		return errors.New("provider stream failed")
+	}
+	msg := strings.TrimSpace(ev.Error.Message)
+	if msg == "" {
+		msg = "provider stream failed"
+	}
+	return errors.New(msg)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 var _ provider.Provider = (*Client)(nil)
