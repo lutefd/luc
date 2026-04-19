@@ -1,11 +1,13 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -449,6 +451,10 @@ func (t *runtimeTool) Spec() provider.ToolSpec {
 }
 
 func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
+	if luruntime.HasCapability(t.def.Capabilities, luruntime.CapabilityStructuredIO) {
+		return t.runStructured(ctx, req)
+	}
+
 	args, err := decodeArgsMap(req.Arguments)
 	if err != nil {
 		return Result{}, err
@@ -494,6 +500,192 @@ func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
 		result.CollapsedSummary = summarizeOutput(string(output), timedOut)
 	}
 	return result, runErr
+}
+
+func (t *runtimeTool) runStructured(ctx context.Context, req Request) (Result, error) {
+	args, err := decodeArgsMap(req.Arguments)
+	if err != nil {
+		return Result{}, err
+	}
+
+	timeout := 30 * time.Second
+	if t.def.TimeoutSeconds > 0 {
+		timeout = time.Duration(t.def.TimeoutSeconds) * time.Second
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "zsh", "-lc", t.def.Command)
+	cmd.Dir = t.workspace
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return Result{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		return Result{}, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return Result{}, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		return Result{}, err
+	}
+
+	encoder := json.NewEncoder(stdin)
+	if err := encoder.Encode(luruntime.ToolRequestEnvelope{
+		ToolName:         req.Name,
+		Arguments:        args,
+		Workspace:        req.Workspace,
+		SessionID:        req.SessionID,
+		AgentID:          req.AgentID,
+		HostCapabilities: append([]string(nil), req.HostCapabilities...),
+		ViewContext:      req.ViewContext,
+	}); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		_ = cmd.Wait()
+		return Result{}, err
+	}
+
+	var stderrBuf bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&stderrBuf, stderr)
+		close(stderrDone)
+	}()
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+
+	var result Result
+	var stdoutBuf strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var event luruntime.ToolEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			_ = stdin.Close()
+			_ = stdout.Close()
+			_ = cmd.Wait()
+			return Result{}, err
+		}
+
+		switch strings.TrimSpace(event.Type) {
+		case "stdout", "stderr":
+			if strings.TrimSpace(event.Text) != "" {
+				stdoutBuf.WriteString(event.Text)
+				if !strings.HasSuffix(event.Text, "\n") {
+					stdoutBuf.WriteString("\n")
+				}
+			}
+		case "progress":
+			if result.Metadata == nil {
+				result.Metadata = map[string]any{}
+			}
+			result.Metadata["progress"] = event.Text
+		case "client_action":
+			if !luruntime.HasCapability(t.def.Capabilities, luruntime.CapabilityClientAction) {
+				return Result{}, errors.New("structured tool emitted client_action without client_actions capability")
+			}
+			if event.Action == nil {
+				return Result{}, errors.New("structured tool client_action is missing action payload")
+			}
+			action := *event.Action
+			if strings.TrimSpace(action.ID) == "" {
+				action.ID = nextActionID(req.Name)
+			}
+			broker := req.UIBroker
+			if broker == nil {
+				broker = luruntime.NewDefaultBroker("trusted", nil)
+			}
+			var uiResult luruntime.UIResult
+			if action.Blocking {
+				uiResult, err = broker.Request(execCtx, action)
+			} else {
+				err = broker.Publish(action)
+				uiResult = luruntime.UIResult{ActionID: action.ID, Accepted: err == nil}
+			}
+			if err != nil {
+				return Result{}, err
+			}
+			if err := encoder.Encode(luruntime.ClientResultEnvelope{Type: "client_result", Result: uiResult}); err != nil {
+				return Result{}, err
+			}
+		case "result":
+			if event.Result != nil {
+				result.Content = event.Result.Content
+				result.Metadata = cloneMetadata(event.Result.Metadata)
+				result.DefaultCollapsed = event.Result.DefaultCollapsed
+				result.CollapsedSummary = event.Result.CollapsedSummary
+			}
+		case "done":
+			goto done
+		case "error":
+			if strings.TrimSpace(event.Error) == "" {
+				event.Error = "structured tool failed"
+			}
+			return Result{}, errors.New(event.Error)
+		default:
+			return Result{}, fmt.Errorf("unsupported structured tool event type %q", event.Type)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Result{}, err
+	}
+
+done:
+	_ = stdin.Close()
+	_ = stdout.Close()
+	waitErr := cmd.Wait()
+	<-stderrDone
+
+	if result.Content == "" {
+		result.Content = strings.TrimSpace(stdoutBuf.String())
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	if stderrText := strings.TrimSpace(stderrBuf.String()); stderrText != "" {
+		result.Metadata["stderr"] = stderrText
+	}
+	if execCtx.Err() == context.DeadlineExceeded {
+		result.Metadata["timed_out"] = true
+	}
+	return result, waitErr
+}
+
+func cloneMetadata(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func nextActionID(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "runtime"
+	}
+	return fmt.Sprintf("%s_action_%d", prefix, time.Now().UnixNano())
 }
 
 func normalizeResult(result Result) Result {

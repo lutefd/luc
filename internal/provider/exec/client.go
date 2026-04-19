@@ -16,6 +16,7 @@ import (
 
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/provider"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 )
 
 type Spec struct {
@@ -28,8 +29,10 @@ type Spec struct {
 }
 
 type Client struct {
-	name string
-	spec Spec
+	name             string
+	spec             Spec
+	broker           luruntime.UIBroker
+	hostCapabilities []string
 }
 
 func New(cfg config.ProviderConfig, spec Spec) (*Client, error) {
@@ -54,6 +57,11 @@ func New(cfg config.ProviderConfig, spec Spec) (*Client, error) {
 
 func (c *Client) Name() string {
 	return c.name
+}
+
+func (c *Client) SetRuntimeOptions(broker luruntime.UIBroker, hostCapabilities []string) {
+	c.broker = broker
+	c.hostCapabilities = append([]string(nil), hostCapabilities...)
 }
 
 func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
@@ -81,30 +89,39 @@ func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stre
 		return nil, err
 	}
 
-	if err := json.NewEncoder(stdin).Encode(execRequest{Request: req}); err != nil {
+	if err := json.NewEncoder(stdin).Encode(execRequest{Request: req, HostCapabilities: append([]string(nil), c.hostCapabilities...)}); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = cmd.Wait()
 		return nil, err
 	}
-	_ = stdin.Close()
+	if !luruntime.HasCapability(c.spec.Capabilities, luruntime.CapabilityClientAction) {
+		_ = stdin.Close()
+	}
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 
 	return &stream{
-		cmd:     cmd,
-		stdout:  stdout,
-		scanner: scanner,
-		stderr:  &stderr,
+		cmd:                cmd,
+		stdout:             stdout,
+		stdin:              stdin,
+		scanner:            scanner,
+		stderr:             &stderr,
+		broker:             c.broker,
+		allowClientActions: luruntime.HasCapability(c.spec.Capabilities, luruntime.CapabilityClientAction),
 	}, nil
 }
 
 type stream struct {
 	cmd     *osexec.Cmd
 	stdout  io.Closer
+	stdin   io.WriteCloser
 	scanner *bufio.Scanner
 	stderr  *bytes.Buffer
+	broker  luruntime.UIBroker
+
+	allowClientActions bool
 
 	once    sync.Once
 	waitErr error
@@ -125,6 +142,21 @@ func (s *stream) Recv() (provider.Event, error) {
 		if err := ev.validate(); err != nil {
 			_ = s.Close()
 			return provider.Event{}, err
+		}
+		if ev.Type == "client_action" {
+			if !s.allowClientActions {
+				_ = s.Close()
+				return provider.Event{}, errors.New("exec provider emitted client_action without client_actions capability")
+			}
+			if ev.Action == nil {
+				_ = s.Close()
+				return provider.Event{}, errors.New("exec provider client_action is missing action payload")
+			}
+			if err := s.handleClientAction(*ev.Action); err != nil {
+				_ = s.Close()
+				return provider.Event{}, err
+			}
+			continue
 		}
 		if ev.Error != "" {
 			_ = s.Close()
@@ -155,6 +187,9 @@ func (s *stream) Recv() (provider.Event, error) {
 }
 
 func (s *stream) Close() error {
+	if s.stdin != nil {
+		_ = s.stdin.Close()
+	}
 	if s.stdout != nil {
 		_ = s.stdout.Close()
 	}
@@ -184,16 +219,18 @@ func (s *stream) wait() error {
 }
 
 type execRequest struct {
-	Request provider.Request `json:"request"`
+	Request          provider.Request `json:"request"`
+	HostCapabilities []string         `json:"host_capabilities,omitempty"`
 }
 
 type execEvent struct {
-	Type      string             `json:"type"`
-	Text      string             `json:"text,omitempty"`
-	ToolCall  *provider.ToolCall `json:"tool_call,omitempty"`
-	Usage     map[string]any     `json:"usage,omitempty"`
-	Completed bool               `json:"completed,omitempty"`
-	Error     string             `json:"error,omitempty"`
+	Type      string              `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	ToolCall  *provider.ToolCall  `json:"tool_call,omitempty"`
+	Action    *luruntime.UIAction `json:"action,omitempty"`
+	Usage     map[string]any      `json:"usage,omitempty"`
+	Completed bool                `json:"completed,omitempty"`
+	Error     string              `json:"error,omitempty"`
 }
 
 func (e execEvent) validate() error {
@@ -211,12 +248,44 @@ func (e execEvent) validate() error {
 			return errors.New("exec provider event tool_call is missing tool id")
 		}
 		return nil
+	case "client_action":
+		if e.Action == nil {
+			return errors.New("exec provider event client_action is missing action payload")
+		}
+		return nil
 	default:
 		if e.Error != "" && e.Type == "" {
 			return nil
 		}
 		return fmt.Errorf("unsupported exec provider event type %q", e.Type)
 	}
+}
+
+func (s *stream) handleClientAction(action luruntime.UIAction) error {
+	if strings.TrimSpace(action.ID) == "" {
+		action.ID = "provider_action"
+	}
+	broker := s.broker
+	if broker == nil {
+		broker = luruntime.NewDefaultBroker("trusted", nil)
+	}
+	var (
+		result luruntime.UIResult
+		err    error
+	)
+	if action.Blocking {
+		result, err = broker.Request(context.Background(), action)
+	} else {
+		err = broker.Publish(action)
+		result = luruntime.UIResult{ActionID: action.ID, Accepted: err == nil}
+	}
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(s.stdin).Encode(luruntime.ClientResultEnvelope{
+		Type:   "client_result",
+		Result: result,
+	})
 }
 
 func resolveCommand(command, dir string) string {

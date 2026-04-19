@@ -45,6 +45,10 @@ var newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
 	return openai.New(cfg)
 }
 
+type runtimeConfigurableProvider interface {
+	SetRuntimeOptions(broker luruntime.UIBroker, hostCapabilities []string)
+}
+
 func init() {
 	// Seed the default provider registry at package load so the TUI
 	// model-selection modal can enumerate built-ins immediately.
@@ -148,6 +152,8 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 	providerClient, err := newProvider(cfg.Provider)
 	if err != nil {
 		logger.Ring.Add("error", err.Error())
+	} else {
+		configureRuntimeProvider(providerClient, controllerUIBroker(cfg, logger), luruntime.DefaultHostCapabilities())
 	}
 	toolManager, err := tools.NewManager(ws.Root)
 	if err != nil {
@@ -176,9 +182,8 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		hostCaps:     luruntime.DefaultHostCapabilities(),
 		runtime:      runtimeSet,
 	}
-	controller.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
-		controller.logger.Ring.Add("info", fmt.Sprintf(format, args...))
-	})
+	controller.uiBroker = controllerUIBroker(cfg, logger)
+	configureRuntimeProvider(controller.provider, controller.uiBroker, controller.hostCaps)
 	for _, diagnostic := range runtimeSet.Diagnostics {
 		controller.logger.Ring.Add("warn", diagnostic.Message)
 	}
@@ -245,6 +250,7 @@ func (c *Controller) SetUIBroker(broker luruntime.UIBroker) {
 		})
 	}
 	c.uiBroker = broker
+	configureRuntimeProvider(c.provider, c.uiBroker, c.hostCaps)
 }
 
 func (c *Controller) UIBroker() luruntime.UIBroker {
@@ -332,6 +338,7 @@ func (c *Controller) SwitchModel(modelID string) error {
 		return err
 	}
 	c.provider = client
+	configureRuntimeProvider(c.provider, c.UIBroker(), c.HostCapabilities())
 	c.config.Provider = newCfg
 	c.session.Model = newCfg.Model
 	c.session.Provider = newCfg.Kind
@@ -478,6 +485,7 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.tools = toolManager
 	c.registry = registry
 	c.provider = client
+	configureRuntimeProvider(c.provider, c.UIBroker(), c.HostCapabilities())
 	c.runtime = runtimeSet
 	if _, ok := c.uiBroker.(*luruntime.DefaultBroker); ok || c.uiBroker == nil {
 		c.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
@@ -790,7 +798,20 @@ func (c *Controller) configureSessionProvider(meta history.SessionMeta) error {
 		return nil
 	}
 	c.provider = client
+	configureRuntimeProvider(c.provider, c.UIBroker(), c.HostCapabilities())
 	return nil
+}
+
+func configureRuntimeProvider(client provider.Provider, broker luruntime.UIBroker, hostCapabilities []string) {
+	if configurable, ok := client.(runtimeConfigurableProvider); ok {
+		configurable.SetRuntimeOptions(broker, hostCapabilities)
+	}
+}
+
+func controllerUIBroker(cfg config.Config, logger *logging.Manager) luruntime.UIBroker {
+	return luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
+		logger.Ring.Add("info", fmt.Sprintf(format, args...))
+	})
 }
 
 func loadProviderRegistry(workspaceRoot string) (*provider.Registry, error) {
