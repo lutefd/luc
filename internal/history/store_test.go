@@ -60,6 +60,22 @@ func TestStoreAppendLoadAndLatest(t *testing.T) {
 		t.Fatalf("expected latest session two, got %q", latest.SessionID)
 	}
 
+	metas, err := store.List("project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 2 || metas[0].SessionID != "two" || metas[1].SessionID != "one" {
+		t.Fatalf("unexpected session list %#v", metas)
+	}
+
+	meta, ok, err := store.Meta("two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || meta.SessionID != "two" {
+		t.Fatalf("expected to load meta for two, got %#v ok=%v", meta, ok)
+	}
+
 	expectedPath := filepath.Join(stateDir, "history", "sessions", "two.jsonl")
 	if expectedPath == "" {
 		t.Fatal("expected non-empty path")

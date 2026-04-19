@@ -55,3 +55,7 @@ type ReloadPayload struct {
 	Version uint64 `json:"version"`
 	Error   string `json:"error,omitempty"`
 }
+
+type StatusPayload struct {
+	Text string `json:"text"`
+}

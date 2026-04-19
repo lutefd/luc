@@ -77,13 +77,41 @@ func (s *Store) SaveMeta(meta SessionMeta) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-func (s *Store) Latest(projectID string) (SessionMeta, bool, error) {
-	entries, err := os.ReadDir(filepath.Join(s.root, "sessions"))
+func (s *Store) Meta(sessionID string) (SessionMeta, bool, error) {
+	data, err := os.ReadFile(s.metaPath(sessionID))
 	if errors.Is(err, os.ErrNotExist) {
 		return SessionMeta{}, false, nil
 	}
 	if err != nil {
 		return SessionMeta{}, false, err
+	}
+
+	var meta SessionMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return SessionMeta{}, false, err
+	}
+	return meta, true, nil
+}
+
+func (s *Store) Latest(projectID string) (SessionMeta, bool, error) {
+	metas, err := s.List(projectID)
+	if err != nil {
+		return SessionMeta{}, false, err
+	}
+	if len(metas) == 0 {
+		return SessionMeta{}, false, nil
+	}
+
+	return metas[0], true, nil
+}
+
+func (s *Store) List(projectID string) ([]SessionMeta, error) {
+	entries, err := os.ReadDir(filepath.Join(s.root, "sessions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var metas []SessionMeta
@@ -93,26 +121,21 @@ func (s *Store) Latest(projectID string) (SessionMeta, bool, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(s.root, "sessions", entry.Name()))
 		if err != nil {
-			return SessionMeta{}, false, err
+			return nil, err
 		}
 		var meta SessionMeta
 		if err := json.Unmarshal(data, &meta); err != nil {
-			return SessionMeta{}, false, err
+			return nil, err
 		}
 		if meta.ProjectID == projectID {
 			metas = append(metas, meta)
 		}
 	}
 
-	if len(metas) == 0 {
-		return SessionMeta{}, false, nil
-	}
-
 	sort.Slice(metas, func(i, j int) bool {
 		return metas[i].UpdatedAt.After(metas[j].UpdatedAt)
 	})
-
-	return metas[0], true, nil
+	return metas, nil
 }
 
 func (s *Store) sessionPath(sessionID string) string {
