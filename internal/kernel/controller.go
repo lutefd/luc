@@ -20,6 +20,7 @@ import (
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/provider"
+	luctstate "github.com/lutefd/luc/internal/state"
 	execprovider "github.com/lutefd/luc/internal/provider/exec"
 	"github.com/lutefd/luc/internal/provider/openai"
 	"github.com/lutefd/luc/internal/tools"
@@ -133,6 +134,29 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 	}
 	provider.SetDefaultRegistry(registry)
 
+	// Overlay user-level state (last theme/model/provider) onto config so
+	// new sessions start from the user's most recent choice rather than
+	// reverting to the config-file defaults on every restart. State errors
+	// are non-fatal — fall through to config defaults and log.
+	if st, err := luctstate.Load(); err != nil {
+		logger.Ring.Add("error", "state: "+err.Error())
+	} else {
+		if st.Theme != "" {
+			cfg.UI.Theme = st.Theme
+		}
+		// Only adopt the persisted model/provider if the kind still exists
+		// in the current provider registry; otherwise the user may have
+		// uninstalled an extension and we'd wedge on a dead provider.
+		if st.ProviderKind != "" {
+			if _, ok := registry.Provider(st.ProviderKind); ok || st.ProviderKind == "openai-compatible" {
+				cfg.Provider.Kind = st.ProviderKind
+			}
+		}
+		if st.Model != "" {
+			cfg.Provider.Model = st.Model
+		}
+	}
+
 	store := history.NewStore(ws.StateDir)
 	providerClient, err := newProvider(cfg.Provider)
 	if err != nil {
@@ -225,6 +249,7 @@ func (c *Controller) SwitchModel(modelID string) error {
 		c.config.Provider.Model = modelID
 		c.session.Model = modelID
 		c.saveSessionMeta()
+		c.persistProviderState()
 		c.emit("system.note", history.MessagePayload{
 			ID:      nextID("note"),
 			Content: fmt.Sprintf("switched model to %s", modelID),
@@ -238,6 +263,7 @@ func (c *Controller) SwitchModel(modelID string) error {
 		c.session.Model = model.ID
 		c.session.Provider = c.config.Provider.Kind
 		c.saveSessionMeta()
+		c.persistProviderState()
 		c.emit("system.note", history.MessagePayload{
 			ID:      nextID("note"),
 			Content: fmt.Sprintf("switched model to %s (%s)", model.Name, providerDef.Name),
@@ -262,6 +288,7 @@ func (c *Controller) SwitchModel(modelID string) error {
 	c.session.Model = newCfg.Model
 	c.session.Provider = newCfg.Kind
 	c.saveSessionMeta()
+	c.persistProviderState()
 	c.emit("system.note", history.MessagePayload{
 		ID:      nextID("note"),
 		Content: fmt.Sprintf("switched to %s / %s", providerDef.Name, model.Name),
@@ -269,10 +296,24 @@ func (c *Controller) SwitchModel(modelID string) error {
 	return nil
 }
 
-// SetTheme updates the in-memory UI theme name. The TUI is responsible for
-// reloading theme styles and rebuilding its views; this method only mutates
-// configuration state so that subsequent reads see the new value. The change
-// is not persisted to disk.
+// persistProviderState writes the current provider kind + model to the
+// user-level state file. Errors are logged but not returned — persistence
+// is a best-effort optimization, not a correctness requirement.
+func (c *Controller) persistProviderState() {
+	kind := c.config.Provider.Kind
+	model := c.config.Provider.Model
+	if err := luctstate.Update(func(s *luctstate.State) {
+		s.ProviderKind = kind
+		s.Model = model
+	}); err != nil {
+		c.logger.Ring.Add("error", "state: "+err.Error())
+	}
+}
+
+// SetTheme updates the in-memory UI theme name and persists the choice to
+// ~/.luc/state.yaml so subsequent luc launches (new or reopened sessions)
+// default to this theme. The TUI is responsible for reloading theme styles
+// and rebuilding its views.
 func (c *Controller) SetTheme(name string) {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
@@ -282,6 +323,12 @@ func (c *Controller) SetTheme(name string) {
 		return
 	}
 	c.config.UI.Theme = name
+
+	if err := luctstate.Update(func(s *luctstate.State) {
+		s.Theme = name
+	}); err != nil {
+		c.logger.Ring.Add("error", "state: "+err.Error())
+	}
 
 	displayed := name
 	if displayed == "" {
