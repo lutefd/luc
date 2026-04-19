@@ -19,6 +19,7 @@ import (
 	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/logging"
+	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/provider"
 	luctstate "github.com/lutefd/luc/internal/state"
 	execprovider "github.com/lutefd/luc/internal/provider/exec"
@@ -399,11 +400,15 @@ func (c *Controller) OpenSession(sessionID string) error {
 }
 
 func (c *Controller) Submit(ctx context.Context, input string) error {
+	return c.SubmitMessage(ctx, input, nil)
+}
+
+func (c *Controller) SubmitMessage(ctx context.Context, input string, attachments []media.Attachment) error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
 
 	text := strings.TrimSpace(input)
-	if text == "" {
+	if text == "" && len(attachments) == 0 {
 		return nil
 	}
 
@@ -418,9 +423,21 @@ func (c *Controller) Submit(ctx context.Context, input string) error {
 	}
 
 	userID := nextID("user")
-	c.emit("message.user", history.MessagePayload{ID: userID, Content: text})
-	c.appendMessage(provider.Message{Role: "user", Content: text})
-	c.updateTitle(text)
+	c.emit("message.user", history.MessagePayload{
+		ID:          userID,
+		Content:     text,
+		Attachments: media.ToHistoryPayloads(attachments),
+	})
+	userMessage := provider.Message{Role: "user"}
+	if parts := media.MessageParts(text, attachments); len(parts) > 0 {
+		userMessage.Parts = parts
+	} else {
+		userMessage.Content = text
+	}
+	c.appendMessage(userMessage)
+	if text != "" {
+		c.updateTitle(text)
+	}
 
 	systemPrompt, err := c.composeSystemPrompt(text)
 	if err != nil {
@@ -725,7 +742,14 @@ func (c *Controller) replay(ev history.EventEnvelope) {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
-		c.conversation = append(c.conversation, provider.Message{Role: "user", Content: payload.Content})
+		msg := provider.Message{Role: "user"}
+		attachments := media.FromHistoryPayloads(payload.Attachments)
+		if parts := media.MessageParts(payload.Content, attachments); len(parts) > 0 {
+			msg.Parts = parts
+		} else {
+			msg.Content = payload.Content
+		}
+		c.conversation = append(c.conversation, msg)
 	case "message.assistant.final":
 		payload := decode[history.MessagePayload](ev.Payload)
 		c.conversation = append(c.conversation, provider.Message{Role: "assistant", Content: payload.Content})

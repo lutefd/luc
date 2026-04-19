@@ -14,6 +14,21 @@ import (
 	"github.com/lutefd/luc/internal/tools"
 )
 
+// TestMain isolates the user-preference state file (~/.luc/state.yaml) from
+// every test in this package. Without this, controller tests read the real
+// user's persisted theme/provider/model and wedge on values the test didn't
+// anticipate — e.g. "unexpected provider kind 'meli'" when the developer
+// has a custom provider selected.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "luc-kernel-state-*")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	os.Setenv("LUC_STATE_DIR", dir)
+	os.Exit(m.Run())
+}
+
 type fakeProvider struct {
 	streams     [][]provider.Event
 	index       int

@@ -23,8 +23,19 @@ type SessionMeta struct {
 }
 
 type MessagePayload struct {
-	ID      string `json:"id"`
-	Content string `json:"content"`
+	ID          string              `json:"id"`
+	Content     string              `json:"content"`
+	Attachments []AttachmentPayload `json:"attachments,omitempty"`
+}
+
+type AttachmentPayload struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
 }
 
 type MessageDeltaPayload struct {
