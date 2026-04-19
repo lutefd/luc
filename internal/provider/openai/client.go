@@ -24,9 +24,12 @@ type Client struct {
 }
 
 func New(cfg config.ProviderConfig) (*Client, error) {
-	key := os.Getenv(cfg.APIKeyEnv)
-	if key == "" {
-		return nil, fmt.Errorf("%s is not set", cfg.APIKeyEnv)
+	key := ""
+	if env := strings.TrimSpace(cfg.APIKeyEnv); env != "" {
+		key = os.Getenv(env)
+		if key == "" {
+			return nil, fmt.Errorf("%s is not set", env)
+		}
 	}
 
 	return &Client{
@@ -70,8 +73,10 @@ func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stre
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -219,8 +224,9 @@ type responseMessageInput struct {
 }
 
 type responseContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type responseFunctionCallItem struct {
@@ -281,17 +287,49 @@ func responseInputFromProvider(messages []provider.Message) []any {
 				Output: msg.Content,
 			})
 		default:
+			parts := responsePartsFromMessage(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			out = append(out, responseMessageInput{
+				Type:    "message",
+				Role:    msg.Role,
+				Content: parts,
+			})
+		}
+	}
+	return out
+}
+
+func responsePartsFromMessage(msg provider.Message) []responseContentPart {
+	parts := msg.ContentParts()
+	if len(parts) == 0 {
+		return nil
+	}
+
+	out := make([]responseContentPart, 0, len(parts))
+	for _, part := range parts {
+		switch strings.TrimSpace(part.Type) {
+		case "", "text":
 			contentType := "input_text"
 			if msg.Role == "assistant" {
 				contentType = "output_text"
 			}
-			out = append(out, responseMessageInput{
-				Type: "message",
-				Role: msg.Role,
-				Content: []responseContentPart{{
-					Type: contentType,
-					Text: msg.Content,
-				}},
+			out = append(out, responseContentPart{
+				Type: contentType,
+				Text: part.Text,
+			})
+		case "image":
+			imageURL := strings.TrimSpace(part.URL)
+			if imageURL == "" && strings.TrimSpace(part.Data) != "" && strings.TrimSpace(part.MediaType) != "" {
+				imageURL = "data:" + part.MediaType + ";base64," + part.Data
+			}
+			if imageURL == "" {
+				continue
+			}
+			out = append(out, responseContentPart{
+				Type:     "input_image",
+				ImageURL: imageURL,
 			})
 		}
 	}

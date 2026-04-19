@@ -150,6 +150,138 @@ func TestLoadSkillsFallsBackToSynthesizedPromptWithoutSkillMarkdown(t *testing.T
 	}
 }
 
+func TestLoadProviderDefsProjectOverrideWinsOverGlobal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := os.MkdirAll(filepath.Join(home, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".luc", "providers", "gateway.yaml"), []byte(`id: gateway
+name: Global Gateway
+base_url: https://global.example/v1
+api_key_env: GLOBAL_GATEWAY_KEY
+models:
+  - id: global-model
+    name: Global Model
+    description: Global model
+    context_k: 128
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "gateway.yaml"), []byte(`id: gateway
+name: Project Gateway
+base_url: https://project.example/v1
+models:
+  - id: project-model
+    name: Project Model
+    description: Project model
+    context_k: 256
+    reasoning: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defs, err := LoadProviderDefs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("expected one merged provider, got %#v", defs)
+	}
+	def := defs[0]
+	if def.Name != "Project Gateway" {
+		t.Fatalf("expected project override name, got %#v", def)
+	}
+	if def.BaseURL != "https://project.example/v1" {
+		t.Fatalf("expected project override base URL, got %#v", def)
+	}
+	if def.APIKeyEnv != "" {
+		t.Fatalf("expected optional API key env to stay empty, got %#v", def)
+	}
+	if len(def.Models) != 1 || def.Models[0].ID != "project-model" || !def.Models[0].Reasoning {
+		t.Fatalf("expected project override models, got %#v", def.Models)
+	}
+}
+
+func TestLoadProviderDefsDefaultsTypeAndFilenameID(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "private-gateway.yaml"), []byte(`name: Private Gateway
+base_url: http://localhost:8080/v1
+models:
+  - id: local-model
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defs, err := LoadProviderDefs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("expected one provider, got %#v", defs)
+	}
+	if defs[0].ID != "private-gateway" {
+		t.Fatalf("expected filename-derived ID, got %#v", defs[0])
+	}
+	if defs[0].Type != "openai-compatible" {
+		t.Fatalf("expected default provider type, got %#v", defs[0])
+	}
+	if defs[0].Models[0].Name != "local-model" {
+		t.Fatalf("expected model name fallback to ID, got %#v", defs[0].Models[0])
+	}
+}
+
+func TestLoadProviderDefsSupportsExecProviders(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "meli.yaml"), []byte(`id: meli
+name: Meli Gateway
+type: exec
+command: ./adapter.sh
+args:
+  - --stream
+env:
+  GATEWAY_MODE: internal
+models:
+  - id: claude-opus-4-7
+    name: Claude Opus 4.7
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defs, err := LoadProviderDefs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("expected one provider, got %#v", defs)
+	}
+	def := defs[0]
+	if def.Type != "exec" {
+		t.Fatalf("expected exec provider type, got %#v", def)
+	}
+	if def.Command != "./adapter.sh" {
+		t.Fatalf("expected exec command, got %#v", def)
+	}
+	if len(def.Args) != 1 || def.Args[0] != "--stream" {
+		t.Fatalf("expected exec args, got %#v", def.Args)
+	}
+	if def.Env["GATEWAY_MODE"] != "internal" {
+		t.Fatalf("expected exec env, got %#v", def.Env)
+	}
+}
+
 func findSkill(skills []Skill, name string) *Skill {
 	for i := range skills {
 		if skills[i].Name == name {

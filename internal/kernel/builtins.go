@@ -6,12 +6,9 @@ import (
 	"github.com/lutefd/luc/internal/provider/openai"
 )
 
-// seedDefaultRegistry populates the process-wide provider.Registry with the
-// shipped built-in providers. Safe to call multiple times; Register()
-// replaces existing entries with the same ID, so the built-in set remains
-// authoritative even after an extension attempts to override it here.
-func seedDefaultRegistry() {
-	reg := provider.DefaultRegistry()
+// registerBuiltinProviders seeds a registry with the shipped built-in
+// providers. Runtime manifests are layered on top elsewhere.
+func registerBuiltinProviders(reg *provider.Registry) {
 	openaiFactory := func(cfg config.ProviderConfig) (provider.Provider, error) {
 		return openai.New(cfg)
 	}
@@ -43,4 +40,10 @@ func seedDefaultRegistry() {
 			{ID: "gpt-3.5-turbo", Name: "GPT-3.5 Turbo", Description: "Cheapest legacy option", ContextK: 16, Provider: "openai"},
 		},
 	})
+}
+
+func seedDefaultRegistry() *provider.Registry {
+	reg := provider.NewRegistry()
+	registerBuiltinProviders(reg)
+	return reg
 }

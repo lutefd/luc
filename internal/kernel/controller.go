@@ -20,6 +20,7 @@ import (
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/provider"
+	execprovider "github.com/lutefd/luc/internal/provider/exec"
 	"github.com/lutefd/luc/internal/provider/openai"
 	"github.com/lutefd/luc/internal/tools"
 	"github.com/lutefd/luc/internal/workspace"
@@ -44,7 +45,7 @@ var newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
 func init() {
 	// Seed the default provider registry at package load so the TUI
 	// model-selection modal can enumerate built-ins immediately.
-	seedDefaultRegistry()
+	provider.SetDefaultRegistry(seedDefaultRegistry())
 }
 
 type Controller struct {
@@ -53,6 +54,7 @@ type Controller struct {
 	store     *history.Store
 	logger    *logging.Manager
 	provider  provider.Provider
+	registry  *provider.Registry
 	tools     *tools.Manager
 
 	session history.SessionMeta
@@ -111,6 +113,10 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		return nil, err
 	}
 
+	if err := extensions.EnsureGlobalRuntime(); err != nil {
+		return nil, err
+	}
+
 	cfg, err := config.Load(ws.Root)
 	if err != nil {
 		return nil, err
@@ -120,6 +126,12 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	registry, err := loadProviderRegistry(ws.Root)
+	if err != nil {
+		return nil, err
+	}
+	provider.SetDefaultRegistry(registry)
 
 	store := history.NewStore(ws.StateDir)
 	providerClient, err := newProvider(cfg.Provider)
@@ -141,6 +153,7 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		store:        store,
 		logger:       logger,
 		provider:     providerClient,
+		registry:     registry,
 		tools:        toolManager,
 		events:       make(chan history.EventEnvelope, 256),
 		skills:       skills,
@@ -190,6 +203,9 @@ func (c *Controller) LogEntries() []logging.Entry {
 // modal. Exposed so the TUI can read available models without importing the
 // package-level default directly.
 func (c *Controller) Registry() *provider.Registry {
+	if c.registry != nil {
+		return c.registry
+	}
 	return provider.DefaultRegistry()
 }
 
@@ -201,7 +217,7 @@ func (c *Controller) SwitchModel(modelID string) error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
 
-	reg := provider.DefaultRegistry()
+	reg := c.Registry()
 	model, providerDef, ok := reg.FindModel(modelID)
 	if !ok {
 		// Allow arbitrary model IDs (e.g. fine-tuned names) not in the
@@ -287,20 +303,23 @@ func (c *Controller) Reload(ctx context.Context) error {
 		return err
 	}
 
-	c.config = cfg
-	c.systemPrompt = c.loadSystemPrompt()
+	systemPrompt := c.loadSystemPrompt()
 	skills, err := extensions.LoadSkills(c.workspace.Root)
 	if err != nil {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
 		return err
 	}
-	c.skills = skills
 	toolManager, err := tools.NewManager(c.workspace.Root)
 	if err != nil {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
 		return err
 	}
-	c.tools = toolManager
+	registry, err := loadProviderRegistry(c.workspace.Root)
+	if err != nil {
+		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
+		return err
+	}
+	provider.SetDefaultRegistry(registry)
 
 	client, err := newProvider(cfg.Provider)
 	if err != nil {
@@ -308,6 +327,11 @@ func (c *Controller) Reload(ctx context.Context) error {
 		return err
 	}
 
+	c.config = cfg
+	c.systemPrompt = systemPrompt
+	c.skills = skills
+	c.tools = toolManager
+	c.registry = registry
 	c.provider = client
 	version := c.version.Add(1)
 	c.emit("reload.finished", history.ReloadPayload{Version: version})
@@ -597,6 +621,57 @@ func (c *Controller) configureSessionProvider(meta history.SessionMeta) error {
 	}
 	c.provider = client
 	return nil
+}
+
+func loadProviderRegistry(workspaceRoot string) (*provider.Registry, error) {
+	reg := seedDefaultRegistry()
+	defs, err := extensions.LoadProviderDefs(workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, def := range defs {
+		reg.Register(runtimeProviderDef(def))
+	}
+	return reg, nil
+}
+
+func runtimeProviderDef(def extensions.ProviderDef) provider.ProviderDef {
+	runtimeDef := def
+	models := make([]provider.ModelDef, 0, len(runtimeDef.Models))
+	for _, model := range runtimeDef.Models {
+		models = append(models, provider.ModelDef{
+			ID:          model.ID,
+			Name:        model.Name,
+			Description: model.Description,
+			ContextK:    model.ContextK,
+			Provider:    runtimeDef.ID,
+			Reasoning:   model.Reasoning,
+		})
+	}
+
+	return provider.ProviderDef{
+		ID:   runtimeDef.ID,
+		Name: runtimeDef.Name,
+		Factory: func(cfg config.ProviderConfig) (provider.Provider, error) {
+			switch runtimeDef.Type {
+			case "exec":
+				return execprovider.New(cfg, execprovider.Spec{
+					Name:    runtimeDef.Name,
+					Command: runtimeDef.Command,
+					Args:    runtimeDef.Args,
+					Env:     runtimeDef.Env,
+					Dir:     filepath.Dir(runtimeDef.SourcePath),
+				})
+			default:
+				runtimeCfg := cfg
+				runtimeCfg.Kind = runtimeDef.ID
+				runtimeCfg.BaseURL = runtimeDef.BaseURL
+				runtimeCfg.APIKeyEnv = runtimeDef.APIKeyEnv
+				return openai.New(runtimeCfg)
+			}
+		},
+		Models: models,
+	}
 }
 
 func (c *Controller) replay(ev history.EventEnvelope) {

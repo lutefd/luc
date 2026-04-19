@@ -3,14 +3,24 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 )
 
+type ContentPart struct {
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content,omitempty"`
+	Parts      []ContentPart `json:"parts,omitempty"`
+	Name       string        `json:"name,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
 }
 
 type ToolCall struct {
@@ -51,4 +61,32 @@ type Request struct {
 type Provider interface {
 	Name() string
 	Start(ctx context.Context, req Request) (Stream, error)
+}
+
+func (m Message) ContentParts() []ContentPart {
+	if len(m.Parts) > 0 {
+		out := make([]ContentPart, len(m.Parts))
+		copy(out, m.Parts)
+		return out
+	}
+	if m.Content == "" {
+		return nil
+	}
+	return []ContentPart{{
+		Type: "text",
+		Text: m.Content,
+	}}
+}
+
+func (m Message) TextContent() string {
+	if len(m.Parts) == 0 {
+		return m.Content
+	}
+	var builder strings.Builder
+	for _, part := range m.Parts {
+		if part.Type == "text" {
+			builder.WriteString(part.Text)
+		}
+	}
+	return builder.String()
 }

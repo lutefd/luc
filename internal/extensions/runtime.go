@@ -68,6 +68,27 @@ type ThemeDef struct {
 	SourcePath string
 }
 
+type ProviderModelDef struct {
+	ID          string
+	Name        string
+	Description string
+	ContextK    int
+	Reasoning   bool
+}
+
+type ProviderDef struct {
+	ID         string
+	Name       string
+	Type       string
+	BaseURL    string
+	APIKeyEnv  string
+	Command    string
+	Args       []string
+	Env        map[string]string
+	Models     []ProviderModelDef
+	SourcePath string
+}
+
 func LoadToolDefs(workspaceRoot string) ([]ToolDef, error) {
 	dirs, err := categoryDirs(workspaceRoot, "tools")
 	if err != nil {
@@ -104,6 +125,46 @@ func LoadToolDefs(workspaceRoot string) ([]ToolDef, error) {
 	out := make([]ToolDef, 0, len(names))
 	for _, name := range names {
 		out = append(out, byName[name])
+	}
+	return out, nil
+}
+
+func LoadProviderDefs(workspaceRoot string) ([]ProviderDef, error) {
+	dirs, err := categoryDirs(workspaceRoot, "providers")
+	if err != nil {
+		return nil, err
+	}
+
+	byID := map[string]ProviderDef{}
+	var errs []error
+	for _, dir := range dirs {
+		paths, err := listManifestFiles(dir, false)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, path := range paths {
+			def, err := parseProviderDef(path)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			byID[strings.ToLower(def.ID)] = def
+		}
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	out := make([]ProviderDef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, byID[id])
 	}
 	return out, nil
 }
@@ -461,6 +522,94 @@ func parseToolDef(path string) (ToolDef, error) {
 	}, nil
 }
 
+func parseProviderDef(path string) (ProviderDef, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ProviderDef{}, err
+	}
+
+	var raw struct {
+		ID        string            `yaml:"id" json:"id"`
+		Name      string            `yaml:"name" json:"name"`
+		Type      string            `yaml:"type" json:"type"`
+		Kind      string            `yaml:"kind" json:"kind"`
+		BaseURL   string            `yaml:"base_url" json:"base_url"`
+		APIKeyEnv string            `yaml:"api_key_env" json:"api_key_env"`
+		Command   string            `yaml:"command" json:"command"`
+		Args      []string          `yaml:"args" json:"args"`
+		Env       map[string]string `yaml:"env" json:"env"`
+		Models    []struct {
+			ID          string `yaml:"id" json:"id"`
+			Name        string `yaml:"name" json:"name"`
+			Description string `yaml:"description" json:"description"`
+			ContextK    int    `yaml:"context_k" json:"context_k"`
+			Reasoning   bool   `yaml:"reasoning" json:"reasoning"`
+		} `yaml:"models" json:"models"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return ProviderDef{}, fmt.Errorf("%s: %w", path, err)
+	}
+
+	id := strings.TrimSpace(raw.ID)
+	if id == "" {
+		id = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	if id == "" {
+		return ProviderDef{}, fmt.Errorf("%s: provider id is required", path)
+	}
+
+	providerType := strings.TrimSpace(firstNonEmpty(raw.Type, raw.Kind, "openai-compatible"))
+	switch providerType {
+	case "openai-compatible", "openai", "exec":
+	default:
+		return ProviderDef{}, fmt.Errorf("%s: unsupported provider type %q", path, providerType)
+	}
+
+	baseURL := strings.TrimSpace(raw.BaseURL)
+	command := strings.TrimSpace(raw.Command)
+	switch providerType {
+	case "openai-compatible", "openai":
+		if baseURL == "" {
+			return ProviderDef{}, fmt.Errorf("%s: base_url is required", path)
+		}
+	case "exec":
+		if command == "" {
+			return ProviderDef{}, fmt.Errorf("%s: command is required for exec providers", path)
+		}
+	}
+	if len(raw.Models) == 0 {
+		return ProviderDef{}, fmt.Errorf("%s: at least one model is required", path)
+	}
+
+	models := make([]ProviderModelDef, 0, len(raw.Models))
+	for i, model := range raw.Models {
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "" {
+			return ProviderDef{}, fmt.Errorf("%s: models[%d].id is required", path, i)
+		}
+		models = append(models, ProviderModelDef{
+			ID:          modelID,
+			Name:        strings.TrimSpace(firstNonEmpty(model.Name, modelID)),
+			Description: strings.TrimSpace(model.Description),
+			ContextK:    model.ContextK,
+			Reasoning:   model.Reasoning,
+		})
+	}
+
+	return ProviderDef{
+		ID:         id,
+		Name:       strings.TrimSpace(firstNonEmpty(raw.Name, id)),
+		Type:       providerType,
+		BaseURL:    baseURL,
+		APIKeyEnv:  strings.TrimSpace(raw.APIKeyEnv),
+		Command:    command,
+		Args:       append([]string(nil), raw.Args...),
+		Env:        mapsClone(raw.Env),
+		Models:     models,
+		SourcePath: path,
+	}, nil
+}
+
 func parseSkillSource(source skillSource) (Skill, error) {
 	switch {
 	case source.LegacyPath != "":
@@ -664,4 +813,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func mapsClone(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }

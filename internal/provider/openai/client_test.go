@@ -13,7 +13,7 @@ import (
 	"github.com/lutefd/luc/internal/provider"
 )
 
-func TestNewRequiresAPIKeyEnv(t *testing.T) {
+func TestNewRequiresConfiguredAPIKeyEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	_, err := New(config.ProviderConfig{
 		BaseURL:   "https://api.openai.com/v1",
@@ -22,6 +22,19 @@ func TestNewRequiresAPIKeyEnv(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected missing env error")
+	}
+}
+
+func TestNewAllowsProvidersWithoutAPIKeyEnv(t *testing.T) {
+	client, err := New(config.ProviderConfig{
+		BaseURL: "http://localhost:8080/v1",
+		Model:   "gateway-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.apiKey != "" {
+		t.Fatalf("expected empty API key, got %#v", client)
 	}
 }
 
@@ -120,6 +133,36 @@ func TestResponseInputFromProviderPreservesToolMessages(t *testing.T) {
 	}
 }
 
+func TestResponseInputFromProviderSupportsImageParts(t *testing.T) {
+	input := responseInputFromProvider([]provider.Message{
+		{
+			Role: "user",
+			Parts: []provider.ContentPart{
+				{Type: "text", Text: "describe this"},
+				{Type: "image", MediaType: "image/png", Data: "aGVsbG8="},
+			},
+		},
+	})
+
+	if len(input) != 1 {
+		t.Fatalf("expected one input item, got %#v", input)
+	}
+
+	msg, ok := input[0].(responseMessageInput)
+	if !ok {
+		t.Fatalf("expected message input, got %#v", input[0])
+	}
+	if len(msg.Content) != 2 {
+		t.Fatalf("expected two content parts, got %#v", msg)
+	}
+	if msg.Content[0].Type != "input_text" || msg.Content[0].Text != "describe this" {
+		t.Fatalf("unexpected text content %#v", msg.Content[0])
+	}
+	if msg.Content[1].Type != "input_image" || msg.Content[1].ImageURL != "data:image/png;base64,aGVsbG8=" {
+		t.Fatalf("unexpected image content %#v", msg.Content[1])
+	}
+}
+
 func TestStartUsesResponsesAPIAndOmitsTemperatureForGPT5(t *testing.T) {
 	var (
 		path string
@@ -202,5 +245,39 @@ func TestStartUsesResponsesAPIAndOmitsTemperatureForGPT5(t *testing.T) {
 	}
 	if tool["strict"] != false {
 		t.Fatalf("expected strict=false for responses tools, got %#v", tool)
+	}
+}
+
+func TestStartOmitsAuthorizationHeaderWhenNoAPIKeyConfigured(t *testing.T) {
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer server.Close()
+
+	client, err := New(config.ProviderConfig{
+		BaseURL: server.URL,
+		Model:   "gateway-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := client.Start(t.Context(), provider.Request{
+		Model:    "gateway-model",
+		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	if _, err := stream.Recv(); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "" {
+		t.Fatalf("expected no authorization header, got %q", auth)
 	}
 }

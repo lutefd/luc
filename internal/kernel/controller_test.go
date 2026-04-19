@@ -187,6 +187,46 @@ func TestNewStartsFreshSessionInsteadOfLatest(t *testing.T) {
 	}
 }
 
+func TestNewBootstrapsGlobalRuntime(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &fakeProvider{}, nil
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, ".luc")); !os.IsNotExist(err) {
+		t.Fatalf("expected clean home before bootstrap, err=%v", err)
+	}
+
+	if _, err := New(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{
+		filepath.Join(home, ".luc", "tools"),
+		filepath.Join(home, ".luc", "providers"),
+		filepath.Join(home, ".luc", "skills", "runtime-extension-authoring", "SKILL.md"),
+		filepath.Join(home, ".luc", "skills", "skill-usage", "SKILL.md"),
+		filepath.Join(home, ".luc", "skills", "theme-creator", "SKILL.md"),
+		filepath.Join(home, ".luc", "themes"),
+		filepath.Join(home, ".luc", "prompts"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected bootstrap path %q: %v", path, err)
+		}
+	}
+}
+
 func TestControllerCommandsAndReload(t *testing.T) {
 	oldFactory := newProvider
 	defer func() { newProvider = oldFactory }()
@@ -633,6 +673,176 @@ func TestControllerSwitchModelUpdatesSessionMeta(t *testing.T) {
 	}
 	if meta.Model != "gpt-5.4" {
 		t.Fatalf("expected persisted model gpt-5.4, got %q", meta.Model)
+	}
+}
+
+func TestLoadProviderRegistryIncludesRuntimeProviders(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "gateway.yaml"), []byte(`id: gateway
+name: Private Gateway
+base_url: http://localhost:8080/v1
+models:
+  - id: private-model
+    name: Private Model
+    description: Local gateway model
+    context_k: 512
+    reasoning: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := loadProviderRegistry(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model, providerDef, ok := reg.FindModel("private-model")
+	if !ok {
+		t.Fatalf("expected runtime provider model in registry, got %#v", reg.AllModels())
+	}
+	if providerDef.ID != "gateway" || providerDef.Name != "Private Gateway" {
+		t.Fatalf("unexpected runtime provider def: %#v", providerDef)
+	}
+	if model.Provider != "gateway" || model.ContextK != 512 || !model.Reasoning {
+		t.Fatalf("unexpected runtime model def: %#v", model)
+	}
+}
+
+func TestControllerSwitchModelUsesRuntimeProviderRegistry(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &fakeProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "gateway.yaml"), []byte(`id: gateway
+name: Private Gateway
+base_url: http://localhost:8080/v1
+models:
+  - id: private-model
+    name: Private Model
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := controller.Registry().FindModel("private-model"); !ok {
+		t.Fatalf("expected runtime provider model in controller registry, got %#v", controller.Registry().AllModels())
+	}
+
+	if err := controller.SwitchModel("private-model"); err != nil {
+		t.Fatal(err)
+	}
+	if controller.Session().Provider != "gateway" {
+		t.Fatalf("expected runtime provider kind, got %#v", controller.Session())
+	}
+	if controller.Session().Model != "private-model" {
+		t.Fatalf("expected runtime provider model, got %#v", controller.Session())
+	}
+}
+
+func TestControllerExecRuntimeProviderRunsToolLoop(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &fakeProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	providerDir := filepath.Join(root, ".luc", "providers")
+	if err := os.MkdirAll(providerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(providerDir, "adapter.sh")
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+input="$(cat)"
+if printf '%s' "$input" | grep -q '"tool_call_id":"call_1"'; then
+  cat <<'EOF'
+{"type":"text_delta","text":"tool finished"}
+{"type":"done","completed":true}
+EOF
+else
+  cat <<'EOF'
+{"type":"tool_call","tool_call":{"id":"call_1","name":"read","arguments":"{\"path\":\"go.mod\"}"}}
+{"type":"done","completed":true}
+EOF
+fi
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(providerDir, "meli.yaml"), []byte(`id: meli
+name: Meli Gateway
+type: exec
+command: ./adapter.sh
+models:
+  - id: meli-model
+    name: Meli Model
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module luc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.SwitchModel("meli-model"); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "run the adapter"); err != nil {
+		t.Fatal(err)
+	}
+
+	conversation := controller.snapshotConversation()
+	if len(conversation) < 4 {
+		t.Fatalf("expected conversation with tool loop, got %#v", conversation)
+	}
+	last := conversation[len(conversation)-1]
+	if last.Role != "assistant" || last.Content != "tool finished" {
+		t.Fatalf("expected final assistant text from exec provider, got %#v", last)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawTool bool
+	for _, ev := range stored {
+		if ev.Kind == "tool.finished" {
+			sawTool = true
+			break
+		}
+	}
+	if !sawTool {
+		t.Fatalf("expected tool.finished event in %#v", stored)
 	}
 }
 
