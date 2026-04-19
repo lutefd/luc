@@ -558,6 +558,11 @@ func (t *runtimeTool) runStructured(ctx context.Context, req Request) (Result, e
 		_ = cmd.Wait()
 		return Result{}, err
 	}
+	stdinOpen := true
+	if !luruntime.HasCapability(t.def.Capabilities, luruntime.CapabilityClientAction) {
+		_ = stdin.Close()
+		stdinOpen = false
+	}
 
 	var stderrBuf bytes.Buffer
 	stderrDone := make(chan struct{})
@@ -579,7 +584,9 @@ func (t *runtimeTool) runStructured(ctx context.Context, req Request) (Result, e
 
 		var event luruntime.ToolEvent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			_ = stdin.Close()
+			if stdinOpen {
+				_ = stdin.Close()
+			}
 			_ = stdout.Close()
 			_ = cmd.Wait()
 			return Result{}, err
@@ -649,7 +656,9 @@ func (t *runtimeTool) runStructured(ctx context.Context, req Request) (Result, e
 	}
 
 done:
-	_ = stdin.Close()
+	if stdinOpen {
+		_ = stdin.Close()
+	}
 	_ = stdout.Close()
 	waitErr := cmd.Wait()
 	<-stderrDone

@@ -115,3 +115,68 @@ input_schema:
 		t.Fatalf("unexpected client result %#v", clientResult)
 	}
 }
+
+func TestStructuredRuntimeToolClosesStdinWhenClientActionsAreDisabled(t *testing.T) {
+	root := t.TempDir()
+	requestPath := filepath.Join(root, "request.json")
+	scriptPath := filepath.Join(root, ".luc", "tools", "cowboy_status.sh")
+	manifestPath := filepath.Join(root, ".luc", "tools", "cowboy_status.yaml")
+
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+request=$(cat)
+printf '%s' "$request" > "`+requestPath+`"
+printf '%s\n' '{"type":"result","result":{"content":"ok"}}'
+printf '%s\n' '{"type":"done","done":true}'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, []byte(`schema: luc.tool/v1
+name: cowboy_status
+description: Read cowboy status.
+runtime:
+  kind: exec
+  command: ./.luc/tools/cowboy_status.sh
+  capabilities:
+    - structured_io
+input_schema:
+  type: object
+  properties: {}
+timeout_seconds: 1
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.Run(context.Background(), Request{
+		Name:      "cowboy_status",
+		Arguments: `{}`,
+		Workspace: root,
+		SessionID: "sess_1",
+		AgentID:   "root",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "ok" {
+		t.Fatalf("expected structured tool result, got %#v", result)
+	}
+
+	data, err := os.ReadFile(requestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope luruntime.ToolRequestEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ToolName != "cowboy_status" {
+		t.Fatalf("unexpected structured request %#v", envelope)
+	}
+}
