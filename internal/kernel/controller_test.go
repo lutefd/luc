@@ -5,22 +5,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lutefd/luc/internal/config"
+	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/provider"
+	"github.com/lutefd/luc/internal/tools"
 )
 
 type fakeProvider struct {
-	streams [][]provider.Event
-	index   int
+	streams     [][]provider.Event
+	index       int
+	lastRequest provider.Request
+	requests    []provider.Request
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
 
 func (p *fakeProvider) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
 	_ = ctx
-	_ = req
+	p.lastRequest = req
+	p.requests = append(p.requests, req)
 	events := p.streams[p.index]
 	p.index++
 	return &fakeStream{events: events}, nil
@@ -259,6 +265,306 @@ func TestControllerCommandsAndReload(t *testing.T) {
 	}
 	if !foundHelp || !foundUnknown || !foundReload {
 		t.Fatalf("expected command/reload events, got %#v", stored)
+	}
+}
+
+func TestControllerAdvertisesSkillsAndLoadsBodyOnToolCall(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "tool_call", ToolCall: provider.ToolCall{
+					ID:        "call_skill",
+					Name:      skillToolName,
+					Arguments: `{"name":"rails"}`,
+				}},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "skills", "rails"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "skills", "rails", "luc.yaml"), []byte(`interface:
+  display_name: Rails
+  short_description: Ruby on Rails workflow for migrations and generators.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skill := `---
+name: rails
+description: Ruby on Rails workflow for migrations and generators.
+---
+Prefer bin/rails, migrations, and framework conventions.
+`
+	if err := os.WriteFile(filepath.Join(root, ".luc", "skills", "rails", "SKILL.md"), []byte(skill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "help with rails migration"); err != nil {
+		t.Fatal(err)
+	}
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected two provider requests, got %d", len(providerStub.requests))
+	}
+	first := providerStub.requests[0]
+	if !strings.Contains(first.System, "Available skills:") || !strings.Contains(first.System, "rails (Rails): Ruby on Rails workflow for migrations and generators.") {
+		t.Fatalf("expected skill catalog in system prompt, got %q", first.System)
+	}
+	if strings.Contains(first.System, "Prefer bin/rails") {
+		t.Fatalf("did not expect full skill body in initial system prompt, got %q", first.System)
+	}
+	second := providerStub.requests[1]
+	found := false
+	for _, msg := range second.Messages {
+		if msg.Role == "tool" && msg.Name == skillToolName && strings.Contains(msg.Content, "<skill_content name=\"rails\">") && strings.Contains(msg.Content, "Prefer bin/rails") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected loaded skill content in follow-up messages, got %#v", second.Messages)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden := false
+	for _, ev := range stored {
+		if ev.Kind != "tool.finished" {
+			continue
+		}
+		payload := decode[history.ToolResultPayload](ev.Payload)
+		if payload.Name != skillToolName {
+			continue
+		}
+		if got, _ := payload.Metadata[tools.MetadataUIHideContent].(bool); got {
+			hidden = true
+			break
+		}
+	}
+	if !hidden {
+		t.Fatal("expected load_skill tool results to hide transcript content")
+	}
+}
+
+func TestControllerProjectSkillOverrideWinsOverGlobal(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "tool_call", ToolCall: provider.ToolCall{
+					ID:        "call_skill",
+					Name:      skillToolName,
+					Arguments: `{"name":"rails"}`,
+				}},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".luc", "skills", "rails"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".luc", "skills", "rails", "luc.yaml"), []byte(`interface:
+  short_description: Global rails workflow.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".luc", "skills", "rails", "SKILL.md"), []byte(`---
+name: rails
+description: Global rails workflow.
+---
+Use the global rails workflow.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "skills", "rails"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "skills", "rails", "luc.yaml"), []byte(`interface:
+  short_description: Project-specific rails workflow.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "skills", "rails", "SKILL.md"), []byte(`---
+name: rails
+description: Project-specific rails workflow.
+---
+Use the project-specific rails workflow.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "rails help"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(providerStub.requests[0].System, "Project-specific rails workflow.") || strings.Contains(providerStub.requests[0].System, "Global rails workflow.") {
+		t.Fatalf("expected project skill override in catalog, got %q", providerStub.requests[0].System)
+	}
+	found := false
+	for _, msg := range providerStub.requests[1].Messages {
+		if msg.Role == "tool" && msg.Name == skillToolName && strings.Contains(msg.Content, "Use the project-specific rails workflow.") && !strings.Contains(msg.Content, "Use the global rails workflow.") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected project skill body in tool output, got %#v", providerStub.requests[1].Messages)
+	}
+}
+
+func TestControllerSkillCatalogIncludesBuiltins(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "show me the current branch"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(providerStub.lastRequest.System, "theme-creator (Theme Creator): Create or update luc themes that can be inserted at runtime.") {
+		t.Fatalf("expected builtin theme skill in catalog, got %q", providerStub.lastRequest.System)
+	}
+}
+
+func TestControllerLoadSkillOnlyReturnsFullBodyOncePerSession(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "tool_call", ToolCall: provider.ToolCall{ID: "call_skill_1", Name: skillToolName, Arguments: `{"name":"rails"}`}},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "tool_call", ToolCall: provider.ToolCall{ID: "call_skill_2", Name: skillToolName, Arguments: `{"name":"rails"}`}},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "skills", "rails"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "skills", "rails", "SKILL.md"), []byte(`---
+name: rails
+description: Rails workflow.
+---
+Prefer bin/rails.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+
+	var firstTool, secondTool string
+	for _, msg := range providerStub.requests[1].Messages {
+		if msg.Role == "tool" && msg.Name == skillToolName {
+			firstTool = msg.Content
+		}
+	}
+	for _, msg := range providerStub.requests[3].Messages {
+		if msg.Role == "tool" && msg.Name == skillToolName {
+			secondTool = msg.Content
+		}
+	}
+	if !strings.Contains(firstTool, "Prefer bin/rails.") {
+		t.Fatalf("expected first load to include full skill body, got %q", firstTool)
+	}
+	if !strings.Contains(secondTool, "already loaded in this session") {
+		t.Fatalf("expected second load to dedupe, got %q", secondTool)
 	}
 }
 

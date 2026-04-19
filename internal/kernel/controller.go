@@ -6,20 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/lutefd/luc/internal/config"
+	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/provider"
 	"github.com/lutefd/luc/internal/provider/openai"
 	"github.com/lutefd/luc/internal/tools"
 	"github.com/lutefd/luc/internal/workspace"
+)
+
+const (
+	skillToolName         = "load_skill"
+	skillResourceToolName = "read_skill_resource"
 )
 
 var newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
@@ -59,6 +67,8 @@ type Controller struct {
 	sessionSaved bool
 	conversation []provider.Message
 	systemPrompt string
+	skills       []extensions.Skill
+	loadedSkills map[string]struct{}
 }
 
 func New(ctx context.Context, cwd string) (*Controller, error) {
@@ -116,15 +126,25 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 	if err != nil {
 		logger.Ring.Add("error", err.Error())
 	}
+	toolManager, err := tools.NewManager(ws.Root)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := extensions.LoadSkills(ws.Root)
+	if err != nil {
+		return nil, err
+	}
 
 	controller := &Controller{
-		workspace: ws,
-		config:    cfg,
-		store:     store,
-		logger:    logger,
-		provider:  providerClient,
-		tools:     tools.NewManager(ws.Root),
-		events:    make(chan history.EventEnvelope, 256),
+		workspace:    ws,
+		config:       cfg,
+		store:        store,
+		logger:       logger,
+		provider:     providerClient,
+		tools:        toolManager,
+		events:       make(chan history.EventEnvelope, 256),
+		skills:       skills,
+		loadedSkills: make(map[string]struct{}),
 	}
 	controller.version.Store(1)
 	controller.systemPrompt = controller.loadSystemPrompt()
@@ -233,6 +253,30 @@ func (c *Controller) SwitchModel(modelID string) error {
 	return nil
 }
 
+// SetTheme updates the in-memory UI theme name. The TUI is responsible for
+// reloading theme styles and rebuilding its views; this method only mutates
+// configuration state so that subsequent reads see the new value. The change
+// is not persisted to disk.
+func (c *Controller) SetTheme(name string) {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+
+	name = strings.TrimSpace(name)
+	if c.config.UI.Theme == name {
+		return
+	}
+	c.config.UI.Theme = name
+
+	displayed := name
+	if displayed == "" {
+		displayed = "default"
+	}
+	c.emit("system.note", history.MessagePayload{
+		ID:      nextID("note"),
+		Content: fmt.Sprintf("switched theme to %s", displayed),
+	})
+}
+
 func (c *Controller) Reload(ctx context.Context) error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
@@ -245,6 +289,18 @@ func (c *Controller) Reload(ctx context.Context) error {
 
 	c.config = cfg
 	c.systemPrompt = c.loadSystemPrompt()
+	skills, err := extensions.LoadSkills(c.workspace.Root)
+	if err != nil {
+		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
+		return err
+	}
+	c.skills = skills
+	toolManager, err := tools.NewManager(c.workspace.Root)
+	if err != nil {
+		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
+		return err
+	}
+	c.tools = toolManager
 
 	client, err := newProvider(cfg.Provider)
 	if err != nil {
@@ -295,12 +351,18 @@ func (c *Controller) Submit(ctx context.Context, input string) error {
 	c.appendMessage(provider.Message{Role: "user", Content: text})
 	c.updateTitle(text)
 
+	systemPrompt, err := c.composeSystemPrompt(text)
+	if err != nil {
+		c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
+		return err
+	}
+
 	for range 8 {
 		stream, err := c.provider.Start(ctx, provider.Request{
 			Model:       c.config.Provider.Model,
-			System:      c.systemPrompt,
+			System:      systemPrompt,
 			Messages:    c.snapshotConversation(),
-			Tools:       c.tools.Specs(),
+			Tools:       c.toolSpecs(),
 			Temperature: c.config.Provider.Temperature,
 			MaxTokens:   c.config.Provider.MaxTokens,
 		})
@@ -376,13 +438,7 @@ func (c *Controller) Submit(ctx context.Context, input string) error {
 					Name:      call.Name,
 					Arguments: call.Arguments,
 				})
-				result, err := c.tools.Run(ctx, tools.Request{
-					Name:      call.Name,
-					Arguments: call.Arguments,
-					Workspace: c.workspace.Root,
-					SessionID: c.session.SessionID,
-					AgentID:   "root",
-				})
+				result, err := c.runToolCall(ctx, call)
 				payload := history.ToolResultPayload{
 					ID:       call.ID,
 					Name:     call.Name,
@@ -511,6 +567,7 @@ func (c *Controller) applySession(meta history.SessionMeta, events []history.Eve
 	c.sessionSaved = len(events) > 0
 	c.seq.Store(0)
 	c.initial = append([]history.EventEnvelope(nil), events...)
+	c.loadedSkills = make(map[string]struct{})
 	c.mu.Lock()
 	c.conversation = nil
 	c.mu.Unlock()
@@ -563,6 +620,11 @@ func (c *Controller) replay(ev history.EventEnvelope) {
 		c.conversation = append(c.conversation, msg)
 	case "tool.finished":
 		payload := decode[history.ToolResultPayload](ev.Payload)
+		if payload.Name == "load_skill" {
+			if skillName, _ := payload.Metadata["skill_name"].(string); strings.TrimSpace(skillName) != "" {
+				c.loadedSkills[strings.ToLower(skillName)] = struct{}{}
+			}
+		}
 		c.conversation = append(c.conversation, provider.Message{
 			Role:       "tool",
 			ToolCallID: payload.ID,
@@ -589,16 +651,340 @@ func (c *Controller) snapshotConversation() []provider.Message {
 
 func (c *Controller) loadSystemPrompt() string {
 	base := "You are luc, a local coding agent. Work inside the workspace, explain actions clearly, and prefer the smallest correct change."
-	path := filepath.Join(c.workspace.StateDir, "prompts", "system.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return base
+	paths := []string{}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".luc", "prompts", "system.md"))
 	}
-	content := strings.TrimSpace(string(data))
-	if content == "" {
-		return base
+	paths = append(paths, filepath.Join(c.workspace.StateDir, "prompts", "system.md"))
+
+	content := base
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if candidate := strings.TrimSpace(string(data)); candidate != "" {
+			content = candidate
+		}
 	}
 	return content
+}
+
+func (c *Controller) composeSystemPrompt(input string) (string, error) {
+	_ = input
+	var builder strings.Builder
+	builder.WriteString(c.systemPrompt)
+	if catalog := c.skillCatalog(); strings.TrimSpace(catalog) != "" {
+		builder.WriteString("\n\nAvailable skills:\n")
+		builder.WriteString("Use the `load_skill` tool when a task matches a skill's description or the user explicitly names one.\n")
+		builder.WriteString("After loading a skill, follow its instructions and use `read_skill_resource` for referenced bundled files when needed.\n\n")
+		builder.WriteString(catalog)
+	}
+	return strings.TrimSpace(builder.String()), nil
+}
+
+func (c *Controller) skillCatalog() string {
+	if len(c.skills) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	for _, skill := range c.skills {
+		label := strings.TrimSpace(skill.DisplayName)
+		if label == "" {
+			label = skill.Name
+		}
+		builder.WriteString("- ")
+		builder.WriteString(skill.Name)
+		if label != "" && label != skill.Name {
+			builder.WriteString(" (")
+			builder.WriteString(label)
+			builder.WriteString(")")
+		}
+		if desc := strings.TrimSpace(skill.Description); desc != "" {
+			builder.WriteString(": ")
+			builder.WriteString(desc)
+		}
+		builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func (c *Controller) toolSpecs() []provider.ToolSpec {
+	specs := append([]provider.ToolSpec(nil), c.tools.Specs()...)
+	if spec := c.skillToolSpec(); spec.Name != "" {
+		specs = append(specs, spec)
+	}
+	if spec := c.skillResourceToolSpec(); spec.Name != "" {
+		specs = append(specs, spec)
+	}
+	return specs
+}
+
+func (c *Controller) skillToolSpec() provider.ToolSpec {
+	if len(c.skills) == 0 {
+		return provider.ToolSpec{}
+	}
+
+	enum := make([]string, 0, len(c.skills))
+	for _, skill := range c.skills {
+		enum = append(enum, fmt.Sprintf("%q", skill.Name))
+	}
+
+	return provider.ToolSpec{
+		Name: skillToolName,
+		Description: "Load the full instructions for an available skill by name. " +
+			"Use this when a task matches a skill's description or the user explicitly names a skill.",
+		Schema: json.RawMessage(fmt.Sprintf(`{
+			"type":"object",
+			"properties":{
+				"name":{"type":"string","enum":[%s]}
+			},
+			"required":["name"]
+		}`, strings.Join(enum, ","))),
+	}
+}
+
+func (c *Controller) skillResourceToolSpec() provider.ToolSpec {
+	if len(c.skills) == 0 {
+		return provider.ToolSpec{}
+	}
+
+	enum := make([]string, 0, len(c.skills))
+	for _, skill := range c.skills {
+		if strings.TrimSpace(skill.BaseDir) == "" {
+			continue
+		}
+		enum = append(enum, fmt.Sprintf("%q", skill.Name))
+	}
+	if len(enum) == 0 {
+		return provider.ToolSpec{}
+	}
+
+	return provider.ToolSpec{
+		Name: skillResourceToolName,
+		Description: "Read a bundled file referenced by a previously loaded skill. " +
+			"Paths are relative to the skill directory.",
+		Schema: json.RawMessage(fmt.Sprintf(`{
+			"type":"object",
+			"properties":{
+				"name":{"type":"string","enum":[%s]},
+				"path":{"type":"string"}
+			},
+			"required":["name","path"]
+		}`, strings.Join(enum, ","))),
+	}
+}
+
+func (c *Controller) runToolCall(ctx context.Context, call provider.ToolCall) (tools.Result, error) {
+	switch call.Name {
+	case skillToolName:
+		return c.runLoadSkillTool(call.Arguments)
+	case skillResourceToolName:
+		return c.runReadSkillResourceTool(call.Arguments)
+	default:
+		return c.tools.Run(ctx, tools.Request{
+			Name:      call.Name,
+			Arguments: call.Arguments,
+			Workspace: c.workspace.Root,
+			SessionID: c.session.SessionID,
+			AgentID:   "root",
+		})
+	}
+}
+
+func (c *Controller) runLoadSkillTool(raw string) (tools.Result, error) {
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return tools.Result{}, err
+	}
+	skill, ok := c.skillByName(args.Name)
+	if !ok {
+		return tools.Result{}, fmt.Errorf("unknown skill %q", args.Name)
+	}
+	if _, loaded := c.loadedSkills[strings.ToLower(skill.Name)]; loaded {
+		return normalizeCustomToolResult(tools.Result{
+			Content: fmt.Sprintf("skill %s is already loaded in this session", skill.Name),
+			Metadata: map[string]any{
+				"skill_name":                skill.Name,
+				"already_loaded":            true,
+				tools.MetadataUIHideContent: true,
+				tools.MetadataUILabel:       fmt.Sprintf("skill loaded %s", skill.Name),
+			},
+		}), nil
+	}
+	prompt, err := extensions.ResolveSkillPrompt(skill)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	c.loadedSkills[strings.ToLower(skill.Name)] = struct{}{}
+
+	label := strings.TrimSpace(skill.DisplayName)
+	if label == "" {
+		label = skill.Name
+	}
+	content := renderSkillContent(skill, label, prompt)
+	return normalizeCustomToolResult(tools.Result{
+		Content: content,
+		Metadata: map[string]any{
+			"skill_name":                skill.Name,
+			"skill_path":                skill.BodyPath,
+			"skill_dir":                 skill.BaseDir,
+			"resources":                 skillResources(skill),
+			tools.MetadataUIHideContent: true,
+			tools.MetadataUILabel:       fmt.Sprintf("skill loaded %s", skill.Name),
+		},
+	}), nil
+}
+
+func (c *Controller) runReadSkillResourceTool(raw string) (tools.Result, error) {
+	var args struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return tools.Result{}, err
+	}
+	skill, ok := c.skillByName(args.Name)
+	if !ok {
+		return tools.Result{}, fmt.Errorf("unknown skill %q", args.Name)
+	}
+	if strings.TrimSpace(skill.BaseDir) == "" {
+		return tools.Result{}, fmt.Errorf("skill %s has no bundled resources", skill.Name)
+	}
+	path, err := safeSkillPath(skill.BaseDir, args.Path)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	return normalizeCustomToolResult(tools.Result{
+		Content:          string(data),
+		DefaultCollapsed: true,
+		CollapsedSummary: fmt.Sprintf("Read %s from skill %s.", args.Path, skill.Name),
+		Metadata: map[string]any{
+			"skill_name": skill.Name,
+			"path":       path,
+		},
+	}), nil
+}
+
+func (c *Controller) skillByName(name string) (extensions.Skill, bool) {
+	target := strings.ToLower(strings.TrimSpace(name))
+	for _, skill := range c.skills {
+		if strings.ToLower(skill.Name) == target {
+			return skill, true
+		}
+	}
+	return extensions.Skill{}, false
+}
+
+func renderSkillContent(skill extensions.Skill, label, prompt string) string {
+	var builder strings.Builder
+	builder.WriteString("<skill_content name=\"")
+	builder.WriteString(skill.Name)
+	builder.WriteString("\">\n")
+	builder.WriteString("# ")
+	builder.WriteString(label)
+	builder.WriteString("\n\n")
+	if desc := strings.TrimSpace(skill.Description); desc != "" {
+		builder.WriteString(desc)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString(prompt)
+	if dir := strings.TrimSpace(skill.BaseDir); dir != "" {
+		builder.WriteString("\n\nSkill directory: ")
+		builder.WriteString(dir)
+		builder.WriteString("\nRelative paths in this skill are relative to the skill directory.")
+		if resources := skillResources(skill); len(resources) > 0 {
+			builder.WriteString("\n\n<skill_resources>\n")
+			for _, resource := range resources {
+				builder.WriteString("<file>")
+				builder.WriteString(resource)
+				builder.WriteString("</file>\n")
+			}
+			builder.WriteString("</skill_resources>")
+		}
+	}
+	builder.WriteString("\n</skill_content>")
+	return builder.String()
+}
+
+func skillResources(skill extensions.Skill) []string {
+	if strings.TrimSpace(skill.BaseDir) == "" {
+		return nil
+	}
+	var out []string
+	_ = filepath.WalkDir(skill.BaseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if samePath(path, skill.SourcePath) || samePath(path, skill.BodyPath) {
+			return nil
+		}
+		rel, err := filepath.Rel(skill.BaseDir, path)
+		if err != nil {
+			return nil
+		}
+		out = append(out, rel)
+		if len(out) >= 64 {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+func safeSkillPath(root, target string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return "", errors.New("path is required")
+	}
+	path := target
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes skill directory", target)
+	}
+	return path, nil
+}
+
+func samePath(a, b string) bool {
+	return strings.TrimSpace(a) != "" && strings.TrimSpace(a) == strings.TrimSpace(b)
+}
+
+func normalizeCustomToolResult(result tools.Result) tools.Result {
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	if hidden, _ := result.Metadata[tools.MetadataUIHideContent].(bool); hidden {
+		delete(result.Metadata, tools.MetadataUIDefaultCollapsed)
+		delete(result.Metadata, tools.MetadataUICollapsedSummary)
+		return result
+	}
+	if result.DefaultCollapsed {
+		result.Metadata[tools.MetadataUIDefaultCollapsed] = true
+	}
+	if summary := strings.TrimSpace(result.CollapsedSummary); summary != "" {
+		result.Metadata[tools.MetadataUICollapsedSummary] = summary
+	}
+	return result
 }
 
 func (c *Controller) updateTitle(input string) {

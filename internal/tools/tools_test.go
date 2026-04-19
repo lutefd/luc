@@ -11,7 +11,10 @@ import (
 
 func TestReadWriteEditAndListTools(t *testing.T) {
 	root := t.TempDir()
-	manager := NewManager(root)
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 
 	writeArgs, _ := json.Marshal(map[string]any{
@@ -70,7 +73,10 @@ func TestReadWriteEditAndListTools(t *testing.T) {
 
 func TestWriteAndEditIncludeDiffMetadata(t *testing.T) {
 	root := t.TempDir()
-	manager := NewManager(root)
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 
 	writeArgs, _ := json.Marshal(map[string]any{
@@ -101,7 +107,10 @@ func TestWriteAndEditIncludeDiffMetadata(t *testing.T) {
 
 func TestEditMissingTargetAndPathEscape(t *testing.T) {
 	root := t.TempDir()
-	manager := NewManager(root)
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("hello"), 0o644); err != nil {
@@ -127,7 +136,10 @@ func TestEditMissingTargetAndPathEscape(t *testing.T) {
 
 func TestBashToolSuccessAndTimeout(t *testing.T) {
 	root := t.TempDir()
-	manager := NewManager(root)
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 
 	successArgs, _ := json.Marshal(map[string]any{
@@ -155,8 +167,98 @@ func TestBashToolSuccessAndTimeout(t *testing.T) {
 }
 
 func TestUnknownTool(t *testing.T) {
-	manager := NewManager(t.TempDir())
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := manager.Run(context.Background(), Request{Name: "missing"}); err == nil {
 		t.Fatal("expected unknown tool error")
+	}
+}
+
+func TestRuntimeToolLoadsFromGlobalLucDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".luc", "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `name: echo
+description: Echo text through a runtime extension
+command: printf '{{ .text }}'
+schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+ui:
+  default_collapsed: true
+  collapsed_summary: Echoed {{ .text }}
+`
+	if err := os.WriteFile(filepath.Join(home, ".luc", "tools", "echo.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"text": "hello"})
+	result, err := manager.Run(context.Background(), Request{Name: "echo", Arguments: string(args)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Content) != "hello" {
+		t.Fatalf("expected runtime tool output, got %q", result.Content)
+	}
+	if collapsed, _ := result.Metadata[MetadataUIDefaultCollapsed].(bool); !collapsed {
+		t.Fatalf("expected runtime tool collapsed metadata, got %#v", result.Metadata)
+	}
+	if summary, _ := result.Metadata[MetadataUICollapsedSummary].(string); summary != "Echoed hello" {
+		t.Fatalf("expected runtime tool collapsed summary, got %#v", result.Metadata)
+	}
+}
+
+func TestRuntimeToolProjectOverrideWinsOverGlobal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".luc", "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalManifest := `name: echo
+description: global echo
+command: printf global
+schema:
+  type: object
+`
+	if err := os.WriteFile(filepath.Join(home, ".luc", "tools", "echo.yaml"), []byte(globalManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	localManifest := `name: echo
+description: local echo
+command: printf local
+schema:
+  type: object
+`
+	if err := os.WriteFile(filepath.Join(root, ".luc", "tools", "echo.yaml"), []byte(localManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Run(context.Background(), Request{Name: "echo", Arguments: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Content) != "local" {
+		t.Fatalf("expected project override tool output, got %q", result.Content)
 	}
 }

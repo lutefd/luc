@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"time"
 
 	udiff "github.com/aymanbagabas/go-udiff"
+	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/provider"
 )
 
@@ -33,6 +36,8 @@ type Result struct {
 const (
 	MetadataUIDefaultCollapsed = "ui_default_collapsed"
 	MetadataUICollapsedSummary = "ui_collapsed_summary"
+	MetadataUIHideContent      = "ui_hide_content"
+	MetadataUILabel            = "ui_label"
 )
 
 type Tool interface {
@@ -45,7 +50,7 @@ type Manager struct {
 	tools     map[string]Tool
 }
 
-func NewManager(workspaceRoot string) *Manager {
+func NewManager(workspaceRoot string) (*Manager, error) {
 	m := &Manager{
 		workspace: workspaceRoot,
 		tools:     make(map[string]Tool),
@@ -61,7 +66,15 @@ func NewManager(workspaceRoot string) *Manager {
 		m.tools[tool.Spec().Name] = tool
 	}
 
-	return m
+	defs, err := extensions.LoadToolDefs(workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, def := range defs {
+		m.tools[def.Name] = &runtimeTool{workspace: workspaceRoot, def: def}
+	}
+
+	return m, nil
 }
 
 func (m *Manager) Specs() []provider.ToolSpec {
@@ -418,6 +431,67 @@ func buildDiff(path, before, after string) string {
 	return strings.TrimSpace(diff)
 }
 
+type runtimeTool struct {
+	workspace string
+	def       extensions.ToolDef
+}
+
+func (t *runtimeTool) Spec() provider.ToolSpec {
+	return provider.ToolSpec{
+		Name:        t.def.Name,
+		Description: t.def.Description,
+		Schema:      t.def.Schema,
+	}
+}
+
+func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
+	args, err := decodeArgsMap(req.Arguments)
+	if err != nil {
+		return Result{}, err
+	}
+	command, err := renderTemplate(t.def.Command, templateData(args, req))
+	if err != nil {
+		return Result{}, err
+	}
+
+	timeout := 30 * time.Second
+	if t.def.TimeoutSeconds > 0 {
+		timeout = time.Duration(t.def.TimeoutSeconds) * time.Second
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "zsh", "-lc", command)
+	cmd.Dir = t.workspace
+	output, runErr := cmd.CombinedOutput()
+	timedOut := execCtx.Err() == context.DeadlineExceeded
+
+	metadata := map[string]any{
+		"command": command,
+		"timeout": timeout.String(),
+	}
+	if timedOut {
+		metadata["timed_out"] = true
+	}
+
+	result := Result{
+		Content:          string(output),
+		Metadata:         metadata,
+		DefaultCollapsed: t.def.UI.DefaultCollapsed,
+	}
+	if strings.TrimSpace(t.def.UI.CollapsedSummary) != "" {
+		summary, err := renderTemplate(t.def.UI.CollapsedSummary, templateDataWithOutput(args, req, command, string(output), timedOut))
+		if err != nil {
+			return Result{}, err
+		}
+		result.CollapsedSummary = summary
+	} else if result.DefaultCollapsed {
+		result.CollapsedSummary = summarizeOutput(string(output), timedOut)
+	}
+	return result, runErr
+}
+
 func normalizeResult(result Result) Result {
 	if result.Metadata == nil {
 		result.Metadata = map[string]any{}
@@ -460,4 +534,51 @@ func summarizeOutput(content string, timedOut bool) string {
 		summary += " Timed out."
 	}
 	return summary
+}
+
+func decodeArgsMap(raw string) (map[string]any, error) {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]any{}, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
+}
+
+func templateData(args map[string]any, req Request) map[string]any {
+	data := map[string]any{
+		"args":       args,
+		"workspace":  req.Workspace,
+		"session_id": req.SessionID,
+		"agent_id":   req.AgentID,
+	}
+	for key, value := range args {
+		data[key] = value
+	}
+	return data
+}
+
+func templateDataWithOutput(args map[string]any, req Request, command, output string, timedOut bool) map[string]any {
+	data := templateData(args, req)
+	data["command"] = command
+	data["output"] = output
+	data["timed_out"] = timedOut
+	return data
+}
+
+func renderTemplate(raw string, data map[string]any) (string, error) {
+	tpl, err := template.New("runtime-tool").Option("missingkey=error").Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	var out bytes.Buffer
+	if err := tpl.Execute(&out, data); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.String()), nil
 }
