@@ -88,7 +88,13 @@ func Update(mutate func(*State)) error {
 	return Save(s)
 }
 
+// filePath resolves the state file location. It honors the LUC_STATE_DIR
+// environment variable so tests (and users who want to sandbox luc) can
+// redirect state away from ~/.luc without touching the process's HOME.
 func filePath() (string, error) {
+	if dir := os.Getenv("LUC_STATE_DIR"); dir != "" {
+		return filepath.Join(dir, "state.yaml"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

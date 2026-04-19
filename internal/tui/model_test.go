@@ -12,6 +12,22 @@ import (
 	modelspicker "github.com/lutefd/luc/internal/tui/models"
 )
 
+// TestMain isolates the user-level state file for every test in this package.
+// Tests here boot a real kernel.Controller, which reads ~/.luc/state.yaml at
+// startup to overlay the user's persisted theme/model — without isolation the
+// developer's real preferences bleed in and cause flaky assertions (e.g. a
+// test that switches to gpt-5.4 already sees that model as the startup
+// default).
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "luc-tui-state-*")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	os.Setenv("LUC_STATE_DIR", dir)
+	os.Exit(m.Run())
+}
+
 func TestModelHandlesResizeToggleAndEvents(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
