@@ -1,0 +1,347 @@
+package extensions
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	luruntime "github.com/lutefd/luc/internal/runtime"
+	"gopkg.in/yaml.v3"
+)
+
+type uiManifest struct {
+	Schema                   string   `yaml:"schema" json:"schema"`
+	ID                       string   `yaml:"id" json:"id"`
+	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
+	Commands                 []struct {
+		ID     string `yaml:"id" json:"id"`
+		Name   string `yaml:"name" json:"name"`
+		Action struct {
+			Kind      string `yaml:"kind" json:"kind"`
+			ViewID    string `yaml:"view_id" json:"view_id"`
+			CommandID string `yaml:"command_id" json:"command_id"`
+		} `yaml:"action" json:"action"`
+	} `yaml:"commands" json:"commands"`
+	Views []struct {
+		ID         string `yaml:"id" json:"id"`
+		Title      string `yaml:"title" json:"title"`
+		Placement  string `yaml:"placement" json:"placement"`
+		SourceTool string `yaml:"source_tool" json:"source_tool"`
+		Render     string `yaml:"render" json:"render"`
+	} `yaml:"views" json:"views"`
+	ApprovalPolicies []struct {
+		ID           string   `yaml:"id" json:"id"`
+		ToolNames    []string `yaml:"tool_names" json:"tool_names"`
+		Mode         string   `yaml:"mode" json:"mode"`
+		Title        string   `yaml:"title" json:"title"`
+		BodyTemplate string   `yaml:"body_template" json:"body_template"`
+		ConfirmLabel string   `yaml:"confirm_label" json:"confirm_label"`
+		CancelLabel  string   `yaml:"cancel_label" json:"cancel_label"`
+	} `yaml:"approval_policies" json:"approval_policies"`
+}
+
+type hookManifest struct {
+	Schema                   string   `yaml:"schema" json:"schema"`
+	ID                       string   `yaml:"id" json:"id"`
+	Description              string   `yaml:"description" json:"description"`
+	Events                   []string `yaml:"events" json:"events"`
+	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
+	Runtime                  struct {
+		Kind         string   `yaml:"kind" json:"kind"`
+		Command      string   `yaml:"command" json:"command"`
+		Capabilities []string `yaml:"capabilities" json:"capabilities"`
+	} `yaml:"runtime" json:"runtime"`
+	Delivery struct {
+		Mode           string `yaml:"mode" json:"mode"`
+		TimeoutSeconds int    `yaml:"timeout_seconds" json:"timeout_seconds"`
+	} `yaml:"delivery" json:"delivery"`
+}
+
+func LoadRuntimeContributions(workspaceRoot string, hostCapabilities []string) (luruntime.ContributionSet, error) {
+	hostCapabilities = luruntime.NormalizeCapabilities(hostCapabilities)
+
+	commands, views, policies, uiDiagnostics, err := loadUIRegistry(workspaceRoot, hostCapabilities)
+	if err != nil {
+		return luruntime.ContributionSet{}, err
+	}
+	hooks, hookDiagnostics, err := loadHookRegistry(workspaceRoot, hostCapabilities)
+	if err != nil {
+		return luruntime.ContributionSet{}, err
+	}
+
+	diagnostics := append(uiDiagnostics, hookDiagnostics...)
+	return luruntime.ContributionSet{
+		UI:          luruntime.NewUIRegistry(commands, views, policies),
+		Hooks:       luruntime.NewHookRegistry(hooks),
+		Diagnostics: diagnostics,
+	}, nil
+}
+
+func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntime.RuntimeCommand, []luruntime.RuntimeView, []luruntime.ApprovalPolicy, []luruntime.Diagnostic, error) {
+	files, err := layeredManifestFiles(workspaceRoot, "ui")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	commandOrder := []string{}
+	viewOrder := []string{}
+	policyOrder := []string{}
+	commandByID := map[string]luruntime.RuntimeCommand{}
+	viewByID := map[string]luruntime.RuntimeView{}
+	policyByID := map[string]luruntime.ApprovalPolicy{}
+	var diagnostics []luruntime.Diagnostic
+
+	for _, path := range files {
+		manifest, err := parseUIManifest(path)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		if check := luruntime.CheckHostRequirements(manifest.RequiresHostCapabilities, hostCapabilities); !check.Supported() {
+			diagnostics = append(diagnostics, luruntime.DiagnosticForMissingCapabilities(path, "ui", check.Missing))
+			continue
+		}
+		for _, command := range manifest.Commands {
+			id := strings.TrimSpace(command.ID)
+			if id == "" {
+				return nil, nil, nil, nil, fmt.Errorf("%s: commands[].id is required", path)
+			}
+			if _, ok := commandByID[id]; !ok {
+				commandOrder = append(commandOrder, id)
+			}
+			commandByID[id] = luruntime.RuntimeCommand{
+				ID:         id,
+				Name:       strings.TrimSpace(firstNonEmpty(command.Name, id)),
+				ActionKind: strings.TrimSpace(command.Action.Kind),
+				ViewID:     strings.TrimSpace(command.Action.ViewID),
+				CommandID:  strings.TrimSpace(command.Action.CommandID),
+				SourcePath: path,
+			}
+		}
+		for _, view := range manifest.Views {
+			id := strings.TrimSpace(view.ID)
+			if id == "" {
+				return nil, nil, nil, nil, fmt.Errorf("%s: views[].id is required", path)
+			}
+			if _, ok := viewByID[id]; !ok {
+				viewOrder = append(viewOrder, id)
+			}
+			viewByID[id] = luruntime.RuntimeView{
+				ID:         id,
+				Title:      strings.TrimSpace(firstNonEmpty(view.Title, id)),
+				Placement:  strings.TrimSpace(view.Placement),
+				SourceTool: strings.TrimSpace(view.SourceTool),
+				Render:     strings.TrimSpace(view.Render),
+				SourcePath: path,
+			}
+		}
+		for _, policy := range manifest.ApprovalPolicies {
+			id := strings.TrimSpace(policy.ID)
+			if id == "" {
+				return nil, nil, nil, nil, fmt.Errorf("%s: approval_policies[].id is required", path)
+			}
+			if _, ok := policyByID[id]; !ok {
+				policyOrder = append(policyOrder, id)
+			}
+			policyByID[id] = luruntime.ApprovalPolicy{
+				ID:           id,
+				ToolNames:    append([]string(nil), policy.ToolNames...),
+				Mode:         strings.TrimSpace(policy.Mode),
+				Title:        strings.TrimSpace(policy.Title),
+				BodyTemplate: policy.BodyTemplate,
+				ConfirmLabel: strings.TrimSpace(policy.ConfirmLabel),
+				CancelLabel:  strings.TrimSpace(policy.CancelLabel),
+				SourcePath:   path,
+			}
+		}
+	}
+
+	commands := make([]luruntime.RuntimeCommand, 0, len(commandOrder))
+	for _, id := range commandOrder {
+		commands = append(commands, commandByID[id])
+	}
+	views := make([]luruntime.RuntimeView, 0, len(viewOrder))
+	for _, id := range viewOrder {
+		views = append(views, viewByID[id])
+	}
+	policies := make([]luruntime.ApprovalPolicy, 0, len(policyOrder))
+	for _, id := range policyOrder {
+		policies = append(policies, policyByID[id])
+	}
+	return commands, views, policies, diagnostics, nil
+}
+
+func loadHookRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntime.HookSubscription, []luruntime.Diagnostic, error) {
+	files, err := layeredManifestFiles(workspaceRoot, "hooks")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	order := []string{}
+	byID := map[string]luruntime.HookSubscription{}
+	var diagnostics []luruntime.Diagnostic
+	for _, path := range files {
+		manifest, err := parseHookManifest(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		if check := luruntime.CheckHostRequirements(manifest.RequiresHostCapabilities, hostCapabilities); !check.Supported() {
+			diagnostics = append(diagnostics, luruntime.DiagnosticForMissingCapabilities(path, "hook", check.Missing))
+			continue
+		}
+		id := strings.TrimSpace(manifest.ID)
+		if _, ok := byID[id]; !ok {
+			order = append(order, id)
+		}
+		byID[id] = luruntime.HookSubscription{
+			ID:          id,
+			Description: strings.TrimSpace(manifest.Description),
+			Events:      append([]string(nil), manifest.Events...),
+			Runtime: luruntime.HookRuntime{
+				Kind:         strings.TrimSpace(manifest.Runtime.Kind),
+				Command:      strings.TrimSpace(manifest.Runtime.Command),
+				Capabilities: luruntime.NormalizeCapabilities(manifest.Runtime.Capabilities),
+			},
+			Delivery: luruntime.HookDelivery{
+				Mode:           strings.TrimSpace(firstNonEmpty(manifest.Delivery.Mode, "async")),
+				TimeoutSeconds: manifest.Delivery.TimeoutSeconds,
+			},
+			SourcePath: path,
+		}
+	}
+
+	hooks := make([]luruntime.HookSubscription, 0, len(order))
+	for _, id := range order {
+		hooks = append(hooks, byID[id])
+	}
+	return hooks, diagnostics, nil
+}
+
+func layeredManifestFiles(workspaceRoot, category string) ([]string, error) {
+	globalRoot, err := configRoot()
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	add := func(dir string) error {
+		paths, err := listManifestFiles(dir, false)
+		if err != nil {
+			return err
+		}
+		files = append(files, paths...)
+		return nil
+	}
+
+	if err := add(filepath.Join(globalRoot, category)); err != nil {
+		return nil, err
+	}
+
+	packageDirs, err := runtimePackageDirs(workspaceRoot, category)
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range packageDirs {
+		if err := add(dir); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := add(filepath.Join(workspaceRoot, ".luc", category)); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func runtimePackageDirs(workspaceRoot, category string) ([]string, error) {
+	root := filepath.Join(workspaceRoot, ".luc", "packages")
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var dirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dirs = append(dirs, filepath.Join(root, entry.Name(), category))
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
+func parseUIManifest(path string) (uiManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return uiManifest{}, err
+	}
+	var manifest uiManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return uiManifest{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if strings.TrimSpace(manifest.Schema) != "luc.ui/v1" {
+		return uiManifest{}, fmt.Errorf("%s: unsupported ui manifest schema %q", path, manifest.Schema)
+	}
+	if strings.TrimSpace(manifest.ID) == "" {
+		return uiManifest{}, fmt.Errorf("%s: id is required", path)
+	}
+	for _, view := range manifest.Views {
+		switch placement := strings.TrimSpace(view.Placement); placement {
+		case "inspector_tab", "page":
+		default:
+			return uiManifest{}, fmt.Errorf("%s: unsupported view placement %q", path, view.Placement)
+		}
+		switch render := strings.TrimSpace(view.Render); render {
+		case "markdown", "json", "table", "kv":
+		default:
+			return uiManifest{}, fmt.Errorf("%s: unsupported view renderer %q", path, view.Render)
+		}
+		if strings.TrimSpace(view.SourceTool) == "" {
+			return uiManifest{}, fmt.Errorf("%s: views[%s].source_tool is required", path, view.ID)
+		}
+	}
+	for _, policy := range manifest.ApprovalPolicies {
+		switch strings.TrimSpace(policy.Mode) {
+		case "confirm", "deny":
+		default:
+			return uiManifest{}, fmt.Errorf("%s: unsupported approval policy mode %q", path, policy.Mode)
+		}
+	}
+	return manifest, nil
+}
+
+func parseHookManifest(path string) (hookManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return hookManifest{}, err
+	}
+	var manifest hookManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return hookManifest{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if strings.TrimSpace(manifest.Schema) != "luc.hook/v1" {
+		return hookManifest{}, fmt.Errorf("%s: unsupported hook manifest schema %q", path, manifest.Schema)
+	}
+	if strings.TrimSpace(manifest.ID) == "" {
+		return hookManifest{}, fmt.Errorf("%s: id is required", path)
+	}
+	if len(manifest.Events) == 0 {
+		return hookManifest{}, fmt.Errorf("%s: events are required", path)
+	}
+	if kind := strings.TrimSpace(firstNonEmpty(manifest.Runtime.Kind, "exec")); kind != "exec" {
+		return hookManifest{}, fmt.Errorf("%s: unsupported hook runtime kind %q", path, kind)
+	}
+	if strings.TrimSpace(manifest.Runtime.Command) == "" {
+		return hookManifest{}, fmt.Errorf("%s: runtime.command is required", path)
+	}
+	if mode := strings.TrimSpace(firstNonEmpty(manifest.Delivery.Mode, "async")); mode != "async" {
+		return hookManifest{}, fmt.Errorf("%s: unsupported delivery mode %q", path, manifest.Delivery.Mode)
+	}
+	return manifest, nil
+}

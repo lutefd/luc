@@ -61,6 +61,7 @@ type Controller struct {
 	tools     *tools.Manager
 	uiBroker  luruntime.UIBroker
 	hostCaps  []string
+	runtime   luruntime.ContributionSet
 
 	session history.SessionMeta
 	events  chan history.EventEnvelope
@@ -156,6 +157,10 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	runtimeSet, err := extensions.LoadRuntimeContributions(ws.Root, luruntime.DefaultHostCapabilities())
+	if err != nil {
+		return nil, err
+	}
 
 	controller := &Controller{
 		workspace:    ws,
@@ -169,10 +174,14 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		skills:       skills,
 		loadedSkills: make(map[string]struct{}),
 		hostCaps:     luruntime.DefaultHostCapabilities(),
+		runtime:      runtimeSet,
 	}
 	controller.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
 		controller.logger.Ring.Add("info", fmt.Sprintf(format, args...))
 	})
+	for _, diagnostic := range runtimeSet.Diagnostics {
+		controller.logger.Ring.Add("warn", diagnostic.Message)
+	}
 	controller.version.Store(1)
 	controller.systemPrompt = controller.loadSystemPrompt()
 
@@ -245,6 +254,10 @@ func (c *Controller) UIBroker() luruntime.UIBroker {
 		})
 	}
 	return c.uiBroker
+}
+
+func (c *Controller) RuntimeContributions() luruntime.ContributionSet {
+	return c.runtime
 }
 
 // SwitchModel hot-swaps the active model. If the model belongs to a
@@ -409,6 +422,11 @@ func (c *Controller) Reload(ctx context.Context) error {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
 		return err
 	}
+	runtimeSet, err := extensions.LoadRuntimeContributions(c.workspace.Root, c.HostCapabilities())
+	if err != nil {
+		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
+		return err
+	}
 	provider.SetDefaultRegistry(registry)
 
 	// Re-apply the user-state overlay so reload doesn't revert the runtime
@@ -439,10 +457,14 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.tools = toolManager
 	c.registry = registry
 	c.provider = client
+	c.runtime = runtimeSet
 	if _, ok := c.uiBroker.(*luruntime.DefaultBroker); ok || c.uiBroker == nil {
 		c.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
 			c.logger.Ring.Add("info", fmt.Sprintf(format, args...))
 		})
+	}
+	for _, diagnostic := range runtimeSet.Diagnostics {
+		c.logger.Ring.Add("warn", diagnostic.Message)
 	}
 	version := c.version.Add(1)
 	c.emit("reload.finished", history.ReloadPayload{Version: version})
