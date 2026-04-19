@@ -11,6 +11,9 @@ func TestDetectFindsGitRoot(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	nested := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
@@ -27,6 +30,9 @@ func TestDetectFindsGitRoot(t *testing.T) {
 	}
 	if !info.HasGit {
 		t.Fatalf("expected HasGit true")
+	}
+	if info.Branch != "main" {
+		t.Fatalf("expected branch %q, got %q", "main", info.Branch)
 	}
 }
 
