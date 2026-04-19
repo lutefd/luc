@@ -210,6 +210,9 @@ models:
 }
 
 func TestLoadProviderDefsDefaultsTypeAndFilenameID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
 		t.Fatal(err)
@@ -241,6 +244,9 @@ models:
 }
 
 func TestLoadProviderDefsSupportsExecProviders(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
 		t.Fatal(err)

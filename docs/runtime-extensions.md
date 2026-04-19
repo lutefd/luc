@@ -71,6 +71,8 @@ Tool capability notes:
 - `structured_io` means luc writes a JSON request envelope to stdin and expects JSONL events on stdout.
 - `client_actions` means the tool may emit `client_action` events and receive `client_result` responses over stdin/stdout.
 - Structured request envelopes include `tool_name`, typed `arguments`, `workspace`, `session_id`, `agent_id`, `host_capabilities`, and optional `view_context`.
+- Supported structured tool stdout event types today are `stdout`, `stderr`, `progress`, `client_action`, `result`, `done`, and `error`.
+- Structured tools should emit a `result` event carrying the final tool payload, then emit `done` to terminate the stream.
 
 Template variables available in `command` and `ui.collapsed_summary`:
 
@@ -261,8 +263,20 @@ Hook notes:
 
 - Hooks subscribe to live events only; they do not run during history replay or session reopen.
 - Hooks are async-only in this slice and never block the turn loop.
-- Hook request envelopes include the live event, workspace/session metadata, and `host_capabilities`.
+- Stable hook subscription event kinds today are `message.assistant.final` and `tool.finished`.
+- Hook request envelopes include the live event, workspace/session metadata, and `host_capabilities`. The current JSON shape is:
+
+```json
+{
+  "event": {"kind": "tool.finished", "payload": {"id": "call_1", "name": "bash"}},
+  "workspace": {"root": "/abs/workspace", "project_id": "repo", "branch": "main"},
+  "session": {"session_id": "sess_123", "provider": "openai", "model": "gpt-5.4"},
+  "host_capabilities": ["hooks.live_events"]
+}
+```
+
 - Supported hook stdout event types are `log`, `progress`, `done`, and `error`.
+- Hook stdout field names are exact: `log` uses `text` (luc also accepts `message` as a compatibility alias), `progress` uses `progress` (or `message`), `error` uses `error` (or `message`), and `done` should set `done: true`.
 - Hook failures are logged and surfaced through `hook.failed` history events, but they do not break the session.
 
 ### Skills
@@ -319,6 +333,7 @@ Current skill behavior:
 - `skill-name/SKILL.md` is the canonical instruction source.
 - `skill-name/luc.yaml` is metadata only when `SKILL.md` exists.
 - Every request gets a compact skill catalog in the system prompt: `name`, optional display name, and description.
+- If a skill declares `triggers`, luc may also add a short "likely relevant skills" hint for matching requests.
 - The model loads a skill by calling `load_skill` with the exact skill name.
 - `load_skill` returns the full `SKILL.md` body once per session; repeated loads return an already-loaded note.
 - If a loaded skill references bundled files, the model can read them with `read_skill_resource`.
