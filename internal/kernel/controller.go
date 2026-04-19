@@ -34,6 +34,7 @@ const (
 	skillResourceToolName = "read_skill_resource"
 	noResponseText        = "No response."
 	noUsableResponseText  = "Provider returned no usable response."
+	autoContinueText      = "continue"
 )
 
 var newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
@@ -69,9 +70,10 @@ type Controller struct {
 	hostCaps  []string
 	runtime   luruntime.ContributionSet
 
-	session history.SessionMeta
-	events  chan history.EventEnvelope
-	initial []history.EventEnvelope
+	session  history.SessionMeta
+	events   chan history.EventEnvelope
+	initial  []history.EventEnvelope
+	eventLog []history.EventEnvelope
 
 	seq     atomic.Uint64
 	version atomic.Uint64
@@ -224,6 +226,15 @@ func (c *Controller) Events() <-chan history.EventEnvelope {
 func (c *Controller) InitialEvents() []history.EventEnvelope {
 	out := make([]history.EventEnvelope, len(c.initial))
 	copy(out, c.initial)
+	return out
+}
+
+func (c *Controller) SessionEvents() []history.EventEnvelope {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := make([]history.EventEnvelope, len(c.eventLog))
+	copy(out, c.eventLog)
 	return out
 }
 
@@ -566,6 +577,7 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 		return err
 	}
 
+toolLoop:
 	for range 8 {
 		stream, err := c.provider.Start(ctx, provider.Request{
 			Model:       c.config.Provider.Model,
@@ -605,6 +617,10 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 				_ = stream.Close()
 				if errors.Is(err, context.Canceled) {
 					return err
+				}
+				if shouldAutoContinueToolLimit(err) {
+					c.appendSyntheticUserMessage(autoContinueText)
+					continue toolLoop
 				}
 				return err
 			}
@@ -690,6 +706,31 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 	return errors.New("exceeded tool loop limit")
 }
 
+func shouldAutoContinueToolLimit(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, provider.ErrExceededToolLimits) {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, provider.ErrExceededToolLimits.Error()) ||
+		strings.Contains(msg, "exceeded tool limits")
+}
+
+func (c *Controller) appendSyntheticUserMessage(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	c.emit("message.user", history.MessagePayload{
+		ID:        nextID("user"),
+		Content:   text,
+		Synthetic: true,
+	})
+	c.appendMessage(provider.Message{Role: "user", Content: text})
+}
+
 func (c *Controller) handleCommand(ctx context.Context, text string) error {
 	switch strings.TrimSpace(text) {
 	case "/reload":
@@ -725,6 +766,9 @@ func (c *Controller) emit(kind string, payload any) {
 		c.session.UpdatedAt = ev.At
 		c.saveSessionMeta()
 	}
+	c.mu.Lock()
+	c.eventLog = append(c.eventLog, ev)
+	c.mu.Unlock()
 	c.mirrorEventToLogs(kind, payload)
 
 	select {
@@ -835,6 +879,7 @@ func (c *Controller) applySession(meta history.SessionMeta, events []history.Eve
 	c.loadedSkills = make(map[string]struct{})
 	c.mu.Lock()
 	c.conversation = nil
+	c.eventLog = append([]history.EventEnvelope(nil), events...)
 	c.mu.Unlock()
 	for _, ev := range events {
 		if ev.Seq > c.seq.Load() {

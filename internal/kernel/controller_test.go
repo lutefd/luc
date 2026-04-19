@@ -67,6 +67,41 @@ func (s *fakeStream) Recv() (provider.Event, error) {
 
 func (s *fakeStream) Close() error { return nil }
 
+type errorThenTextProvider struct {
+	requests []provider.Request
+	calls    int
+}
+
+func (p *errorThenTextProvider) Name() string { return "error-then-text" }
+
+func (p *errorThenTextProvider) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
+	_ = ctx
+	p.requests = append(p.requests, req)
+	p.calls++
+	if p.calls == 1 {
+		return &errorStream{err: provider.ErrExceededToolLimits}, nil
+	}
+	return &fakeStream{events: []provider.Event{
+		{Type: "text_delta", Text: "ok"},
+		{Type: "done", Completed: true},
+	}}, nil
+}
+
+type errorStream struct {
+	err  error
+	done bool
+}
+
+func (s *errorStream) Recv() (provider.Event, error) {
+	if s.done {
+		return provider.Event{}, io.EOF
+	}
+	s.done = true
+	return provider.Event{}, s.err
+}
+
+func (s *errorStream) Close() error { return nil }
+
 func TestControllerEmitMirrorsFailuresToLogs(t *testing.T) {
 	controller := &Controller{
 		logger:   &logging.Manager{Ring: logging.NewRing(8)},
@@ -143,6 +178,9 @@ func TestControllerSubmitRunsToolLoopAndCanReopenSession(t *testing.T) {
 	events := controller.InitialEvents()
 	if len(events) != 0 {
 		t.Fatalf("expected no initial events for new session, got %d", len(events))
+	}
+	if len(controller.SessionEvents()) == 0 {
+		t.Fatal("expected live session event log after submit")
 	}
 
 	stored, err := controller.store.Load(controller.Session().SessionID)
@@ -317,6 +355,65 @@ func TestControllerSubmitMessageTurnsEmptyProviderOutputIntoSyntheticError(t *te
 	conversation := controller.snapshotConversation()
 	if len(conversation) != 1 || conversation[0].Role != "user" {
 		t.Fatalf("expected empty provider output to stay out of conversation, got %#v", conversation)
+	}
+}
+
+func TestControllerSubmitMessageAutoContinuesExceededToolLimits(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &errorThenTextProvider{}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected retry after exceeded tool limits, got %d request(s)", len(providerStub.requests))
+	}
+	second := providerStub.requests[1].Messages
+	if len(second) < 2 || second[len(second)-1].Role != "user" || second[len(second)-1].Content != autoContinueText {
+		t.Fatalf("expected synthetic continue in retry request, got %#v", second)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sawSyntheticContinue, sawFinal bool
+	for _, ev := range stored {
+		switch ev.Kind {
+		case "message.user":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Synthetic && payload.Content == autoContinueText {
+				sawSyntheticContinue = true
+			}
+		case "message.assistant.final":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Content == "ok" {
+				sawFinal = true
+			}
+		case "system.error":
+			t.Fatalf("unexpected system.error during auto-continue flow: %#v", ev)
+		}
+	}
+	if !sawSyntheticContinue || !sawFinal {
+		t.Fatalf("expected synthetic continue + final assistant response, got %#v", stored)
 	}
 }
 
