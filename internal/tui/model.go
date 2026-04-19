@@ -16,6 +16,7 @@ import (
 	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/kernel"
+	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/tui/commands"
 	"github.com/lutefd/luc/internal/tui/inspector"
@@ -49,6 +50,8 @@ type keyMap struct {
 	Palette     key.Binding
 	ModelPick   key.Binding
 	SessionPick key.Binding
+	Paste       key.Binding
+	RemoveImage key.Binding
 	Copy        key.Binding
 	Quit        key.Binding
 }
@@ -70,6 +73,7 @@ type Model struct {
 	modelPicker   modelspicker.Model
 	sessionPicker sessionpicker.Model
 	themePicker   themepicker.Model
+	pendingImages []media.Attachment
 	registry      *commands.Registry
 	keys          keyMap
 	theme         theme.Theme
@@ -119,6 +123,8 @@ func New(controller *kernel.Controller) Model {
 			Palette:     key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "commands")),
 			ModelPick:   key.NewBinding(key.WithKeys("ctrl+m"), key.WithHelp("ctrl+m", "model")),
 			SessionPick: key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "sessions")),
+			Paste:       key.NewBinding(key.WithKeys("ctrl+v", "super+v"), key.WithHelp("ctrl/cmd+v", "paste")),
+			RemoveImage: key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "drop image")),
 			Copy:        key.NewBinding(key.WithKeys("ctrl+y"), key.WithHelp("ctrl+y", "copy")),
 			Quit:        key.NewBinding(key.WithKeys("ctrl+c", "ctrl+q"), key.WithHelp("ctrl+c", "quit")),
 		},
@@ -241,6 +247,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.transcript.EndSelection()
 		}
 		return m, nil
+	case tea.PasteMsg:
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
+			return m, nil
+		}
+		if attachment, ok, err := attachmentFromPasteContent(msg.Content); err != nil {
+			m.setStatus("Paste failed: " + err.Error())
+			return m, nil
+		} else if ok {
+			m.pendingImages = append(m.pendingImages, attachment)
+			m.resize()
+			m.setStatus("Attached image: " + attachment.Name)
+			return m, nil
+		}
+		if strings.TrimSpace(msg.Content) == "" {
+			return m, readClipboardImageCmd()
+		}
 	case tea.KeyPressMsg:
 		// Route to open modal first.
 		if m.sessionPicker.IsOpen() {
@@ -286,16 +308,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.Copy):
 			return m, copySelectionCmd()
+		case key.Matches(msg, m.keys.Paste):
+			return m, readClipboardCmd(false)
 		case key.Matches(msg, m.keys.Send):
 			value := strings.TrimSpace(m.input.Value())
-			if value == "" {
+			if value == "" && len(m.pendingImages) == 0 {
 				return m, nil
 			}
+			attachments := append([]media.Attachment(nil), m.pendingImages...)
 			m.setStatus("Sending...")
 			m.input.Reset()
 			m.input.SetValue("")
+			m.pendingImages = nil
 			m.input.Focus()
-			return m, submitCmd(m.controller, value)
+			m.resize()
+			return m, submitCmd(m.controller, value, attachments)
+		case key.Matches(msg, m.keys.RemoveImage):
+			if len(m.pendingImages) == 0 {
+				m.setStatus("No pending image")
+				return m, nil
+			}
+			removed := m.pendingImages[len(m.pendingImages)-1]
+			m.pendingImages = m.pendingImages[:len(m.pendingImages)-1]
+			m.resize()
+			m.setStatus("Removed image: " + removed.Name)
+			return m, nil
 		case key.Matches(msg, m.keys.TogglePane):
 			m.inspectorOpen = !m.inspectorOpen
 			m.resize()
@@ -421,6 +458,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.inspector.SetSessionMeta(m.controller.Session())
 		return m, nil
+	case clipboardPasteMsg:
+		if msg.err != nil {
+			m.setStatus("Paste failed: " + msg.err.Error())
+			return m, nil
+		}
+		if msg.attached.ID == "" {
+			if msg.text != "" {
+				m.input.InsertString(msg.text)
+			}
+			return m, nil
+		}
+		m.pendingImages = append(m.pendingImages, msg.attached)
+		m.resize()
+		m.setStatus("Attached image: " + msg.attached.Name)
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -506,7 +558,7 @@ func (m *Model) resize() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	transcriptHeight := max(1, m.bodyHeight())
+	transcriptHeight := m.bodyHeight()
 	m.transcript.SetSize(m.transcriptWidth(), transcriptHeight)
 	m.inspector.SetSize(m.inspectorWidth(), m.inspectorHeight())
 	m.input.SetWidth(max(24, m.transcriptWidth()-4))
@@ -546,20 +598,24 @@ func (m Model) inspectorHeight() int {
 }
 
 func (m Model) bodyHeight() int {
-	return max(1, m.height-8)
+	_, _, bodyH := m.layoutHeights()
+	return bodyH
+}
+
+func (m Model) layoutHeights() (headerH, footerH, bodyH int) {
+	headerH = lipgloss.Height(m.renderHeader())
+	footerH = lipgloss.Height(m.renderFooter())
+	bodyH = max(1, m.height-headerH-footerH)
+	return headerH, footerH, bodyH
 }
 
 func (m Model) wheelInBody(msg tea.MouseWheelMsg) bool {
-	headerH := lipgloss.Height(m.renderHeader())
-	footerH := lipgloss.Height(m.renderFooter())
-	bodyH := max(1, m.height-headerH-footerH)
+	headerH, _, bodyH := m.layoutHeights()
 	return msg.Y >= headerH && msg.Y < headerH+bodyH
 }
 
 func (m Model) transcriptMouseRow(x, y int) (int, bool) {
-	headerH := lipgloss.Height(m.renderHeader())
-	footerH := lipgloss.Height(m.renderFooter())
-	bodyH := max(1, m.height-headerH-footerH)
+	headerH, _, bodyH := m.layoutHeights()
 	if y < headerH || y >= headerH+bodyH {
 		return 0, false
 	}
@@ -617,11 +673,15 @@ func (m Model) renderFooter() string {
 	bindings := []string{
 		"enter send",
 		"shift+enter newline",
+		"ctrl/cmd+v paste",
 		"ctrl+p commands",
 		"ctrl+m model",
 		"ctrl+l sessions",
 		"ctrl+y copy",
 		"ctrl+o details",
+	}
+	if len(m.pendingImages) > 0 {
+		bindings = append(bindings, "ctrl+d drop image")
 	}
 	if m.inspectorOpen {
 		bindings = append(bindings, "ctrl+] tab")
@@ -636,7 +696,10 @@ func (m Model) renderFooter() string {
 		hintStr = strings.Join(essentials, sep)
 	}
 	hints := m.theme.Footer.Render(hintStr)
-	return lipgloss.JoinVertical(lipgloss.Left, frame, hints)
+	if len(m.pendingImages) == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, frame, hints)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, frame, m.renderPendingImages(), hints)
 }
 
 func waitForEvent(ch <-chan history.EventEnvelope) tea.Cmd {
@@ -649,9 +712,9 @@ func waitForEvent(ch <-chan history.EventEnvelope) tea.Cmd {
 	}
 }
 
-func submitCmd(controller *kernel.Controller, value string) tea.Cmd {
+func submitCmd(controller *kernel.Controller, value string, attachments []media.Attachment) tea.Cmd {
 	return func() tea.Msg {
-		return submitDoneMsg{err: controller.Submit(context.Background(), value)}
+		return submitDoneMsg{err: controller.SubmitMessage(context.Background(), value, attachments)}
 	}
 }
 
@@ -675,6 +738,7 @@ func (m *Model) resetSessionViews() {
 	m.palette = commands.New(m.registry, m.theme)
 	m.modelPicker = modelspicker.New(m.controller.Registry(), m.theme)
 	m.sessionPicker = sessionpicker.New(m.theme)
+	m.pendingImages = nil
 	applyInputTheme(&m.input, m.theme, variant)
 	for _, ev := range m.controller.InitialEvents() {
 		m.transcript.Apply(ev)

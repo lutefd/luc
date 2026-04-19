@@ -9,8 +9,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/lutefd/luc/internal/kernel"
+	"github.com/lutefd/luc/internal/media"
 	modelspicker "github.com/lutefd/luc/internal/tui/models"
 )
+
+const testImageDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmZ0AAAAASUVORK5CYII="
 
 // TestMain isolates the user-level state file for every test in this package.
 // Tests here boot a real kernel.Controller, which reads ~/.luc/state.yaml at
@@ -152,5 +155,123 @@ func TestModelCopyKeyDispatchesCopyMessage(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(copySelectionMsg); !ok {
 		t.Fatalf("expected copySelectionMsg, got %T", msg)
+	}
+}
+
+func TestModelEnterSendsPendingImageWithoutText(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	attachment, ok, err := attachmentFromPasteContent(testImageDataURL)
+	if err != nil || !ok {
+		t.Fatalf("expected test image attachment, ok=%v err=%v", ok, err)
+	}
+	model.pendingImages = []media.Attachment{attachment}
+
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := updated.(Model)
+	if len(m.pendingImages) != 0 {
+		t.Fatalf("expected pending images to clear after send, got %d", len(m.pendingImages))
+	}
+	if cmd == nil {
+		t.Fatal("expected submit command for attachment-only message")
+	}
+}
+
+func TestModelPasteDataURLQueuesImageAttachment(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.PasteMsg{Content: testImageDataURL})
+	m := updated.(Model)
+	if len(m.pendingImages) != 1 {
+		t.Fatalf("expected one pending image, got %d", len(m.pendingImages))
+	}
+	if got := m.pendingImages[0].MediaType; got != "image/png" {
+		t.Fatalf("expected image/png attachment, got %q", got)
+	}
+}
+
+func TestModelPasteShortcutQueuesClipboardImageForCtrlAndCmdV(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attachment, ok, err := attachmentFromPasteContent(testImageDataURL)
+	if err != nil || !ok {
+		t.Fatalf("expected test image attachment, ok=%v err=%v", ok, err)
+	}
+
+	origImage := buildClipboardImageAttachment
+	origText := readClipboardText
+	defer func() {
+		buildClipboardImageAttachment = origImage
+		readClipboardText = origText
+	}()
+	buildClipboardImageAttachment = func() (media.Attachment, error) { return attachment, nil }
+	readClipboardText = func() (string, error) { return "", nil }
+
+	for _, msg := range []tea.KeyPressMsg{
+		{Code: 'v', Mod: tea.ModCtrl},
+		{Code: 'v', Mod: tea.ModSuper},
+	} {
+		model := New(controller)
+		updated, cmd := model.Update(msg)
+		m := updated.(Model)
+		if cmd == nil {
+			t.Fatalf("expected paste command for %#v", msg)
+		}
+		next, _ := m.Update(cmd())
+		m = next.(Model)
+		if len(m.pendingImages) != 1 {
+			t.Fatalf("expected one pending image for %#v, got %d", msg, len(m.pendingImages))
+		}
+	}
+}
+
+func TestModelPendingImageRecomputesBodyHeight(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m := updated.(Model)
+	before := m.bodyHeight()
+
+	updated, _ = m.Update(tea.PasteMsg{Content: testImageDataURL})
+	m = updated.(Model)
+	after := m.bodyHeight()
+
+	if after >= before {
+		t.Fatalf("expected body height to shrink after attachment footer grows, before=%d after=%d", before, after)
 	}
 }

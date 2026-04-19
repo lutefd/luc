@@ -12,6 +12,8 @@ import (
 	"github.com/lutefd/luc/internal/tools"
 )
 
+const testImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmZ0AAAAASUVORK5CYII="
+
 func TestTranscriptApplyAndView(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(80, 20)
@@ -132,6 +134,34 @@ func TestTranscriptSelectionCopiesPlainTextAcrossBlocks(t *testing.T) {
 	want := "first\n\nsecond\n\nread\nthird"
 	if got := model.SelectedText(); got != want {
 		t.Fatalf("expected selected text %q, got %q", want, got)
+	}
+}
+
+func TestTranscriptRendersUserImageAttachments(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(80, 20)
+	model.Apply(history.EventEnvelope{
+		Kind: "message.user",
+		Payload: history.MessagePayload{
+			ID:      "u1",
+			Content: "check this",
+			Attachments: []history.AttachmentPayload{{
+				ID:        "img_1",
+				Name:      "pasted.png",
+				Type:      "image",
+				MediaType: "image/png",
+				Data:      testImageBase64,
+				Width:     1,
+				Height:    1,
+			}},
+		},
+	})
+
+	view := ansi.Strip(model.View())
+	for _, want := range []string{"check this", "pasted.png", "1x1", "image/png"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in transcript view:\n%s", want, view)
+		}
 	}
 }
 

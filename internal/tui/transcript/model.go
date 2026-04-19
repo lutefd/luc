@@ -11,17 +11,19 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
+	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/tools"
 )
 
 type Block struct {
-	ID      string
-	Kind    string
-	Content string
-	Diff    string
-	State   string
-	Meta    map[string]string
+	ID          string
+	Kind        string
+	Content     string
+	Diff        string
+	State       string
+	Attachments []media.Attachment
+	Meta        map[string]string
 }
 
 type blockSpan struct {
@@ -196,7 +198,13 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
-		m.blocks = append(m.blocks, Block{ID: payload.ID, Kind: "user", Content: cleanText(payload.Content), State: "done"})
+		m.blocks = append(m.blocks, Block{
+			ID:          payload.ID,
+			Kind:        "user",
+			Content:     cleanText(payload.Content),
+			State:       "done",
+			Attachments: media.FromHistoryPayloads(payload.Attachments),
+		})
 	case "message.assistant.delta":
 		payload := decode[history.MessageDeltaPayload](ev.Payload)
 		block := m.findOrAdd(payload.ID, "assistant")
@@ -311,7 +319,16 @@ func (m *Model) render() {
 	m.spans = m.spans[:0]
 	line := 0
 	for i, block := range m.blocks {
-		key := fmt.Sprintf("%s:%s:%s:%s:%t:%d", block.Kind, block.State, block.Content, block.Diff, m.isExpanded(block.ID), m.width)
+		key := fmt.Sprintf(
+			"%s:%s:%s:%s:%s:%t:%d",
+			block.Kind,
+			block.State,
+			block.Content,
+			block.Diff,
+			attachmentsCacheKey(block.Attachments),
+			m.isExpanded(block.ID),
+			m.width,
+		)
 		if block.State == "done" {
 			if cached, ok := m.cache[key]; ok {
 				rendered := cached
@@ -391,7 +408,14 @@ func (m Model) renderBlock(block Block) string {
 		// Crush-style: per-line left prefix (cyan bar) + content, label above.
 		label := m.theme.UserLabel.Render("You")
 		body := prefixLines(block.Content, width-2, m.theme.UserPrefix.Render("▎"))
-		return lipgloss.JoinVertical(lipgloss.Left, label, body)
+		parts := []string{label}
+		if strings.TrimSpace(block.Content) != "" {
+			parts = append(parts, body)
+		}
+		if images := m.renderUserAttachments(block, width); images != "" {
+			parts = append(parts, images)
+		}
+		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	case "assistant":
 		content := block.Content
 		if block.State == "done" {
@@ -738,6 +762,17 @@ func (m Model) isSelectedBlock(idx int) bool {
 }
 
 func (m Model) plainTextForBlock(block Block) string {
+	if block.Kind == "user" && len(block.Attachments) > 0 {
+		summary := media.AttachmentsSummary(block.Attachments)
+		switch content := strings.TrimSpace(block.Content); {
+		case content == "":
+			return "[" + summary + "]"
+		case summary == "":
+			return content
+		default:
+			return content + "\n[" + summary + "]"
+		}
+	}
 	switch block.Kind {
 	case "tool":
 		if block.Diff != "" {
@@ -751,4 +786,52 @@ func (m Model) plainTextForBlock(block Block) string {
 		}
 	}
 	return block.Content
+}
+
+func (m Model) renderUserAttachments(block Block, width int) string {
+	if len(block.Attachments) == 0 {
+		return ""
+	}
+
+	cards := make([]string, 0, len(block.Attachments))
+	for _, attachment := range block.Attachments {
+		card := m.renderAttachmentCardBody(attachment)
+		cards = append(cards, prefixLines(card, width-2, m.theme.UserPrefix.Render("▎")))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, cards...)
+}
+
+func (m Model) renderAttachmentCardBody(attachment media.Attachment) string {
+	label := m.theme.UserLabel.Render("image")
+	name := strings.TrimSpace(attachment.Name)
+	if name == "" {
+		name = "attachment"
+	}
+
+	meta := []string{}
+	if attachment.Width > 0 && attachment.Height > 0 {
+		meta = append(meta, fmt.Sprintf("%dx%d", attachment.Width, attachment.Height))
+	}
+	if mediaType := strings.TrimSpace(attachment.MediaType); mediaType != "" {
+		meta = append(meta, mediaType)
+	}
+
+	lines := []string{
+		lipgloss.JoinHorizontal(lipgloss.Left, label, " ", name),
+	}
+	if len(meta) > 0 {
+		lines = append(lines, m.theme.Muted.Render(strings.Join(meta, " • ")))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func attachmentsCacheKey(attachments []media.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		parts = append(parts, fmt.Sprintf("%s:%s:%d:%d", attachment.Name, attachment.MediaType, attachment.Width, attachment.Height))
+	}
+	return strings.Join(parts, "|")
 }
