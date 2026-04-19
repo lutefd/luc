@@ -248,17 +248,17 @@ func (c *Controller) runHook(ev history.EventEnvelope, hook luruntime.HookSubscr
 		}
 		switch strings.TrimSpace(event.Type) {
 		case "log":
-			if strings.TrimSpace(event.Text) != "" {
-				c.logger.Ring.Add("info", fmt.Sprintf("hook %s: %s", hook.ID, event.Text))
+			if message := kernelFirstNonEmpty(event.Text, event.Message); message != "" {
+				c.logger.Ring.Add("info", fmt.Sprintf("hook %s: %s", hook.ID, message))
 			}
 		case "progress":
-			if strings.TrimSpace(event.Progress) != "" {
-				c.logger.Ring.Add("info", fmt.Sprintf("hook %s: %s", hook.ID, event.Progress))
+			if progress := kernelFirstNonEmpty(event.Progress, event.Message); progress != "" {
+				c.logger.Ring.Add("info", fmt.Sprintf("hook %s: %s", hook.ID, progress))
 			}
 		case "done":
 			done = true
 		case "error":
-			c.failHook(hook, ev.Kind, errors.New(kernelFirstNonEmpty(event.Error, "hook failed")))
+			c.failHook(hook, ev.Kind, errors.New(kernelFirstNonEmpty(event.Error, event.Message, "hook failed")))
 			return
 		default:
 			c.failHook(hook, ev.Kind, fmt.Errorf("unsupported hook event type %q", event.Type))

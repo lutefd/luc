@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/lutefd/luc/internal/config"
+	"github.com/lutefd/luc/internal/history"
+	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/provider"
 	luruntime "github.com/lutefd/luc/internal/runtime"
 )
@@ -160,6 +162,82 @@ delivery:
 	}
 }
 
+func TestControllerHookStructuredIOAcceptsMessageAlias(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "text_delta", Text: "final"},
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "hooks", "slack.yaml"), `schema: luc.hook/v1
+id: slack_notify
+description: Send a ping.
+events:
+  - message.assistant.final
+runtime:
+  kind: exec
+  command: ./notify.sh
+  capabilities:
+    - structured_io
+delivery:
+  mode: async
+  timeout_seconds: 5
+`)
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "hooks", "notify.sh"), "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"log\",\"message\":\"alias log\"}'\nprintf '%s\\n' '{\"type\":\"error\",\"message\":\"alias error\"}'\n")
+	if err := os.Chmod(filepath.Join(root, ".luc", "hooks", "notify.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForHookLog(t, controller, "hook slack_notify failed: alias error")
+
+	entries := controller.LogEntries()
+	if !logEntriesContain(entries, "hook slack_notify: alias log") {
+		t.Fatalf("expected hook log alias to be recorded, got %#v", entries)
+	}
+	if !logEntriesContain(entries, "hook slack_notify failed: alias error") {
+		t.Fatalf("expected hook error alias to be recorded, got %#v", entries)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundFailure := false
+	for _, ev := range stored {
+		if ev.Kind != "hook.failed" {
+			continue
+		}
+		payload := decode[history.HookPayload](ev.Payload)
+		if payload.HookID == "slack_notify" && payload.Error == "alias error" {
+			foundFailure = true
+			break
+		}
+	}
+	if !foundFailure {
+		t.Fatalf("expected hook.failed to persist compatibility alias error, got %#v", stored)
+	}
+}
+
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -170,6 +248,27 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
+}
+
+func waitForHookLog(t *testing.T, controller *Controller, needle string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if logEntriesContain(controller.LogEntries(), needle) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for log entry %q", needle)
+}
+
+func logEntriesContain(entries []logging.Entry, needle string) bool {
+	for _, entry := range entries {
+		if strings.Contains(entry.Message, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func mustWriteKernelFile(t *testing.T, path, content string) {
