@@ -16,15 +16,25 @@ const (
 	VariantDark  = "dark"
 )
 
+// Theme holds the per-surface styles used by the TUI.
+//
+// Design: the theme does NOT paint container backgrounds. Every style in this
+// struct sets only foreground colors (and, where useful, border colors). The
+// only exceptions are genuine highlights that must visually differ from the
+// base surface:
+//
+//   - PaletteActive — inverted selection row in pickers.
+//   - DiffAdd / DiffDel — content-level color blocks.
+//
+// The terminal's default background is set via tea.View.BackgroundColor (OSC
+// 11). Every cell the lipgloss styles don't paint picks up that color for
+// free. Mixing OSC 11 with per-cell Background(bg) on the same hex produced
+// visibly different shades (terminals apply the two rendering paths with
+// different blending/profile handling), so we pick one source of truth — OSC
+// 11 — and keep container surfaces transparent.
 type Theme struct {
-	// Background is the terminal background color to apply via
-	// tea.View.BackgroundColor, which triggers an OSC 11 sequence that
-	// repaints every cell of the alt-screen — including cells that no
-	// lipgloss style explicitly paints. Nil means "don't touch terminal
-	// background" (used for built-in light/dark so the user's terminal
-	// theme shows through). Set for custom themes whose declared bg
-	// differs from the user's terminal.
-	Background       color.Color
+	Background color.Color // target for tea.View.BackgroundColor (OSC 11)
+
 	App              lipgloss.Style
 	HeaderBrand      lipgloss.Style
 	HeaderMeta       lipgloss.Style
@@ -57,28 +67,20 @@ type Theme struct {
 	StatusBusy       lipgloss.Style
 	StatusError      lipgloss.Style
 	PaletteFrame     lipgloss.Style
-	// PaletteSurface is the "canvas" the palette/picker renders content onto.
-	// Wrapping the JoinVertical'd body in this style (with an explicit Width)
-	// forces every inner cell — including JoinVertical's right-padding spaces
-	// between short rows and the widest row — to carry the panel background.
-	// Without this, those padded spaces have no ANSI bg and fall through to
-	// the terminal's OSC 11 bg, which shows as a visibly different shade.
-	PaletteSurface   lipgloss.Style
-	PaletteActive    lipgloss.Style
-	DiffAdd          lipgloss.Style
-	DiffDel          lipgloss.Style
-	DiffContext      lipgloss.Style
-	DiffHunk         lipgloss.Style
-	DiffGutter       lipgloss.Style
+	// PaletteSurface is kept for API compatibility with the picker views; it
+	// is now a plain foreground-only style (no panel paint), since we rely on
+	// the terminal bg from OSC 11 to fill the palette interior.
+	PaletteSurface lipgloss.Style
+	PaletteActive  lipgloss.Style
+	DiffAdd        lipgloss.Style
+	DiffDel        lipgloss.Style
+	DiffContext    lipgloss.Style
+	DiffHunk       lipgloss.Style
+	DiffGutter     lipgloss.Style
 }
 
 func Default(variant string) Theme {
-	// Built-in light/dark variants intentionally leave the background
-	// unpainted so the user's terminal background (often a warmer/darker
-	// tone than pure #ffffff or #0d1117) shows through. Custom themes go
-	// through the painting path below.
-	p := paletteFor(ResolveVariant(variant))
-	return fromPalette(p, false)
+	return fromPalette(paletteFor(ResolveVariant(variant)))
 }
 
 func Load(name, workspaceRoot string) (Theme, string, error) {
@@ -87,26 +89,17 @@ func Load(name, workspaceRoot string) (Theme, string, error) {
 	} else if found {
 		variant := ResolveVariant(def.Inherits)
 		p := applyThemeColors(paletteFor(variant), def.Colors)
-		// Custom themes must paint bg on every surface — otherwise their
-		// chosen background only shows in the sidebar while the rest of
-		// the UI leaks the terminal's default bg.
-		return fromPalette(p, true), variant, nil
+		return fromPalette(p), variant, nil
 	}
 	variant := ResolveVariant(name)
 	return Default(variant), variant, nil
 }
 
-// fromPalette builds a Theme from a resolved palette. When paintBg is false,
-// every non-sidebar surface leaves the background unset so the terminal's
-// default background (which the user has presumably tuned to their taste)
-// shows through. When true, every surface explicitly paints `bg` — required
-// for custom themes whose chosen background differs from the terminal.
-func fromPalette(p palette, paintBg bool) Theme {
+func fromPalette(p palette) Theme {
 	bg := lipgloss.Color(p.bg)
-	panel := lipgloss.Color(p.panel)
-	line := lipgloss.Color(p.line)
 	accent := lipgloss.Color(p.accent)
 	accentAlt := lipgloss.Color(p.accentAlt)
+	line := lipgloss.Color(p.line)
 	text := lipgloss.Color(p.text)
 	muted := lipgloss.Color(p.muted)
 	subtle := lipgloss.Color(p.subtle)
@@ -116,78 +109,60 @@ func fromPalette(p palette, paintBg bool) Theme {
 	warn := lipgloss.Color(p.warn)
 	errorText := lipgloss.Color(p.errorText)
 
-	// IMPORTANT: fg-only styles intentionally leave Background UNSET, even
-	// when paintBg is true. For custom themes we set Theme.Background so the
-	// program emits OSC 11 and the terminal repaints its default bg; every
-	// cell we don't explicitly style then inherits that color for free.
-	//
-	// Setting a per-cell Background(bg) in addition to OSC 11 looks like it
-	// should be a no-op (same hex), but in practice terminals apply OSC 11
-	// and SGR 48;2 through different rendering paths — blending, transparency,
-	// profile conversion — producing visibly different shades. The result
-	// was darker bands behind every text run I'd painted bg on (labels,
-	// tool titles, system notes, transcript lines). Only genuine contrast
-	// surfaces (sidebar, palette frame, diff backgrounds) keep explicit
-	// Background calls because they *need* to differ from the base bg.
-	//
-	// For built-in themes paintBg is false, Theme.Background stays nil, and
-	// the user's terminal bg shows uniformly across the whole UI.
-	_ = bg
-	_ = paintBg
-
-	onBg := func() lipgloss.Style {
-		return lipgloss.NewStyle()
-	}
-	onPanel := func() lipgloss.Style {
-		return lipgloss.NewStyle().Background(panel)
-	}
-
-	var termBg color.Color
-	if paintBg {
-		termBg = bg
+	fg := func(c color.Color) lipgloss.Style {
+		return lipgloss.NewStyle().Foreground(c)
 	}
 
 	return Theme{
-		Background:       termBg,
-		App:              onBg().Foreground(text),
-		HeaderBrand:      onBg().Foreground(accent).Bold(true),
-		HeaderMeta:       onBg().Foreground(muted),
-		HeaderRule:       onBg().Foreground(accentAlt),
-		Body:             onBg().Foreground(text),
-		Muted:            onBg().Foreground(muted),
-		Subtle:           onBg().Foreground(subtle),
-		UserLabel:        onBg().Foreground(cyan).Bold(true),
-		UserBubble:       onBg().Foreground(text),
-		UserPrefix:       onBg().Foreground(cyan),
-		AssistantLabel:   onBg().Foreground(accent).Bold(true),
-		AssistantBody:    onBg().Foreground(text),
-		AssistantPrefix:  onBg().Foreground(accent),
-		ToolCard:         onBg().Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
-		ToolTitle:        onBg().Foreground(blue).Bold(true),
-		ErrorCard:        onBg().Foreground(errorText).Border(lipgloss.RoundedBorder()).BorderForeground(warn).Padding(0, 1),
-		Sidebar:          onPanel().Foreground(text).Padding(1, 2),
-		SidebarTitle:     onPanel().Foreground(accent).Bold(true),
-		SidebarLabel:     onPanel().Foreground(muted),
-		SidebarValue:     onPanel().Foreground(text),
-		SidebarSection:   onPanel().Foreground(line),
-		SidebarTabActive: onPanel().Foreground(accent).Bold(true).Underline(true),
-		SidebarTab:       onPanel().Foreground(muted),
-		InputFrame:       onBg().Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
-		InputPrompt:      onBg().Foreground(cyan).Bold(true),
-		InputPlaceholder: onBg().Foreground(muted),
-		InputText:        onBg().Foreground(text),
-		Footer:           onBg().Foreground(muted),
-		StatusReady:      onBg().Foreground(success),
-		StatusBusy:       onBg().Foreground(blue),
-		StatusError:      onBg().Foreground(warn),
-		PaletteFrame:     lipgloss.NewStyle().Background(panel).Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 2),
-		PaletteSurface:   lipgloss.NewStyle().Background(panel).Foreground(text),
-		PaletteActive:    lipgloss.NewStyle().Background(accent).Foreground(bg).Bold(true),
-		DiffAdd:          lipgloss.NewStyle().Background(lipgloss.Color(p.diffAddBG)).Foreground(lipgloss.Color(p.diffAddFG)),
-		DiffDel:          lipgloss.NewStyle().Background(lipgloss.Color(p.diffDelBG)).Foreground(lipgloss.Color(p.diffDelFG)),
-		DiffContext:      onBg().Foreground(text),
-		DiffHunk:         onBg().Foreground(muted).Italic(true),
-		DiffGutter:       onBg().Foreground(subtle),
+		// OSC 11 — terminal repaints its default bg to the theme's color.
+		// Every unpainted cell then inherits this color naturally.
+		Background: bg,
+
+		// All fg-only styles: no Background() call. Cells fall through to
+		// the terminal's OSC 11 bg.
+		App:              fg(text),
+		HeaderBrand:      fg(accent).Bold(true),
+		HeaderMeta:       fg(muted),
+		HeaderRule:       fg(accentAlt),
+		Body:             fg(text),
+		Muted:            fg(muted),
+		Subtle:           fg(subtle),
+		UserLabel:        fg(cyan).Bold(true),
+		UserBubble:       fg(text),
+		UserPrefix:       fg(cyan),
+		AssistantLabel:   fg(accent).Bold(true),
+		AssistantBody:    fg(text),
+		AssistantPrefix:  fg(accent),
+		ToolCard:         fg(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
+		ToolTitle:        fg(blue).Bold(true),
+		ErrorCard:        fg(errorText).Border(lipgloss.RoundedBorder()).BorderForeground(warn).Padding(0, 1),
+		Sidebar:          fg(text).Padding(1, 2),
+		SidebarTitle:     fg(accent).Bold(true),
+		SidebarLabel:     fg(muted),
+		SidebarValue:     fg(text),
+		SidebarSection:   fg(line),
+		SidebarTabActive: fg(accent).Bold(true).Underline(true),
+		SidebarTab:       fg(muted),
+		InputFrame:       fg(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
+		InputPrompt:      fg(cyan).Bold(true),
+		InputPlaceholder: fg(muted),
+		InputText:        fg(text),
+		Footer:           fg(muted),
+		StatusReady:      fg(success),
+		StatusBusy:       fg(blue),
+		StatusError:      fg(warn),
+		PaletteFrame:     fg(text).Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 2),
+		PaletteSurface:   fg(text),
+
+		// Highlights — these INTENTIONALLY paint bg because that's the point:
+		// they need to contrast with the surrounding (OSC-11) surface.
+		PaletteActive: lipgloss.NewStyle().Background(accent).Foreground(bg).Bold(true),
+		DiffAdd:       lipgloss.NewStyle().Background(lipgloss.Color(p.diffAddBG)).Foreground(lipgloss.Color(p.diffAddFG)),
+		DiffDel:       lipgloss.NewStyle().Background(lipgloss.Color(p.diffDelBG)).Foreground(lipgloss.Color(p.diffDelFG)),
+
+		DiffContext: fg(text),
+		DiffHunk:    fg(muted).Italic(true),
+		DiffGutter:  fg(subtle),
 	}
 }
 
