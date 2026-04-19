@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/kernel"
 	luruntime "github.com/lutefd/luc/internal/runtime"
 )
@@ -95,7 +96,7 @@ views:
 	m.inspector.SetSize(48, 18)
 	updated, _ = m.Update(cmd())
 	m = updated.(Model)
-	if view := m.inspector.DetailView(); !strings.Contains(view, "provider ok") {
+	if view := ansi.Strip(m.inspector.DetailView()); !strings.Contains(view, "provider ok") {
 		t.Fatalf("expected runtime inspector content, got %q", view)
 	}
 }

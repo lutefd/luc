@@ -12,6 +12,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/lutefd/luc/internal/kernel"
 	luruntime "github.com/lutefd/luc/internal/runtime"
+	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/tools"
 	"github.com/lutefd/luc/internal/tui/commands"
 )
@@ -40,6 +41,8 @@ type runtimeViewLoadedMsg struct {
 	Rendered  string
 	Err       error
 }
+
+const runtimeMarkdownWrapWidth = 80
 
 type runtimePageState struct {
 	open    bool
@@ -104,7 +107,7 @@ func runtimeViewCmd(controller *kernel.Controller, viewID string) tea.Cmd {
 		return runtimeViewLoadedMsg{
 			ViewID:    view.ID,
 			Placement: view.Placement,
-			Rendered:  renderRuntimeView(view, result),
+			Rendered:  renderRuntimeView(controller, view, result),
 		}
 	}
 }
@@ -399,9 +402,23 @@ func (m Model) renderRuntimePage() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
 }
 
-func renderRuntimeView(view luruntime.RuntimeView, result tools.Result) string {
+func renderRuntimeView(controller *kernel.Controller, view luruntime.RuntimeView, result tools.Result) string {
 	content := strings.TrimSpace(result.Content)
 	switch strings.TrimSpace(view.Render) {
+	case "markdown":
+		_, variant, err := theme.Load(controller.Config().UI.Theme, controller.Workspace().Root)
+		if err != nil {
+			return content
+		}
+		renderer, err := theme.NewMarkdownRenderer(runtimeMarkdownWrapWidth, variant)
+		if err != nil {
+			return content
+		}
+		rendered, err := renderer.Render(content)
+		if err != nil {
+			return content
+		}
+		return strings.TrimSpace(rendered)
 	case "json":
 		var decoded any
 		if err := json.Unmarshal([]byte(content), &decoded); err != nil {

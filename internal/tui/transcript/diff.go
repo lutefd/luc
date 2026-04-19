@@ -120,9 +120,10 @@ func renderDiff(th theme.Theme, width int, raw string) string {
 
 	// Each side width: half the available width minus gutter (line number).
 	const lnWidth = 4
-	const gutter = 2 // " ▍" or similar
+	const markerW = 3 // " + ", " - ", "   "
+	const gutter = 2  // " │"
 	sideW := max(20, (width-gutter)/2)
-	colW := max(10, sideW-lnWidth-2) // -2 for " -" / " +" marker
+	colW := max(10, sideW-lnWidth-markerW)
 
 	renderCell := func(lineNo int, kind byte, text string, isLeft bool) string {
 		var lnStr string
@@ -153,11 +154,13 @@ func renderDiff(th theme.Theme, width int, raw string) string {
 		return th.DiffGutter.Render(lnStr) + style.Render(marker+body)
 	}
 
+	rowW := 2*(lnWidth+markerW+colW) + gutter
 	var lines []string
 	for _, p := range pairs {
 		if p.oldNo == -1 {
-			// hunk header — full row, muted
-			lines = append(lines, th.DiffHunk.Render(p.oldLine))
+			// hunk header — full row, muted, bounded to row width so it
+			// doesn't overflow and cause the terminal to soft-wrap.
+			lines = append(lines, th.DiffHunk.Render(padOrTruncate(p.oldLine, rowW)))
 			continue
 		}
 		left := renderCell(p.oldNo, p.oldKind, p.oldLine, true)
