@@ -105,6 +105,29 @@ EOF
 		t.Fatal(err)
 	}
 
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	requestRaw, ok := raw["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected raw request object, got %#v", raw)
+	}
+	if requestRaw["model"] != "claude-opus-4-7" {
+		t.Fatalf("expected lowercase model key in raw request, got %#v", requestRaw)
+	}
+	if _, exists := requestRaw["Model"]; exists {
+		t.Fatalf("did not expect Go-style capitalized model key in raw request: %#v", requestRaw)
+	}
+	toolsRaw, ok := requestRaw["tools"].([]any)
+	if !ok || len(toolsRaw) != 1 {
+		t.Fatalf("expected raw tools array, got %#v", requestRaw["tools"])
+	}
+	toolRaw, ok := toolsRaw[0].(map[string]any)
+	if !ok || toolRaw["name"] != "read" {
+		t.Fatalf("expected lowercase tool fields, got %#v", requestRaw["tools"])
+	}
+
 	var got struct {
 		Request provider.Request `json:"request"`
 	}

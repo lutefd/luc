@@ -30,9 +30,9 @@ type ToolCall struct {
 }
 
 type ToolSpec struct {
-	Name        string
-	Description string
-	Schema      json.RawMessage
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Schema      json.RawMessage `json:"schema"`
 }
 
 type Event struct {
@@ -50,12 +50,12 @@ type Stream interface {
 }
 
 type Request struct {
-	Model       string
-	System      string
-	Messages    []Message
-	Tools       []ToolSpec
-	Temperature float32
-	MaxTokens   int
+	Model       string     `json:"model"`
+	System      string     `json:"system,omitempty"`
+	Messages    []Message  `json:"messages,omitempty"`
+	Tools       []ToolSpec `json:"tools,omitempty"`
+	Temperature float32    `json:"temperature,omitempty"`
+	MaxTokens   int        `json:"max_tokens,omitempty"`
 }
 
 type Provider interface {
