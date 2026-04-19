@@ -77,3 +77,35 @@ func TestInspectorHidesListTools(t *testing.T) {
 		t.Fatalf("expected list_tools to stay hidden from tool tab, got %q", view)
 	}
 }
+
+func TestInspectorHidesSyntheticUserMessages(t *testing.T) {
+	model := New(
+		workspace.Info{Root: "/tmp/work", ProjectID: "proj", HasGit: true, Branch: "main"},
+		history.SessionMeta{SessionID: "sess", Model: "gpt-test"},
+		theme.Default(theme.VariantLight),
+	)
+	model.SetSize(44, 24)
+	model.Apply(history.EventEnvelope{
+		Kind: "message.user",
+		Payload: history.MessagePayload{
+			ID:        "u1",
+			Content:   "continue",
+			Synthetic: true,
+		},
+	})
+	model.Apply(history.EventEnvelope{
+		Kind: "message.user",
+		Payload: history.MessagePayload{
+			ID:      "u2",
+			Content: "real question",
+		},
+	})
+
+	view := model.SummaryView()
+	if strings.Contains(view, "continue") {
+		t.Fatalf("expected synthetic user message to stay hidden, got %q", view)
+	}
+	if !strings.Contains(view, "1 user") || strings.Contains(view, "2 user") {
+		t.Fatalf("expected only the real user turn to count in summary, got %q", view)
+	}
+}

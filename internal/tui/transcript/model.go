@@ -221,6 +221,9 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
+		if payload.Synthetic {
+			return false
+		}
 		m.blocks = append(m.blocks, Block{
 			ID:          payload.ID,
 			Kind:        "user",

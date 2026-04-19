@@ -57,6 +57,34 @@ func TestTranscriptHandlesErrors(t *testing.T) {
 	}
 }
 
+func TestTranscriptHidesSyntheticUserMessages(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(80, 20)
+	model.Apply(history.EventEnvelope{
+		Kind: "message.user",
+		Payload: history.MessagePayload{
+			ID:        "u1",
+			Content:   "continue",
+			Synthetic: true,
+		},
+	})
+	model.Apply(history.EventEnvelope{
+		Kind: "message.assistant.final",
+		Payload: history.MessagePayload{
+			ID:      "a1",
+			Content: "done",
+		},
+	})
+
+	view := ansi.Strip(model.View())
+	if strings.Contains(view, "continue") {
+		t.Fatalf("expected synthetic user message to stay hidden, got %q", view)
+	}
+	if !strings.Contains(view, "done") {
+		t.Fatalf("expected assistant content to remain visible, got %q", view)
+	}
+}
+
 func TestTranscriptSanitizesTerminalResponses(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(80, 20)

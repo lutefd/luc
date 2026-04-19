@@ -175,6 +175,9 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
+		if payload.Synthetic {
+			return false
+		}
 		m.userTurns++
 		m.lastUser = clampString(ansi.Strip(payload.Content), 180)
 		m.status = "Waiting for response"
