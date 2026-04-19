@@ -148,6 +148,10 @@ func (m Model) HasSelection() bool {
 	return ok
 }
 
+func (m Model) IsSelecting() bool {
+	return m.selecting
+}
+
 func (m Model) SelectedText() string {
 	start, end, ok := m.selectionRange()
 	if !ok {
@@ -195,6 +199,25 @@ func (m *Model) ToggleToolExpansionAtRow(row int) bool {
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
+	if !m.applyEvent(ev) {
+		return
+	}
+	m.render()
+}
+
+func (m *Model) ApplyBatch(events []history.EventEnvelope) {
+	changed := false
+	for _, ev := range events {
+		if m.applyEvent(ev) {
+			changed = true
+		}
+	}
+	if changed {
+		m.render()
+	}
+}
+
+func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
@@ -205,20 +228,23 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 			State:       "done",
 			Attachments: media.FromHistoryPayloads(payload.Attachments),
 		})
+		return true
 	case "message.assistant.delta":
 		payload := decode[history.MessageDeltaPayload](ev.Payload)
 		block := m.findOrAdd(payload.ID, "assistant")
 		block.Content += cleanText(payload.Delta)
 		block.State = "streaming"
+		return true
 	case "message.assistant.final":
 		payload := decode[history.MessagePayload](ev.Payload)
 		block := m.findOrAdd(payload.ID, "assistant")
 		block.Content = cleanText(payload.Content)
 		block.State = "done"
+		return true
 	case "tool.requested":
 		payload := decode[history.ToolCallPayload](ev.Payload)
 		if shouldHideTool(payload.Name) {
-			return
+			return false
 		}
 		m.blocks = append(m.blocks, Block{
 			ID:      payload.ID,
@@ -227,10 +253,11 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 			State:   "pending",
 			Meta:    map[string]string{"name": payload.Name},
 		})
+		return true
 	case "tool.finished":
 		payload := decode[history.ToolResultPayload](ev.Payload)
 		if shouldHideTool(payload.Name) {
-			return
+			return false
 		}
 		block := m.findOrAdd(payload.ID, "tool")
 		block.State = "done"
@@ -269,6 +296,7 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		if label, ok := payload.Metadata[tools.MetadataUILabel].(string); ok {
 			block.Meta[tools.MetadataUILabel] = cleanText(label)
 		}
+		return true
 	case "system.note", "system.error":
 		payload := decode[history.MessagePayload](ev.Payload)
 		kind := "note"
@@ -276,6 +304,7 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 			kind = "error"
 		}
 		m.blocks = append(m.blocks, Block{ID: payload.ID, Kind: kind, Content: cleanText(payload.Content), State: "done"})
+		return true
 	case "reload.finished":
 		payload := decode[history.ReloadPayload](ev.Payload)
 		m.blocks = append(m.blocks, Block{
@@ -284,6 +313,7 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 			Content: fmt.Sprintf("reloaded runtime to version %d", payload.Version),
 			State:   "done",
 		})
+		return true
 	case "reload.failed":
 		payload := decode[history.ReloadPayload](ev.Payload)
 		m.blocks = append(m.blocks, Block{
@@ -292,8 +322,9 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 			Content: fmt.Sprintf("reload failed: %s", payload.Error),
 			State:   "done",
 		})
+		return true
 	}
-	m.render()
+	return false
 }
 
 func (m Model) View() string {
@@ -336,9 +367,9 @@ func (m *Model) render() {
 					rendered = m.decorateSelected(rendered)
 				}
 				views = append(views, rendered)
-				height := lipgloss.Height(rendered)
+				height := m.renderedHeight(rendered)
 				m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
-				line += height + 2
+				line += height + 1
 				continue
 			}
 		}
@@ -352,9 +383,9 @@ func (m *Model) render() {
 			m.cache[key] = baseRendered
 		}
 		views = append(views, rendered)
-		height := lipgloss.Height(rendered)
+		height := m.renderedHeight(rendered)
 		m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
-		line += height + 2
+		line += height + 1
 	}
 
 	m.viewport.SetContent(strings.Join(views, "\n\n"))
@@ -394,11 +425,7 @@ func (m Model) safeRenderBlock(block Block) (rendered string) {
 }
 
 func (m Model) decorateSelected(rendered string) string {
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(lipgloss.Color("#1a7f37")).
-		PaddingLeft(1).
-		Render(rendered)
+	return lipgloss.NewStyle().Reverse(true).Render(rendered)
 }
 
 func (m Model) renderBlock(block Block) string {
@@ -724,6 +751,23 @@ func decode[T any](payload any) T {
 	data, _ := json.Marshal(payload)
 	_ = json.Unmarshal(data, &out)
 	return out
+}
+
+func (m Model) renderedHeight(rendered string) int {
+	if rendered == "" {
+		return 1
+	}
+	width := max(1, m.width)
+	height := 0
+	for _, line := range strings.Split(rendered, "\n") {
+		lineWidth := ansi.StringWidth(line)
+		if lineWidth <= width {
+			height++
+			continue
+		}
+		height += (lineWidth + width - 1) / width
+	}
+	return max(1, height)
 }
 
 func (m Model) blockIndexAtRow(row int) (int, bool) {

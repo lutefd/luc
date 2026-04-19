@@ -220,6 +220,48 @@ func TestTranscriptToggleToolExpansionAtRow(t *testing.T) {
 	}
 }
 
+func TestTranscriptBlockHitTestingMatchesRenderedRows(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(60, 12)
+	model.Apply(history.EventEnvelope{
+		Kind:    "message.user",
+		Payload: history.MessagePayload{ID: "u1", Content: "first"},
+	})
+	model.Apply(history.EventEnvelope{
+		Kind: "message.assistant.final",
+		Payload: history.MessagePayload{
+			ID:      "a1",
+			Content: strings.Repeat("wrapped assistant content ", 10),
+		},
+	})
+	model.Apply(history.EventEnvelope{
+		Kind:    "message.user",
+		Payload: history.MessagePayload{ID: "u2", Content: "second"},
+	})
+
+	lines := strings.Split(ansi.Strip(model.View()), "\n")
+	findRenderedRow := func(substr string) int {
+		for i, line := range lines {
+			if strings.Contains(line, substr) {
+				return i
+			}
+		}
+		return -1
+	}
+
+	row := findRenderedRow("second")
+	if row < 0 {
+		t.Fatalf("expected to find rendered row for second message in:\n%s", strings.Join(lines, "\n"))
+	}
+	id, ok := model.BlockIDAtRow(row)
+	if !ok {
+		t.Fatalf("expected hit-tested block at rendered row %d", row)
+	}
+	if id != "u2" {
+		t.Fatalf("expected rendered row %d to map to u2, got %q", row, id)
+	}
+}
+
 func TestTranscriptErrorBlockIsCollapsibleAndDefaultCollapsed(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(80, 20)
