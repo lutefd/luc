@@ -135,8 +135,9 @@ func New(controller *kernel.Controller) Model {
 	}
 	model.installRuntimeUI()
 
-	model.transcript.ApplyBatch(controller.InitialEvents())
-	model.inspector.ApplyBatch(controller.InitialEvents())
+	events := controller.SessionEvents()
+	model.transcript.ApplyBatch(events)
+	model.inspector.ApplyBatch(events)
 	model.logsDirty = true
 	model.syncInspectorLogs(true)
 	model.setStatus("Ready")
@@ -810,8 +811,9 @@ func (m *Model) resetSessionViews() {
 	applyInputTheme(&m.input, m.theme, variant)
 	m.runtimeDialog = runtimeDialogState{}
 	m.runtimePage = runtimePageState{}
-	m.transcript.ApplyBatch(m.controller.InitialEvents())
-	m.inspector.ApplyBatch(m.controller.InitialEvents())
+	events := m.controller.SessionEvents()
+	m.transcript.ApplyBatch(events)
+	m.inspector.ApplyBatch(events)
 	m.logsDirty = true
 	m.syncInspectorLogs(true)
 	m.inspector.SetStatus(m.status)
@@ -845,7 +847,7 @@ func (m Model) availableThemes() []themepicker.Entry {
 }
 
 // applyTheme swaps the active theme and rebuilds every view that caches
-// styles. The transcript is re-populated from the controller's initial event
+// styles. The transcript is re-populated from the controller's full session
 // log so no session content is lost. The active scroll position is
 // intentionally not preserved — re-theming is uncommon and avoiding a partial
 // redraw is simpler than selectively recomputing styles.
@@ -864,8 +866,9 @@ func (m *Model) applyTheme(name string) {
 	m.sessionPicker = sessionpicker.New(m.theme)
 	m.themePicker = themepicker.New(m.theme)
 	applyInputTheme(&m.input, m.theme, variant)
-	m.transcript.ApplyBatch(m.controller.InitialEvents())
-	m.inspector.ApplyBatch(m.controller.InitialEvents())
+	events := m.controller.SessionEvents()
+	m.transcript.ApplyBatch(events)
+	m.inspector.ApplyBatch(events)
 	m.logsDirty = true
 	m.syncInspectorLogs(true)
 	m.inspector.SetStatus(m.status)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/kernel"
 	"github.com/lutefd/luc/internal/media"
@@ -385,5 +386,88 @@ func TestModelDoubleClickExpandsCollapsedBlocks(t *testing.T) {
 	view := m.transcript.View()
 	if !strings.Contains(view, "Double-click to collapse.") {
 		t.Fatalf("expected double click to expand collapsed block, got %q", view)
+	}
+}
+
+func TestModelThemeSwitchKeepsSessionConversation(t *testing.T) {
+	t.Setenv("LUC_STATE_DIR", t.TempDir())
+
+	root := newExecProviderWorkspace(t, `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"text_delta","text":"assistant response"}'
+printf '%s\n' '{"type":"done","completed":true}'
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	model = updated.(Model)
+	if err := controller.Submit(context.Background(), "hello from user"); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ = model.Update(appEventsMsg(drainControllerEvents(controller.Events())))
+	m := updated.(Model)
+	before := ansi.Strip(m.View().Content)
+	for _, want := range []string{"hello from user", "assistant response"} {
+		if !strings.Contains(before, want) {
+			t.Fatalf("expected %q in transcript before theme switch, got %q", want, before)
+		}
+	}
+
+	m.applyTheme("dark")
+	after := ansi.Strip(m.View().Content)
+	for _, want := range []string{"hello from user", "assistant response"} {
+		if !strings.Contains(after, want) {
+			t.Fatalf("expected %q in transcript after theme switch, got %q", want, after)
+		}
+	}
+}
+
+func newExecProviderWorkspace(t *testing.T, script string) string {
+	t.Helper()
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "config.yaml"), []byte(`provider:
+  kind: theme-test
+  model: local-model
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "theme-test.yaml"), []byte(`id: theme-test
+name: Theme Test
+type: exec
+command: ./provider.sh
+models:
+  - id: local-model
+    name: Local Model
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "provider.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func drainControllerEvents(ch <-chan history.EventEnvelope) []history.EventEnvelope {
+	var events []history.EventEnvelope
+	for {
+		select {
+		case ev := <-ch:
+			events = append(events, ev)
+		default:
+			return events
+		}
 	}
 }
