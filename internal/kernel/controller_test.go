@@ -42,7 +42,7 @@ func (s *fakeStream) Recv() (provider.Event, error) {
 
 func (s *fakeStream) Close() error { return nil }
 
-func TestControllerSubmitRunsToolLoopAndRestoresSession(t *testing.T) {
+func TestControllerSubmitRunsToolLoopAndCanReopenSession(t *testing.T) {
 	oldFactory := newProvider
 	defer func() { newProvider = oldFactory }()
 
@@ -120,7 +120,7 @@ func TestControllerSubmitRunsToolLoopAndRestoresSession(t *testing.T) {
 		return reloadedProvider, nil
 	}
 
-	reloaded, err := New(context.Background(), root)
+	reloaded, err := Open(context.Background(), root, controller.Session().SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,13 +136,66 @@ func TestControllerSubmitRunsToolLoopAndRestoresSession(t *testing.T) {
 	}
 }
 
+func TestNewStartsFreshSessionInsteadOfLatest(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "saved"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Submit(context.Background(), "/help"); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Submit(context.Background(), "save this session"); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Session().SessionID == first.Session().SessionID {
+		t.Fatalf("expected a fresh session, got reused %q", second.Session().SessionID)
+	}
+	if len(second.InitialEvents()) != 0 {
+		t.Fatalf("expected new session to start empty, got %#v", second.InitialEvents())
+	}
+}
+
 func TestControllerCommandsAndReload(t *testing.T) {
 	oldFactory := newProvider
 	defer func() { newProvider = oldFactory }()
 
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
 	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
 		_ = cfg
-		return &fakeProvider{}, nil
+		return providerStub, nil
 	}
 
 	root := t.TempDir()
@@ -170,6 +223,9 @@ func TestControllerCommandsAndReload(t *testing.T) {
 		t.Fatalf("expected empty startup logs, got %#v", controller.LogEntries())
 	}
 
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
 	if err := controller.Submit(context.Background(), "/help"); err != nil {
 		t.Fatal(err)
 	}
@@ -203,5 +259,185 @@ func TestControllerCommandsAndReload(t *testing.T) {
 	}
 	if !foundHelp || !foundUnknown || !foundReload {
 		t.Fatalf("expected command/reload events, got %#v", stored)
+	}
+}
+
+func TestControllerSwitchModelUpdatesSessionMeta(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &fakeProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.SwitchModel("gpt-5.4"); err != nil {
+		t.Fatal(err)
+	}
+	if controller.Session().Model != "gpt-5.4" {
+		t.Fatalf("expected session model to update, got %q", controller.Session().Model)
+	}
+	if controller.SessionSaved() {
+		t.Fatal("expected session to remain unsaved before first message")
+	}
+
+	meta, ok, err := controller.store.Latest(controller.Workspace().ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatalf("expected no stored session yet, got %#v", meta)
+	}
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "hi"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+	if err := controller.configureSessionProvider(controller.Session()); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "persist it"); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, ok, err = controller.store.Latest(controller.Workspace().ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected stored session metadata")
+	}
+	if meta.Model != "gpt-5.4" {
+		t.Fatalf("expected persisted model gpt-5.4, got %q", meta.Model)
+	}
+}
+
+func TestControllerNewAndOpenSession(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "saved"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := controller.Session().SessionID
+	if err := controller.Submit(context.Background(), "save the first session"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	if controller.Session().SessionID == firstID {
+		t.Fatalf("expected NewSession to change session id, still %q", controller.Session().SessionID)
+	}
+	if len(controller.InitialEvents()) != 0 {
+		t.Fatalf("expected fresh session after NewSession, got %#v", controller.InitialEvents())
+	}
+
+	if err := controller.OpenSession(firstID); err != nil {
+		t.Fatal(err)
+	}
+	if controller.Session().SessionID != firstID {
+		t.Fatalf("expected OpenSession to restore %q, got %q", firstID, controller.Session().SessionID)
+	}
+	if len(controller.InitialEvents()) == 0 {
+		t.Fatal("expected restored session events")
+	}
+}
+
+func TestControllerOnlyPersistsAfterFirstUserMessage(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if controller.SessionSaved() {
+		t.Fatal("expected fresh session to start unsaved")
+	}
+	if _, ok, err := controller.store.Meta(controller.Session().SessionID); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("expected no meta file before first user message")
+	}
+
+	if err := controller.Submit(context.Background(), "/help"); err != nil {
+		t.Fatal(err)
+	}
+	if controller.SessionSaved() {
+		t.Fatal("expected commands to keep session unsaved")
+	}
+	if _, ok, err := controller.store.Meta(controller.Session().SessionID); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("expected no meta file after command-only activity")
+	}
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if !controller.SessionSaved() {
+		t.Fatal("expected session to persist after first user message")
+	}
+	if _, ok, err := controller.store.Meta(controller.Session().SessionID); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("expected meta file after first user message")
 	}
 }
