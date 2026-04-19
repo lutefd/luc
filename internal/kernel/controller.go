@@ -81,6 +81,7 @@ type Controller struct {
 	systemPrompt string
 	skills       []extensions.Skill
 	loadedSkills map[string]struct{}
+	hookSeen     map[string]struct{}
 }
 
 func New(ctx context.Context, cwd string) (*Controller, error) {
@@ -181,9 +182,10 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		loadedSkills: make(map[string]struct{}),
 		hostCaps:     luruntime.DefaultHostCapabilities(),
 		runtime:      runtimeSet,
+		hookSeen:     map[string]struct{}{},
 	}
 	controller.uiBroker = controllerUIBroker(cfg, logger)
-	configureRuntimeProvider(controller.provider, controller.uiBroker, controller.hostCaps)
+	configureRuntimeProvider(controller.provider, controller.recordingUIBroker(), controller.hostCaps)
 	for _, diagnostic := range runtimeSet.Diagnostics {
 		controller.logger.Ring.Add("warn", diagnostic.Message)
 	}
@@ -250,7 +252,7 @@ func (c *Controller) SetUIBroker(broker luruntime.UIBroker) {
 		})
 	}
 	c.uiBroker = broker
-	configureRuntimeProvider(c.provider, c.uiBroker, c.hostCaps)
+	configureRuntimeProvider(c.provider, c.recordingUIBroker(), c.hostCaps)
 }
 
 func (c *Controller) UIBroker() luruntime.UIBroker {
@@ -271,6 +273,9 @@ func (c *Controller) RenderRuntimeView(ctx context.Context, viewID string) (luru
 	if !ok {
 		return luruntime.RuntimeView{}, tools.Result{}, fmt.Errorf("runtime view %q not found", viewID)
 	}
+	if err := c.maybeAuthorizeTool(ctx, view.SourceTool, `{}`); err != nil {
+		return luruntime.RuntimeView{}, tools.Result{}, err
+	}
 	result, err := c.tools.Run(ctx, tools.Request{
 		Name:             view.SourceTool,
 		Arguments:        `{}`,
@@ -282,7 +287,7 @@ func (c *Controller) RenderRuntimeView(ctx context.Context, viewID string) (luru
 			ViewID:    view.ID,
 			Placement: view.Placement,
 		},
-		UIBroker: c.UIBroker(),
+		UIBroker: c.recordingUIBroker(),
 	})
 	return view, result, err
 }
@@ -338,7 +343,7 @@ func (c *Controller) SwitchModel(modelID string) error {
 		return err
 	}
 	c.provider = client
-	configureRuntimeProvider(c.provider, c.UIBroker(), c.HostCapabilities())
+	configureRuntimeProvider(c.provider, c.recordingUIBroker(), c.HostCapabilities())
 	c.config.Provider = newCfg
 	c.session.Model = newCfg.Model
 	c.session.Provider = newCfg.Kind
@@ -485,7 +490,7 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.tools = toolManager
 	c.registry = registry
 	c.provider = client
-	configureRuntimeProvider(c.provider, c.UIBroker(), c.HostCapabilities())
+	configureRuntimeProvider(c.provider, c.recordingUIBroker(), c.HostCapabilities())
 	c.runtime = runtimeSet
 	if _, ok := c.uiBroker.(*luruntime.DefaultBroker); ok || c.uiBroker == nil {
 		c.uiBroker = luruntime.NewDefaultBroker(cfg.UI.ApprovalsMode, func(format string, args ...any) {
@@ -714,6 +719,7 @@ func (c *Controller) emit(kind string, payload any) {
 	default:
 		c.logger.Ring.Add("warn", "dropping UI event because channel is full")
 	}
+	c.dispatchHooks(ev)
 }
 
 func (c *Controller) startNewSession() error {
@@ -798,7 +804,7 @@ func (c *Controller) configureSessionProvider(meta history.SessionMeta) error {
 		return nil
 	}
 	c.provider = client
-	configureRuntimeProvider(c.provider, c.UIBroker(), c.HostCapabilities())
+	configureRuntimeProvider(c.provider, c.recordingUIBroker(), c.HostCapabilities())
 	return nil
 }
 
@@ -1056,12 +1062,17 @@ func (c *Controller) runToolCall(ctx context.Context, call provider.ToolCall) (t
 	case skillResourceToolName:
 		return c.runReadSkillResourceTool(call.Arguments)
 	default:
+		if err := c.maybeAuthorizeTool(ctx, call.Name, call.Arguments); err != nil {
+			return tools.Result{}, err
+		}
 		return c.tools.Run(ctx, tools.Request{
-			Name:      call.Name,
-			Arguments: call.Arguments,
-			Workspace: c.workspace.Root,
-			SessionID: c.session.SessionID,
-			AgentID:   "root",
+			Name:             call.Name,
+			Arguments:        call.Arguments,
+			Workspace:        c.workspace.Root,
+			SessionID:        c.session.SessionID,
+			AgentID:          "root",
+			HostCapabilities: c.HostCapabilities(),
+			UIBroker:         c.recordingUIBroker(),
 		})
 	}
 }

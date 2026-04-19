@@ -70,3 +70,28 @@ type ReloadPayload struct {
 type StatusPayload struct {
 	Text string `json:"text"`
 }
+
+type UIActionPayload struct {
+	ID        string         `json:"id"`
+	Kind      string         `json:"kind"`
+	Blocking  bool           `json:"blocking,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	Body      string         `json:"body,omitempty"`
+	ViewID    string         `json:"view_id,omitempty"`
+	CommandID string         `json:"command_id,omitempty"`
+	Context   map[string]any `json:"context,omitempty"`
+}
+
+type UIResultPayload struct {
+	ActionID string         `json:"action_id"`
+	Accepted bool           `json:"accepted,omitempty"`
+	ChoiceID string         `json:"choice_id,omitempty"`
+	Data     map[string]any `json:"data,omitempty"`
+}
+
+type HookPayload struct {
+	HookID     string `json:"hook_id"`
+	EventKind  string `json:"event_kind,omitempty"`
+	SourcePath string `json:"source_path,omitempty"`
+	Error      string `json:"error,omitempty"`
+}

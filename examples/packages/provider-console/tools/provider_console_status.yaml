@@ -1,0 +1,9 @@
+name: provider_console_status
+description: Show a compact provider console snapshot.
+command: ./.luc/packages/provider-console@0.1.0/tools/provider_console_status.sh
+schema:
+  type: object
+  properties: {}
+ui:
+  default_collapsed: true
+  collapsed_summary: Provider console refreshed.

@@ -10,9 +10,11 @@ untouched.
 Lookup order:
 
 1. Global user layer: `~/.luc/...`
-2. Project override layer: `<workspace>/.luc/...`
+2. Installed package assets: `<workspace>/.luc/packages/*/...`
+3. Project override layer: `<workspace>/.luc/...`
 
-If the same theme/tool/skill exists in both places, the project copy wins.
+Later layers override earlier ones. Within the same layer, later lexicographic
+manifest wins.
 
 ## Supported Runtime Surfaces
 
@@ -43,6 +45,32 @@ ui:
   default_collapsed: true
   collapsed_summary: Repository status captured.
 ```
+
+Capability-enabled tools can opt into structured stdio instead of the legacy
+shell-only behavior:
+
+```yaml
+schema: luc.tool/v1
+name: provider_status
+description: Show provider status.
+runtime:
+  kind: exec
+  command: ./.luc/tools/provider_status.sh
+  capabilities:
+    - structured_io
+    - client_actions
+input_schema:
+  type: object
+  properties: {}
+timeout_seconds: 30
+```
+
+Tool capability notes:
+
+- Omitting `runtime.capabilities` keeps today's legacy behavior.
+- `structured_io` means luc writes a JSON request envelope to stdin and expects JSONL events on stdout.
+- `client_actions` means the tool may emit `client_action` events and receive `client_result` responses over stdin/stdout.
+- Structured request envelopes include `tool_name`, typed `arguments`, `workspace`, `session_id`, `agent_id`, `host_capabilities`, and optional `view_context`.
 
 Template variables available in `command` and `ui.collapsed_summary`:
 
@@ -151,6 +179,91 @@ For `exec` providers:
 - The adapter receives one JSON request on stdin and emits JSONL provider events on stdout.
 - Supported streamed event types today are `thinking`, `text_delta`, `tool_call`, and `done`.
 - Tool execution still happens inside luc; the adapter only translates the upstream API into luc provider events.
+- Providers may declare `capabilities: [client_actions]` to request host-owned UI actions and receive `client_result` responses back over stdin/stdout.
+- Capability-enabled provider requests include `host_capabilities` alongside the normal provider request envelope.
+
+### Runtime UI
+
+Runtime UI manifests live in:
+
+- `~/.luc/ui`
+- `<workspace>/.luc/packages/*/ui`
+- `<workspace>/.luc/ui`
+
+Example:
+
+```yaml
+schema: luc.ui/v1
+id: provider-tools
+commands:
+  - id: provider.status.open
+    name: Open provider status
+    action:
+      kind: view.open
+      view_id: provider.status
+views:
+  - id: provider.status
+    title: Provider Status
+    placement: inspector_tab
+    source_tool: provider_status
+    render: markdown
+approval_policies:
+  - id: guarded-bash
+    tool_names: [bash]
+    mode: confirm
+    title: Run shell command?
+    body_template: "{{ index .arguments \"command\" }}"
+    confirm_label: Run
+    cancel_label: Cancel
+```
+
+Supported runtime UI primitives in this slice:
+
+- Command actions: `view.open`, `view.refresh`, `command.run`
+- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`
+- View placements: `inspector_tab`, `page`
+- View renderers: `markdown`, `json`, `table`, `kv`
+
+Runtime UI notes:
+
+- Runtime views are host-owned and read-only in this slice.
+- A view's `source_tool` runs when the view opens or refreshes.
+- Approval policies only auto-intercept tools when `ui.approvals_mode: policy`.
+- In `trusted` mode, normal tool execution is unchanged; explicit client confirmation requests still render.
+
+### Hooks
+
+Runtime hook manifests live in:
+
+- `~/.luc/hooks`
+- `<workspace>/.luc/packages/*/hooks`
+- `<workspace>/.luc/hooks`
+
+Example:
+
+```yaml
+schema: luc.hook/v1
+id: slack_notify
+description: Send a Slack ping when an assistant turn completes.
+events:
+  - message.assistant.final
+runtime:
+  kind: exec
+  command: ./notify.sh
+  capabilities:
+    - structured_io
+delivery:
+  mode: async
+  timeout_seconds: 10
+```
+
+Hook notes:
+
+- Hooks subscribe to live events only; they do not run during history replay or session reopen.
+- Hooks are async-only in this slice and never block the turn loop.
+- Hook request envelopes include the live event, workspace/session metadata, and `host_capabilities`.
+- Supported hook stdout event types are `log`, `progress`, `done`, and `error`.
+- Hook failures are logged and surfaced through `hook.failed` history events, but they do not break the session.
 
 ### Skills
 
@@ -257,6 +370,36 @@ Base prompt override files:
 - `<workspace>/.luc/prompts/system.md`
 
 Project prompt overrides the global prompt when both exist.
+
+## Config
+
+```yaml
+ui:
+  approvals_mode: trusted
+
+extensions:
+  hooks_enabled: true
+```
+
+Allowed approval modes:
+
+- `trusted`
+- `policy`
+
+## Host Capability Gating
+
+UI and hook manifests may declare `requires_host_capabilities`. luc compares
+those requirements against the host capability set it advertises to structured
+tools/providers/hooks, for example:
+
+- `ui.modal`
+- `ui.confirm`
+- `ui.view.open`
+- `ui.command`
+- `hooks.live_events`
+
+Unsupported required capabilities do not crash reload. luc skips that
+contribution and records a reload diagnostic instead.
 
 ## Reloading
 

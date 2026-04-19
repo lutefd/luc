@@ -149,7 +149,8 @@ func (r UIRegistry) ApprovalPolicyForTool(toolName string) (ApprovalPolicy, bool
 	if toolName == "" {
 		return ApprovalPolicy{}, false
 	}
-	for _, policy := range r.policies {
+	for i := len(r.policies) - 1; i >= 0; i-- {
+		policy := r.policies[i]
 		for _, candidate := range policy.ToolNames {
 			if strings.EqualFold(strings.TrimSpace(candidate), toolName) {
 				return policy, true

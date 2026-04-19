@@ -1,0 +1,26 @@
+schema: luc.ui/v1
+id: provider-console
+
+commands:
+  - id: provider.console.open
+    name: Open provider console
+    action:
+      kind: view.open
+      view_id: provider.console
+  - id: provider.console.page
+    name: Open provider console page
+    action:
+      kind: view.open
+      view_id: provider.console.page
+
+views:
+  - id: provider.console
+    title: Provider Console
+    placement: inspector_tab
+    source_tool: provider_console_status
+    render: markdown
+  - id: provider.console.page
+    title: Provider Console
+    placement: page
+    source_tool: provider_console_status
+    render: markdown

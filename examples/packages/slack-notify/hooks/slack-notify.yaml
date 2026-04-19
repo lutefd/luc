@@ -1,0 +1,13 @@
+schema: luc.hook/v1
+id: slack_notify
+description: Example hook that posts a Slack-style notification on assistant completion.
+events:
+  - message.assistant.final
+runtime:
+  kind: exec
+  command: ./notify.sh
+  capabilities:
+    - structured_io
+delivery:
+  mode: async
+  timeout_seconds: 10

@@ -21,6 +21,8 @@ func EnsureGlobalRuntime() error {
 		root,
 		filepath.Join(root, "tools"),
 		filepath.Join(root, "providers"),
+		filepath.Join(root, "ui"),
+		filepath.Join(root, "hooks"),
 		filepath.Join(root, "skills"),
 		filepath.Join(root, "themes"),
 		filepath.Join(root, "prompts"),
@@ -35,7 +37,7 @@ func EnsureGlobalRuntime() error {
 		path := filepath.Join(root, asset.RelativePath)
 		if _, err := os.Stat(path); err == nil {
 			continue
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -62,7 +64,7 @@ func bundledRuntimeAssets() []bundledRuntimeAsset {
 			RelativePath: filepath.Join("skills", "runtime-extension-authoring", "SKILL.md"),
 			Content: `---
 name: runtime-extension-authoring
-description: How luc expands itself at runtime through tools, providers, themes, prompts, and skills.
+description: How luc expands itself at runtime through tools, providers, UI, hooks, themes, prompts, and skills.
 ---
 When the task is about extending luc, prefer runtime extension mechanisms before
 proposing core code changes.
@@ -76,6 +78,8 @@ Supported runtime extension types:
 
 - Tools in ` + "`~/.luc/tools`" + ` and ` + "`<workspace>/.luc/tools`" + `
 - Providers in ` + "`~/.luc/providers`" + ` and ` + "`<workspace>/.luc/providers`" + `
+- UI manifests in ` + "`~/.luc/ui`" + `, ` + "`<workspace>/.luc/packages/*/ui`" + `, and ` + "`<workspace>/.luc/ui`" + `
+- Hook manifests in ` + "`~/.luc/hooks`" + `, ` + "`<workspace>/.luc/packages/*/hooks`" + `, and ` + "`<workspace>/.luc/hooks`" + `
 - Skills in ` + "`~/.luc/skills`" + `, ` + "`<workspace>/.luc/skills`" + `, ` + "`~/.agents/skills`" + `, and ` + "`<workspace>/.agents/skills`" + `
 - Themes in ` + "`~/.luc/themes`" + ` and ` + "`<workspace>/.luc/themes`" + `
 - System prompt overrides in ` + "`~/.luc/prompts/system.md`" + ` and ` + "`<workspace>/.luc/prompts/system.md`" + `
@@ -92,6 +96,8 @@ Rules:
   ` + "`type: exec`" + ` with ` + "`id`" + `, ` + "`name`" + `, ` + "`command`" + `, optional ` + "`args`" + `, optional ` + "`env`" + `, and ` + "`models`" + `.
 - For ` + "`type: exec`" + `, assume the adapter receives one JSON request on stdin and emits JSONL provider events on stdout.
 - The adapter should translate upstream model/tool semantics into luc events; luc still executes the actual tools and renders the existing UI cards.
+- If creating runtime UI, keep contributions host-owned: commands, views, and approval policies belong in ` + "`luc.ui/v1`" + ` manifests.
+- If creating hooks, use ` + "`luc.hook/v1`" + ` and assume hooks are async side effects that receive live event envelopes over stdio.
 - If creating a runtime skill, treat ` + "`skill-name/SKILL.md`" + ` as the canonical instruction body.
 - Use ` + "`skill-name/luc.yaml`" + ` only for metadata such as ` + "`interface.display_name`" + ` and ` + "`interface.short_description`" + `.
 - If a skill needs bundled references or scripts, keep them in the same skill directory and assume they will be read through ` + "`read_skill_resource`" + `.
@@ -100,8 +106,8 @@ Rules:
 
 Current limits:
 
-- Runtime tools, providers, skills, themes, and prompts are supported.
-- Custom runtime modals/overlays are not yet manifest-driven.
+- Runtime tools, providers, UI manifests, hooks, skills, themes, and prompts are supported.
+- Runtime views are read-only in this slice.
 `,
 		},
 		{

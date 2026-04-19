@@ -206,6 +206,9 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 	case "system.error":
 		m.errorCount++
 		m.status = "Error"
+	case "hook.failed":
+		m.errorCount++
+		m.status = "Hook failed"
 	}
 	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
 		m.refreshContent()

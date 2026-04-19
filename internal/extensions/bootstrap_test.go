@@ -19,6 +19,8 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 		root,
 		filepath.Join(root, "tools"),
 		filepath.Join(root, "providers"),
+		filepath.Join(root, "ui"),
+		filepath.Join(root, "hooks"),
 		filepath.Join(root, "skills"),
 		filepath.Join(root, "themes"),
 		filepath.Join(root, "prompts"),

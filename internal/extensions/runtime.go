@@ -221,12 +221,20 @@ func skillDirs(workspaceRoot string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{
+	packageDirs, err := runtimePackageDirs(workspaceRoot, "skills")
+	if err != nil {
+		return nil, err
+	}
+	dirs := []string{
 		filepath.Join(home, ".agents", "skills"),
 		filepath.Join(home, ".luc", "skills"),
+	}
+	dirs = append(dirs, packageDirs...)
+	dirs = append(dirs,
 		filepath.Join(workspaceRoot, ".agents", "skills"),
 		filepath.Join(workspaceRoot, ".luc", "skills"),
-	}, nil
+	)
+	return dirs, nil
 }
 
 // ListThemes returns the names of theme files discovered under the workspace
@@ -241,10 +249,13 @@ func ListThemes(workspaceRoot string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	dirs := []string{
-		filepath.Join(workspaceRoot, ".luc", "themes"),
-		filepath.Join(homeDir, "themes"),
+	packageDirs, err := runtimePackageDirs(workspaceRoot, "themes")
+	if err != nil {
+		return nil, err
 	}
+	dirs := []string{filepath.Join(homeDir, "themes")}
+	dirs = append(dirs, packageDirs...)
+	dirs = append(dirs, filepath.Join(workspaceRoot, ".luc", "themes"))
 
 	seen := map[string]struct{}{}
 	var names []string
@@ -291,14 +302,21 @@ func LoadTheme(workspaceRoot, name string) (ThemeDef, bool, error) {
 	if err != nil {
 		return ThemeDef{}, false, err
 	}
-
-	candidates := []string{
-		filepath.Join(workspaceRoot, ".luc", "themes", name+".yaml"),
-		filepath.Join(workspaceRoot, ".luc", "themes", name+".yml"),
-		filepath.Join(workspaceRoot, ".luc", "themes", name+".json"),
-		filepath.Join(homeDir, "themes", name+".yaml"),
-		filepath.Join(homeDir, "themes", name+".yml"),
-		filepath.Join(homeDir, "themes", name+".json"),
+	themeDirs := []string{filepath.Join(homeDir, "themes")}
+	packageDirs, err := runtimePackageDirs(workspaceRoot, "themes")
+	if err != nil {
+		return ThemeDef{}, false, err
+	}
+	themeDirs = append(themeDirs, packageDirs...)
+	themeDirs = append(themeDirs, filepath.Join(workspaceRoot, ".luc", "themes"))
+	var candidates []string
+	for i := len(themeDirs) - 1; i >= 0; i-- {
+		dir := themeDirs[i]
+		candidates = append(candidates,
+			filepath.Join(dir, name+".yaml"),
+			filepath.Join(dir, name+".yml"),
+			filepath.Join(dir, name+".json"),
+		)
 	}
 	for _, path := range candidates {
 		data, err := os.ReadFile(path)
@@ -334,10 +352,14 @@ func categoryDirs(workspaceRoot, category string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{
-		filepath.Join(homeDir, category),
-		filepath.Join(workspaceRoot, ".luc", category),
-	}, nil
+	packageDirs, err := runtimePackageDirs(workspaceRoot, category)
+	if err != nil {
+		return nil, err
+	}
+	dirs := []string{filepath.Join(homeDir, category)}
+	dirs = append(dirs, packageDirs...)
+	dirs = append(dirs, filepath.Join(workspaceRoot, ".luc", category))
+	return dirs, nil
 }
 
 func configRoot() (string, error) {
