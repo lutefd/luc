@@ -204,7 +204,11 @@ func (m Model) View() string {
 		"",
 		hint,
 	)
-	return m.theme.PaletteFrame.Width(boxW).Render(body)
+	// Force the panel background across the full inner width; otherwise
+	// short rows leave their right-padding as bare spaces that show the
+	// terminal's OSC 11 bg instead of the palette's panel color.
+	surface := m.theme.PaletteSurface.Width(innerW).Render(body)
+	return m.theme.PaletteFrame.Width(boxW).Render(surface)
 }
 
 // renderItem renders a single palette row: name left-aligned, shortcut

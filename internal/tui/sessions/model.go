@@ -159,7 +159,8 @@ func (m Model) View() string {
 		"",
 		hint,
 	)
-	return m.theme.PaletteFrame.Width(boxW).Render(body)
+	surface := m.theme.PaletteSurface.Width(innerW).Render(body)
+	return m.theme.PaletteFrame.Width(boxW).Render(surface)
 }
 
 func renderSessionRow(th theme.Theme, sess history.SessionMeta, width int, active, current bool) string {

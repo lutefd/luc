@@ -222,7 +222,8 @@ func (m Model) View() string {
 		"",
 		hint,
 	)
-	return m.theme.PaletteFrame.Width(boxW).Render(body)
+	surface := m.theme.PaletteSurface.Width(innerW).Render(body)
+	return m.theme.PaletteFrame.Width(boxW).Render(surface)
 }
 
 // renderModelRow renders a model row: "  ● model-id    Display name — desc    128k"
