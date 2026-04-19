@@ -21,9 +21,9 @@ import (
 	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/provider"
-	luctstate "github.com/lutefd/luc/internal/state"
 	execprovider "github.com/lutefd/luc/internal/provider/exec"
 	"github.com/lutefd/luc/internal/provider/openai"
+	luctstate "github.com/lutefd/luc/internal/state"
 	"github.com/lutefd/luc/internal/tools"
 	"github.com/lutefd/luc/internal/workspace"
 )
@@ -137,26 +137,8 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 
 	// Overlay user-level state (last theme/model/provider) onto config so
 	// new sessions start from the user's most recent choice rather than
-	// reverting to the config-file defaults on every restart. State errors
-	// are non-fatal — fall through to config defaults and log.
-	if st, err := luctstate.Load(); err != nil {
-		logger.Ring.Add("error", "state: "+err.Error())
-	} else {
-		if st.Theme != "" {
-			cfg.UI.Theme = st.Theme
-		}
-		// Only adopt the persisted model/provider if the kind still exists
-		// in the current provider registry; otherwise the user may have
-		// uninstalled an extension and we'd wedge on a dead provider.
-		if st.ProviderKind != "" {
-			if _, ok := registry.Provider(st.ProviderKind); ok || st.ProviderKind == "openai-compatible" {
-				cfg.Provider.Kind = st.ProviderKind
-			}
-		}
-		if st.Model != "" {
-			cfg.Provider.Model = st.Model
-		}
-	}
+	// reverting to the config-file defaults on every restart.
+	applyUserState(&cfg, registry, logger)
 
 	store := history.NewStore(ws.StateDir)
 	providerClient, err := newProvider(cfg.Provider)
@@ -297,6 +279,35 @@ func (c *Controller) SwitchModel(modelID string) error {
 	return nil
 }
 
+// applyUserState overlays ~/.luc/state.yaml values onto the config so the
+// runtime starts from (or returns to) the user's last-used theme/model.
+// Called at controller creation AND after Reload — Reload re-reads config
+// from disk and would otherwise wipe out any in-memory runtime switches.
+// State errors are non-fatal; the function logs and falls through.
+func applyUserState(cfg *config.Config, registry *provider.Registry, logger *logging.Manager) {
+	st, err := luctstate.Load()
+	if err != nil {
+		logger.Ring.Add("error", "state: "+err.Error())
+		return
+	}
+	if st.Theme != "" {
+		cfg.UI.Theme = st.Theme
+	}
+	// Only adopt the persisted provider kind if it's still known. A deleted
+	// extension would leave state.yaml pointing at a dead provider; falling
+	// back to the config default is safer than wedging on an unknown kind.
+	// The built-in "openai-compatible" fallback is always accepted because
+	// it's not registered under that name but IS honored by newProvider.
+	if st.ProviderKind != "" {
+		if _, ok := registry.Provider(st.ProviderKind); ok || st.ProviderKind == "openai-compatible" {
+			cfg.Provider.Kind = st.ProviderKind
+		}
+	}
+	if st.Model != "" {
+		cfg.Provider.Model = st.Model
+	}
+}
+
 // persistProviderState writes the current provider kind + model to the
 // user-level state file. Errors are logged but not returned — persistence
 // is a best-effort optimization, not a correctness requirement.
@@ -369,11 +380,27 @@ func (c *Controller) Reload(ctx context.Context) error {
 	}
 	provider.SetDefaultRegistry(registry)
 
+	// Re-apply the user-state overlay so reload doesn't revert the runtime
+	// theme/model switches. Without this, ctrl+r reloads config.yaml and
+	// the in-memory provider/model regresses to the on-disk default — the
+	// model picker then highlights the startup model rather than the one
+	// the user actively switched to. Must run before newProvider so the
+	// rebuilt client uses the correct model.
+	applyUserState(&cfg, registry, c.logger)
+
 	client, err := newProvider(cfg.Provider)
 	if err != nil {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
 		return err
 	}
+
+	// Reload doesn't touch the current session meta (the user is still in
+	// the same session), but they may have runtime-switched to a model that
+	// now differs from the one stored in session meta after reload. Keep
+	// session.Model/Provider in sync with the resolved config so the
+	// inspector and picker agree.
+	c.session.Model = cfg.Provider.Model
+	c.session.Provider = cfg.Provider.Kind
 
 	c.config = cfg
 	c.systemPrompt = systemPrompt

@@ -1,7 +1,9 @@
 package history
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -80,4 +82,91 @@ func TestStoreAppendLoadAndLatest(t *testing.T) {
 	if expectedPath == "" {
 		t.Fatal("expected non-empty path")
 	}
+}
+
+func TestStoreRoundTripsMessageAttachments(t *testing.T) {
+	stateDir := t.TempDir()
+	store := NewStore(stateDir)
+
+	meta := SessionMeta{
+		SessionID: "images",
+		ProjectID: "project",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := store.SaveMeta(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := EventEnvelope{
+		Seq:       1,
+		At:        time.Now().UTC(),
+		SessionID: "images",
+		AgentID:   "root",
+		Kind:      "message.user",
+		Payload: MessagePayload{
+			ID:      "m1",
+			Content: "look",
+			Attachments: []AttachmentPayload{{
+				ID:        "img_1",
+				Name:      "pasted.png",
+				Type:      "image",
+				MediaType: "image/png",
+				Data:      "abc123",
+				Width:     1,
+				Height:    1,
+			}},
+		},
+	}
+	if err := store.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.Load("images")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := decode[MessagePayload](events[0].Payload)
+	if len(payload.Attachments) != 1 || payload.Attachments[0].MediaType != "image/png" {
+		t.Fatalf("expected attachment round-trip, got %#v", payload.Attachments)
+	}
+}
+
+func TestStoreLoadHandlesLargeEvents(t *testing.T) {
+	stateDir := t.TempDir()
+	store := NewStore(stateDir)
+
+	ev := EventEnvelope{
+		Seq:       1,
+		At:        time.Now().UTC(),
+		SessionID: "large",
+		AgentID:   "root",
+		Kind:      "message.user",
+		Payload: MessagePayload{
+			ID:      "m1",
+			Content: strings.Repeat("x", 256*1024),
+		},
+	}
+	if err := store.Append(ev); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.Load("large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one event, got %d", len(events))
+	}
+	payload := decode[MessagePayload](events[0].Payload)
+	if got := len(payload.Content); got != 256*1024 {
+		t.Fatalf("expected 262144-byte payload, got %d", got)
+	}
+}
+
+func decode[T any](payload any) T {
+	var out T
+	data, _ := json.Marshal(payload)
+	_ = json.Unmarshal(data, &out)
+	return out
 }

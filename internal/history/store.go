@@ -1,9 +1,9 @@
 package history
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -49,20 +49,19 @@ func (s *Store) Load(sessionID string) ([]EventEnvelope, error) {
 	defer f.Close()
 
 	var out []EventEnvelope
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	dec := json.NewDecoder(f)
+	for {
 		var ev EventEnvelope
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		if err := dec.Decode(&ev); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return nil, err
 		}
 		out = append(out, ev)
 	}
 
-	return out, scanner.Err()
+	return out, nil
 }
 
 func (s *Store) SaveMeta(meta SessionMeta) error {

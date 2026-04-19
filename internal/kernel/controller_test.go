@@ -10,9 +10,12 @@ import (
 
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/history"
+	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/provider"
 	"github.com/lutefd/luc/internal/tools"
 )
+
+const testImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmZ0AAAAASUVORK5CYII="
 
 // TestMain isolates the user-preference state file (~/.luc/state.yaml) from
 // every test in this package. Without this, controller tests read the real
@@ -154,6 +157,70 @@ func TestControllerSubmitRunsToolLoopAndCanReopenSession(t *testing.T) {
 	}
 	if len(reloaded.snapshotConversation()) < 3 {
 		t.Fatalf("expected replayed conversation, got %#v", reloaded.snapshotConversation())
+	}
+}
+
+func TestControllerSubmitMessagePersistsAndReplaysImageAttachments(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "text_delta", Text: "got it"},
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attachment, err := media.BuildImageAttachment("img_1", "pasted.png", "image/png", testImageBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.SubmitMessage(context.Background(), "describe this", []media.Attachment{attachment}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(providerStub.lastRequest.Messages) == 0 {
+		t.Fatal("expected provider request messages")
+	}
+	userMessage := providerStub.lastRequest.Messages[0]
+	if userMessage.Role != "user" || len(userMessage.Parts) != 2 {
+		t.Fatalf("expected structured user message with text + image, got %#v", userMessage)
+	}
+	if userMessage.Parts[0].Type != "text" || userMessage.Parts[1].Type != "image" {
+		t.Fatalf("expected text/image parts, got %#v", userMessage.Parts)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := decode[history.MessagePayload](stored[0].Payload)
+	if len(payload.Attachments) != 1 || payload.Attachments[0].Name != "pasted.png" {
+		t.Fatalf("expected stored attachment metadata, got %#v", payload.Attachments)
+	}
+
+	reloaded, err := Open(context.Background(), root, controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := reloaded.snapshotConversation()
+	if len(replayed) == 0 || len(replayed[0].Parts) != 2 {
+		t.Fatalf("expected replayed attachment-bearing message, got %#v", replayed)
 	}
 }
 
@@ -729,6 +796,52 @@ models:
 	}
 	if model.Provider != "gateway" || model.ContextK != 512 || !model.Reasoning {
 		t.Fatalf("unexpected runtime model def: %#v", model)
+	}
+}
+
+// TestControllerReloadPreservesRuntimeModelSwitch regresses a bug where
+// ctrl+r reloaded the on-disk config wholesale and the runtime-switched
+// model reverted to the config-file default — making the model picker
+// highlight the startup model even though the user had switched. The fix
+// is to re-apply the user-state overlay inside Reload(). This test boots
+// a controller, switches the model (which also persists to state.yaml),
+// reloads, and asserts config.Provider.Model still holds the switched
+// value.
+func TestControllerReloadPreservesRuntimeModelSwitch(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &fakeProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.SwitchModel("gpt-5.4"); err != nil {
+		t.Fatal(err)
+	}
+	if got := controller.Config().Provider.Model; got != "gpt-5.4" {
+		t.Fatalf("precondition: expected config model to be gpt-5.4 after switch, got %q", got)
+	}
+
+	if err := controller.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := controller.Config().Provider.Model; got != "gpt-5.4" {
+		t.Fatalf("expected reload to preserve runtime-switched model, got %q", got)
+	}
+	if got := controller.Session().Model; got != "gpt-5.4" {
+		t.Fatalf("expected session model to stay in sync after reload, got %q", got)
 	}
 }
 
