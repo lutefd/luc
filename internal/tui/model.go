@@ -26,7 +26,7 @@ import (
 	"github.com/lutefd/luc/internal/tui/transcript"
 )
 
-type appEventMsg history.EventEnvelope
+type appEventsMsg []history.EventEnvelope
 type submitDoneMsg struct{ err error }
 type reloadDoneMsg struct{ err error }
 type toggleInspectorMsg struct{}
@@ -83,6 +83,7 @@ type Model struct {
 	status        string
 	lastClickAt   time.Time
 	lastClickID   string
+	logsDirty     bool
 	runtimeBroker *teaUIBroker
 	runtimePage   runtimePageState
 	runtimeDialog runtimeDialogState
@@ -134,11 +135,10 @@ func New(controller *kernel.Controller) Model {
 	}
 	model.installRuntimeUI()
 
-	for _, ev := range controller.InitialEvents() {
-		model.transcript.Apply(ev)
-		model.inspector.Apply(ev)
-	}
-	model.inspector.SetLogs(controller.LogEntries())
+	model.transcript.ApplyBatch(controller.InitialEvents())
+	model.inspector.ApplyBatch(controller.InitialEvents())
+	model.logsDirty = true
+	model.syncInspectorLogs(true)
 	model.setStatus("Ready")
 	return model
 }
@@ -198,7 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
 		}
-		if msg.Button == tea.MouseLeft {
+		if msg.Button == tea.MouseLeft || m.transcript.IsSelecting() {
 			if row, ok := m.transcriptMouseRow(msg.X, msg.Y); ok {
 				m.transcript.ExtendSelection(row)
 			}
@@ -310,11 +310,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.NextTab):
 			if m.inspectorOpen {
 				m.inspector.NextTab()
+				m.syncInspectorLogs(false)
 			}
 			return m, m.maybeRefreshActiveRuntimeView()
 		case key.Matches(msg, m.keys.PrevTab):
 			if m.inspectorOpen {
 				m.inspector.PrevTab()
+				m.syncInspectorLogs(false)
 			}
 			return m, m.maybeRefreshActiveRuntimeView()
 		case key.Matches(msg, m.keys.ScrollUp):
@@ -327,25 +329,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Reloading...")
 			return m, reloadCmd(m.controller)
 		}
-	case appEventMsg:
-		ev := history.EventEnvelope(msg)
-		m.transcript.Apply(ev)
-		m.inspector.Apply(ev)
+	case appEventsMsg:
+		events := []history.EventEnvelope(msg)
+		m.transcript.ApplyBatch(events)
+		m.inspector.ApplyBatch(events)
 		m.inspector.SetSessionMeta(m.controller.Session())
-		m.inspector.SetLogs(m.controller.LogEntries())
-		switch ev.Kind {
-		case "status.thinking":
-			payload := decode[history.StatusPayload](ev.Payload)
-			if strings.TrimSpace(payload.Text) != "" {
-				m.setStatus(payload.Text)
+		if appEventsTouchLogs(events) {
+			m.logsDirty = true
+			m.syncInspectorLogs(false)
+		}
+		syncRuntimeUI := false
+		for _, ev := range events {
+			switch ev.Kind {
+			case "status.thinking":
+				payload := decode[history.StatusPayload](ev.Payload)
+				if strings.TrimSpace(payload.Text) != "" {
+					m.status = payload.Text
+				}
+			case "message.assistant.final":
+				m.status = "Ready"
+			case "reload.finished":
+				m.status = "Reloaded"
+				syncRuntimeUI = true
+			case "reload.failed", "system.error":
+				m.status = "Error"
 			}
-		case "message.assistant.final":
-			m.setStatus("Ready")
-		case "reload.finished":
-			m.setStatus("Reloaded")
+		}
+		if syncRuntimeUI {
 			m.syncRuntimeUI()
-		case "reload.failed", "system.error":
-			m.setStatus("Error")
 		}
 		m.inspector.SetStatus(m.status)
 		return m, waitForEvent(m.controller.Events())
@@ -358,6 +369,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case nextTabMsg:
 		if m.inspectorOpen {
 			m.inspector.NextTab()
+			m.syncInspectorLogs(false)
 		}
 		return m, nil
 	case openModelPickerMsg:
@@ -704,8 +716,60 @@ func waitForEvent(ch <-chan history.EventEnvelope) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return appEventMsg(ev)
+		batch := []history.EventEnvelope{ev}
+	drain:
+		for len(batch) < 256 {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					break drain
+				}
+				batch = append(batch, ev)
+			default:
+				break drain
+			}
+		}
+		return appEventsMsg(compactAppEvents(batch))
 	}
+}
+
+func compactAppEvents(events []history.EventEnvelope) []history.EventEnvelope {
+	if len(events) < 2 {
+		return events
+	}
+
+	out := make([]history.EventEnvelope, 0, len(events))
+	for _, ev := range events {
+		if ev.Kind != "message.assistant.delta" {
+			out = append(out, ev)
+			continue
+		}
+		payload := decode[history.MessageDeltaPayload](ev.Payload)
+		if len(out) == 0 || out[len(out)-1].Kind != "message.assistant.delta" {
+			out = append(out, ev)
+			continue
+		}
+		prev := decode[history.MessageDeltaPayload](out[len(out)-1].Payload)
+		if prev.ID != payload.ID {
+			out = append(out, ev)
+			continue
+		}
+		prev.Delta += payload.Delta
+		out[len(out)-1].Seq = ev.Seq
+		out[len(out)-1].At = ev.At
+		out[len(out)-1].Payload = prev
+	}
+	return out
+}
+
+func appEventsTouchLogs(events []history.EventEnvelope) bool {
+	for _, ev := range events {
+		switch ev.Kind {
+		case "tool.finished", "reload.failed", "system.error", "hook.failed":
+			return true
+		}
+	}
+	return false
 }
 
 func submitCmd(controller *kernel.Controller, value string, attachments []media.Attachment) tea.Cmd {
@@ -726,6 +790,14 @@ func copySelectionCmd() tea.Cmd {
 	}
 }
 
+func (m *Model) syncInspectorLogs(force bool) {
+	if !force && (!m.logsDirty || !m.inspector.IsLogsActive()) {
+		return
+	}
+	m.inspector.SetLogs(m.controller.LogEntries())
+	m.logsDirty = false
+}
+
 func (m *Model) resetSessionViews() {
 	th, variant, _ := theme.Load(m.controller.Config().UI.Theme, m.controller.Workspace().Root)
 	m.theme = th
@@ -738,11 +810,10 @@ func (m *Model) resetSessionViews() {
 	applyInputTheme(&m.input, m.theme, variant)
 	m.runtimeDialog = runtimeDialogState{}
 	m.runtimePage = runtimePageState{}
-	for _, ev := range m.controller.InitialEvents() {
-		m.transcript.Apply(ev)
-		m.inspector.Apply(ev)
-	}
-	m.inspector.SetLogs(m.controller.LogEntries())
+	m.transcript.ApplyBatch(m.controller.InitialEvents())
+	m.inspector.ApplyBatch(m.controller.InitialEvents())
+	m.logsDirty = true
+	m.syncInspectorLogs(true)
 	m.inspector.SetStatus(m.status)
 	m.syncRuntimeUI()
 	m.resize()
@@ -793,11 +864,10 @@ func (m *Model) applyTheme(name string) {
 	m.sessionPicker = sessionpicker.New(m.theme)
 	m.themePicker = themepicker.New(m.theme)
 	applyInputTheme(&m.input, m.theme, variant)
-	for _, ev := range m.controller.InitialEvents() {
-		m.transcript.Apply(ev)
-		m.inspector.Apply(ev)
-	}
-	m.inspector.SetLogs(m.controller.LogEntries())
+	m.transcript.ApplyBatch(m.controller.InitialEvents())
+	m.inspector.ApplyBatch(m.controller.InitialEvents())
+	m.logsDirty = true
+	m.syncInspectorLogs(true)
 	m.inspector.SetStatus(m.status)
 	m.resize()
 

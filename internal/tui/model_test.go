@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/kernel"
 	"github.com/lutefd/luc/internal/media"
+	"github.com/lutefd/luc/internal/tools"
 	modelspicker "github.com/lutefd/luc/internal/tui/models"
 )
 
@@ -55,10 +57,10 @@ func TestModelHandlesResizeToggleAndEvents(t *testing.T) {
 		t.Fatal("expected inspector to toggle open")
 	}
 
-	updated, _ = m.Update(appEventMsg{
+	updated, _ = m.Update(appEventsMsg{{
 		Kind:    "message.user",
 		Payload: map[string]any{"id": "u1", "content": "hello"},
-	})
+	}})
 	m = updated.(Model)
 	view := m.View()
 	if !strings.Contains(view.Content, "hello") {
@@ -273,5 +275,115 @@ func TestModelPendingImageRecomputesBodyHeight(t *testing.T) {
 
 	if after >= before {
 		t.Fatalf("expected body height to shrink after attachment footer grows, before=%d after=%d", before, after)
+	}
+}
+
+func TestModelMouseDragSelectionExtendsWithoutLeftButtonOnMotion(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m := updated.(Model)
+
+	updated, _ = m.Update(appEventsMsg{
+		{Kind: "message.user", Payload: history.MessagePayload{ID: "u1", Content: "first"}},
+		{Kind: "message.assistant.final", Payload: history.MessagePayload{ID: "a1", Content: strings.Repeat("wrapped assistant content ", 12)}},
+		{Kind: "message.user", Payload: history.MessagePayload{ID: "u2", Content: "second"}},
+	})
+	m = updated.(Model)
+
+	headerH, _, bodyH := m.layoutHeights()
+	findRow := func(id string) int {
+		for row := 0; row < bodyH; row++ {
+			if got, ok := m.transcript.BlockIDAtRow(row); ok && got == id {
+				return row
+			}
+		}
+		return -1
+	}
+
+	startRow := findRow("a1")
+	endRow := findRow("u2")
+	if startRow < 0 || endRow < 0 {
+		t.Fatalf("expected selectable rows for assistant/user blocks, start=%d end=%d", startRow, endRow)
+	}
+
+	updated, _ = m.Update(tea.MouseClickMsg{X: 1, Y: headerH + startRow, Button: tea.MouseLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMotionMsg{X: 1, Y: headerH + endRow})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseReleaseMsg{X: 1, Y: headerH + endRow, Button: tea.MouseLeft})
+	m = updated.(Model)
+
+	if !m.transcript.HasSelection() {
+		t.Fatal("expected mouse drag to keep a selection")
+	}
+	selected := m.transcript.SelectedText()
+	if !strings.Contains(selected, "wrapped assistant content") || !strings.Contains(selected, "second") {
+		t.Fatalf("expected dragged selection to include assistant and trailing user block, got %q", selected)
+	}
+}
+
+func TestModelDoubleClickExpandsCollapsedBlocks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m := updated.(Model)
+
+	updated, _ = m.Update(appEventsMsg{
+		{
+			Kind: "tool.finished",
+			Payload: history.ToolResultPayload{
+				ID:      "bash1",
+				Name:    "bash",
+				Content: "first line\nsecond line",
+				Metadata: map[string]any{
+					"command":                        "npm test",
+					tools.MetadataUIDefaultCollapsed: true,
+					tools.MetadataUICollapsedSummary: "Collapsed output: 2 line(s), 22 byte(s).",
+				},
+			},
+		},
+	})
+	m = updated.(Model)
+
+	headerH, _, bodyH := m.layoutHeights()
+	row := -1
+	for i := 0; i < bodyH; i++ {
+		if got, ok := m.transcript.BlockIDAtRow(i); ok && got == "bash1" {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatal("expected tool block row")
+	}
+
+	click := tea.MouseClickMsg{X: 1, Y: headerH + row, Button: tea.MouseLeft}
+	updated, _ = m.Update(click)
+	m = updated.(Model)
+	updated, _ = m.Update(click)
+	m = updated.(Model)
+
+	view := m.transcript.View()
+	if !strings.Contains(view, "Double-click to collapse.") {
+		t.Fatalf("expected double click to expand collapsed block, got %q", view)
 	}
 }
