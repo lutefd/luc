@@ -10,6 +10,7 @@ import (
 
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/history"
+	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/provider"
 	"github.com/lutefd/luc/internal/tools"
@@ -65,6 +66,40 @@ func (s *fakeStream) Recv() (provider.Event, error) {
 }
 
 func (s *fakeStream) Close() error { return nil }
+
+func TestControllerEmitMirrorsFailuresToLogs(t *testing.T) {
+	controller := &Controller{
+		logger:   &logging.Manager{Ring: logging.NewRing(8)},
+		events:   make(chan history.EventEnvelope, 8),
+		hookSeen: map[string]struct{}{},
+	}
+
+	controller.emit("system.error", history.MessagePayload{ID: "error_1", Content: "provider is not ready"})
+	controller.emit("reload.failed", history.ReloadPayload{Version: 2, Error: "yaml: line 3: did not find expected key"})
+	controller.emit("tool.finished", history.ToolResultPayload{ID: "call_1", Name: "runtime.exec", Error: "adapter failed"})
+	controller.emit("tool.finished", history.ToolResultPayload{ID: "call_2", Name: "runtime.exec", Content: "ok"})
+
+	entries := controller.LogEntries()
+	if len(entries) != 3 {
+		t.Fatalf("expected mirrored error logs, got %#v", entries)
+	}
+
+	got := []string{
+		entries[0].Level + ":" + entries[0].Message,
+		entries[1].Level + ":" + entries[1].Message,
+		entries[2].Level + ":" + entries[2].Message,
+	}
+	want := []string{
+		"error:provider is not ready",
+		"error:reload failed: yaml: line 3: did not find expected key",
+		"error:tool runtime.exec failed: adapter failed",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected log entry %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
 
 func TestControllerSubmitRunsToolLoopAndCanReopenSession(t *testing.T) {
 	oldFactory := newProvider
@@ -221,6 +256,153 @@ func TestControllerSubmitMessagePersistsAndReplaysImageAttachments(t *testing.T)
 	replayed := reloaded.snapshotConversation()
 	if len(replayed) == 0 || len(replayed[0].Parts) != 2 {
 		t.Fatalf("expected replayed attachment-bearing message, got %#v", replayed)
+	}
+}
+
+func TestControllerSubmitMessageTurnsEmptyProviderOutputIntoSyntheticError(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sawSyntheticFinal, sawSystemError bool
+	for _, ev := range stored {
+		switch ev.Kind {
+		case "message.assistant.final":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Content == noUsableResponseText && payload.Synthetic {
+				sawSyntheticFinal = true
+			}
+			if payload.Content == noResponseText {
+				t.Fatalf("unexpected placeholder assistant final persisted: %#v", payload)
+			}
+		case "system.error":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Content == "provider returned an empty response" {
+				sawSystemError = true
+			}
+		}
+	}
+	if !sawSyntheticFinal || !sawSystemError {
+		t.Fatalf("expected synthetic final + system error, got %#v", stored)
+	}
+
+	conversation := controller.snapshotConversation()
+	if len(conversation) != 1 || conversation[0].Role != "user" {
+		t.Fatalf("expected empty provider output to stay out of conversation, got %#v", conversation)
+	}
+}
+
+func TestControllerSubmitMessageFiltersPlaceholderNoResponseFromConversation(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "text_delta", Text: noResponseText},
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	conversation := controller.snapshotConversation()
+	if len(conversation) != 1 || conversation[0].Role != "user" {
+		t.Fatalf("expected placeholder response to stay out of conversation, got %#v", conversation)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range stored {
+		if ev.Kind != "message.assistant.final" {
+			continue
+		}
+		payload := decode[history.MessagePayload](ev.Payload)
+		if payload.Content == noResponseText {
+			t.Fatalf("unexpected placeholder assistant final persisted: %#v", payload)
+		}
+	}
+}
+
+func TestControllerOpenSkipsLegacyNoResponsePlaceholderReplay(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &fakeProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	controller.emit("message.user", history.MessagePayload{ID: "u1", Content: "first"})
+	controller.emit("message.assistant.final", history.MessagePayload{ID: "a1", Content: noResponseText})
+	controller.emit("message.user", history.MessagePayload{ID: "u2", Content: "second"})
+
+	reloaded, err := Open(context.Background(), root, controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conversation := reloaded.snapshotConversation()
+	if len(conversation) != 2 {
+		t.Fatalf("expected placeholder replay to be skipped, got %#v", conversation)
+	}
+	if conversation[0].Role != "user" || conversation[1].Role != "user" {
+		t.Fatalf("expected only user turns after replay, got %#v", conversation)
 	}
 }
 
@@ -612,6 +794,53 @@ func TestControllerSkillCatalogIncludesBuiltins(t *testing.T) {
 	}
 	if !strings.Contains(providerStub.lastRequest.System, "theme-creator (Theme Creator): Create or update luc themes that can be inserted at runtime.") {
 		t.Fatalf("expected builtin theme skill in catalog, got %q", providerStub.lastRequest.System)
+	}
+}
+
+func TestControllerSuggestsTriggeredSkillsForExtensionRequests(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "build a runtime extension that adds an inspector tab for provider status"); err != nil {
+		t.Fatal(err)
+	}
+	system := providerStub.lastRequest.System
+	if !strings.Contains(system, "Likely relevant skills for this request:") {
+		t.Fatalf("expected triggered skill hint in system prompt, got %q", system)
+	}
+	if !strings.Contains(system, "runtime-extension-authoring (Runtime Extension Authoring)") {
+		t.Fatalf("expected runtime extension authoring skill hint, got %q", system)
+	}
+	if !strings.Contains(system, "Before editing luc core code or this repo for luc itself, load the most relevant skill first") {
+		t.Fatalf("expected extension-first guidance in system prompt, got %q", system)
+	}
+	if !strings.Contains(system, "luc does support runtime UI manifests via `luc.ui/v1`. New runtime `inspector_tab` and `page` views are supported; only the built-in `Overview` tab remains core-owned.") {
+		t.Fatalf("expected runtime view support guidance in system prompt, got %q", system)
 	}
 }
 
