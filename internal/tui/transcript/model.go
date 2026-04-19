@@ -6,39 +6,64 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/theme"
+	"github.com/lutefd/luc/internal/tools"
 )
 
 type Block struct {
 	ID      string
 	Kind    string
 	Content string
+	Diff    string
 	State   string
 	Meta    map[string]string
 }
 
+type blockSpan struct {
+	start int
+	end   int
+}
+
+const (
+	diffCollapseLineThreshold = 160
+	diffCollapseByteThreshold = 12000
+)
+
 type Model struct {
-	viewport viewport.Model
-	width    int
-	height   int
-	blocks   []Block
-	cache    map[string]string
-	theme    theme.Theme
-	renderer RenderFunc
+	viewport   viewport.Model
+	width      int
+	height     int
+	blocks     []Block
+	spans      []blockSpan
+	cache      map[string]string
+	expanded   map[string]bool
+	autoFollow bool
+	selAnchor  int
+	selFocus   int
+	selecting  bool
+	theme      theme.Theme
+	renderer   RenderFunc
 }
 
 type RenderFunc func(width int, text string) (string, error)
 
 func New(th theme.Theme, variant string) Model {
-	vp := viewport.New(0, 0)
+	vp := viewport.New()
+	vp.MouseWheelEnabled = false
+	vp.SoftWrap = true
 	return Model{
-		viewport: vp,
-		cache:    make(map[string]string),
-		theme:    th,
+		viewport:   vp,
+		cache:      make(map[string]string),
+		expanded:   make(map[string]bool),
+		autoFollow: true,
+		selAnchor:  -1,
+		selFocus:   -1,
+		theme:      th,
 		renderer: func(width int, text string) (string, error) {
 			renderer, err := theme.NewMarkdownRenderer(width, variant)
 			if err != nil {
@@ -52,13 +77,110 @@ func New(th theme.Theme, variant string) Model {
 func (m *Model) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	m.viewport.Width = width
-	m.viewport.Height = height
+	m.viewport.SetWidth(width)
+	m.viewport.SetHeight(height)
 	m.render()
 }
 
 func (m *Model) UpdateViewport(msg any) {
+	m.updateAutoFollow(msg)
 	m.viewport, _ = m.viewport.Update(msg)
+	if m.viewport.AtBottom() {
+		m.autoFollow = true
+	}
+}
+
+func (m *Model) HandleWheel(msg tea.MouseWheelMsg) {
+	m.updateAutoFollow(msg)
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		m.viewport.ScrollUp(1)
+	case tea.MouseWheelDown:
+		m.viewport.ScrollDown(1)
+	}
+	if m.viewport.AtBottom() {
+		m.autoFollow = true
+	}
+}
+
+func (m *Model) BeginSelection(row int) {
+	idx, ok := m.blockIndexAtRow(row)
+	if !ok {
+		m.ClearSelection()
+		return
+	}
+	m.selAnchor = idx
+	m.selFocus = idx
+	m.selecting = true
+	m.render()
+}
+
+func (m *Model) ExtendSelection(row int) {
+	if !m.selecting {
+		return
+	}
+	idx, ok := m.blockIndexAtRow(row)
+	if !ok || idx == m.selFocus {
+		return
+	}
+	m.selFocus = idx
+	m.render()
+}
+
+func (m *Model) EndSelection() {
+	m.selecting = false
+}
+
+func (m *Model) ClearSelection() {
+	if m.selAnchor < 0 && m.selFocus < 0 && !m.selecting {
+		return
+	}
+	m.selAnchor = -1
+	m.selFocus = -1
+	m.selecting = false
+	m.render()
+}
+
+func (m Model) HasSelection() bool {
+	_, _, ok := m.selectionRange()
+	return ok
+}
+
+func (m Model) SelectedText() string {
+	start, end, ok := m.selectionRange()
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		text := strings.TrimSpace(m.plainTextForBlock(m.blocks[i]))
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func (m Model) BlockIDAtRow(row int) (string, bool) {
+	idx, ok := m.blockIndexAtRow(row)
+	if !ok || idx < 0 || idx >= len(m.blocks) {
+		return "", false
+	}
+	return m.blocks[idx].ID, true
+}
+
+func (m *Model) ToggleToolExpansionAtRow(row int) bool {
+	idx, ok := m.blockIndexAtRow(row)
+	if !ok || idx < 0 || idx >= len(m.blocks) {
+		return false
+	}
+	block := m.blocks[idx]
+	if block.Kind != "tool" || !m.isExpandableToolBlock(block) {
+		return false
+	}
+	m.expanded[block.ID] = !m.expanded[block.ID]
+	m.render()
+	return true
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
@@ -78,6 +200,9 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		block.State = "done"
 	case "tool.requested":
 		payload := decode[history.ToolCallPayload](ev.Payload)
+		if shouldHideTool(payload.Name) {
+			return
+		}
 		m.blocks = append(m.blocks, Block{
 			ID:      payload.ID,
 			Kind:    "tool",
@@ -87,6 +212,9 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		})
 	case "tool.finished":
 		payload := decode[history.ToolResultPayload](ev.Payload)
+		if shouldHideTool(payload.Name) {
+			return
+		}
 		block := m.findOrAdd(payload.ID, "tool")
 		block.State = "done"
 		if payload.Error != "" {
@@ -94,12 +222,30 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		}
 		block.Content = cleanText(payload.Content)
 		if diff, ok := payload.Metadata["diff"].(string); ok && diff != "" {
-			block.Content = block.Content + "\n\n" + diffPreview(cleanText(diff), 12)
+			block.Diff = cleanText(diff)
 		}
 		if block.Meta == nil {
 			block.Meta = map[string]string{}
 		}
 		block.Meta["name"] = payload.Name
+		if path, ok := payload.Metadata["path"].(string); ok {
+			block.Meta["path"] = path
+		}
+		if command, ok := payload.Metadata["command"].(string); ok {
+			block.Meta["command"] = cleanText(command)
+		}
+		if timeout, ok := payload.Metadata["timeout"].(string); ok {
+			block.Meta["timeout"] = cleanText(timeout)
+		}
+		if timedOut, ok := payload.Metadata["timed_out"].(bool); ok && timedOut {
+			block.Meta["timed_out"] = "true"
+		}
+		if collapsed, ok := payload.Metadata[tools.MetadataUIDefaultCollapsed].(bool); ok && collapsed {
+			block.Meta[tools.MetadataUIDefaultCollapsed] = "true"
+		}
+		if summary, ok := payload.Metadata[tools.MetadataUICollapsedSummary].(string); ok {
+			block.Meta[tools.MetadataUICollapsedSummary] = cleanText(summary)
+		}
 	case "system.note", "system.error":
 		payload := decode[history.MessagePayload](ev.Payload)
 		kind := "note"
@@ -147,24 +293,63 @@ func (m *Model) render() {
 	}
 
 	var views []string
-	for _, block := range m.blocks {
-		key := fmt.Sprintf("%s:%s:%s:%d", block.Kind, block.State, block.Content, m.width)
+	m.spans = m.spans[:0]
+	line := 0
+	for i, block := range m.blocks {
+		key := fmt.Sprintf("%s:%s:%s:%s:%t:%d", block.Kind, block.State, block.Content, block.Diff, m.isExpanded(block.ID), m.width)
 		if block.State == "done" {
 			if cached, ok := m.cache[key]; ok {
-				views = append(views, cached)
+				rendered := cached
+				if m.isSelectedBlock(i) {
+					rendered = m.decorateSelected(rendered)
+				}
+				views = append(views, rendered)
+				height := lipgloss.Height(rendered)
+				m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
+				line += height + 2
 				continue
 			}
 		}
 
 		rendered := m.safeRenderBlock(block)
+		baseRendered := rendered
+		if m.isSelectedBlock(i) {
+			rendered = m.decorateSelected(rendered)
+		}
 		if block.State == "done" {
-			m.cache[key] = rendered
+			m.cache[key] = baseRendered
 		}
 		views = append(views, rendered)
+		height := lipgloss.Height(rendered)
+		m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
+		line += height + 2
 	}
 
 	m.viewport.SetContent(strings.Join(views, "\n\n"))
-	m.viewport.GotoBottom()
+	if m.autoFollow {
+		m.viewport.GotoBottom()
+	}
+}
+
+func (m *Model) updateAutoFollow(msg any) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch msg.Code {
+		case tea.KeyPgUp, tea.KeyUp:
+			m.autoFollow = false
+		case tea.KeyPgDown, tea.KeyDown, tea.KeyEnd:
+			// Re-enable once the viewport reaches the bottom after the update.
+		case tea.KeyHome:
+			m.autoFollow = false
+		}
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.autoFollow = false
+		case tea.MouseWheelDown:
+			// Re-enable once the viewport reaches the bottom after the update.
+		}
+	}
 }
 
 func (m Model) safeRenderBlock(block Block) (rendered string) {
@@ -176,48 +361,181 @@ func (m Model) safeRenderBlock(block Block) (rendered string) {
 	return m.renderBlock(block)
 }
 
+func (m Model) decorateSelected(rendered string) string {
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(lipgloss.Color("#1a7f37")).
+		PaddingLeft(1).
+		Render(rendered)
+}
+
 func (m Model) renderBlock(block Block) string {
 	width := max(20, m.width-4)
 	switch block.Kind {
 	case "user":
-		body := lipgloss.NewStyle().Width(width).Render(block.Content)
-		return lipgloss.JoinVertical(lipgloss.Left, m.theme.UserLabel.Render("You"), body)
+		// Crush-style: per-line left prefix (cyan bar) + content, label above.
+		label := m.theme.UserLabel.Render("You")
+		body := prefixLines(block.Content, width-2, m.theme.UserPrefix.Render("▎"))
+		return lipgloss.JoinVertical(lipgloss.Left, label, body)
 	case "assistant":
 		content := block.Content
 		if block.State == "done" {
-			if rendered, err := m.renderer(width, content); err == nil {
+			if rendered, err := m.renderer(width-2, content); err == nil {
 				if strings.TrimSpace(rendered) != "" {
 					content = rendered
 				}
 			}
 		}
-		body := lipgloss.NewStyle().Width(width).Render(content)
-		return lipgloss.JoinVertical(lipgloss.Left, m.theme.AssistantLabel.Render("Luc"), m.theme.AssistantBody.Render(body))
+		label := m.theme.AssistantLabel.Render("◆ Luc")
+		body := prefixLines(content, width-2, m.theme.AssistantPrefix.Render("▎"))
+		return lipgloss.JoinVertical(lipgloss.Left, label, body)
 	case "tool":
-		title := block.Meta["name"]
-		if title == "" {
-			title = "tool"
-		}
-		content := strings.TrimSpace(block.Content)
-		if content == "" {
-			content = block.State
-		}
-		style := m.theme.ToolCard
-		if block.State == "error" {
-			style = m.theme.ErrorCard
-		}
-		card := lipgloss.JoinVertical(
-			lipgloss.Left,
-			m.theme.ToolTitle.Render("Tool "+title),
-			lipgloss.NewStyle().Width(width-2).Render(content),
-		)
-		return style.Width(width).Render(card)
+		return m.renderToolBlock(block, width)
 	case "error":
 		card := lipgloss.JoinVertical(lipgloss.Left, m.theme.ToolTitle.Render("Error"), block.Content)
 		return m.theme.ErrorCard.Width(width).Render(card)
 	default:
 		return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(block.Content))
 	}
+}
+
+func (m Model) renderToolBlock(block Block, width int) string {
+	title := block.Meta["name"]
+	if title == "" {
+		title = "tool"
+	}
+	path := block.Meta["path"]
+
+	style := m.theme.ToolCard
+	if block.State == "error" {
+		style = m.theme.ErrorCard
+	}
+
+	// Header line: "✓ edit path/to/file  (+3 -1)" style
+	statusGlyph := "●"
+	switch block.State {
+	case "done":
+		statusGlyph = "✓"
+	case "error":
+		statusGlyph = "✗"
+	case "pending", "streaming":
+		statusGlyph = "…"
+	}
+
+	header := m.theme.ToolTitle.Render(statusGlyph + " " + title)
+	if path != "" {
+		header = lipgloss.JoinHorizontal(lipgloss.Left, header, " ", m.theme.Muted.Render(path))
+	}
+
+	content := strings.TrimSpace(block.Content)
+	var body string
+	switch {
+	case block.Diff != "" && m.shouldCollapseDiff(block) && !m.isExpanded(block.ID):
+		body = m.renderCollapsedDiffBody(block, width)
+	case block.Diff != "":
+		body = m.renderDiffBody(block, width)
+	case m.shouldCollapseToolBlock(block) && !m.isExpanded(block.ID):
+		body = m.renderCollapsedToolBody(block, width)
+	case m.isExpanded(block.ID):
+		body = m.renderExpandedToolBody(block, width)
+	case content != "":
+		body = lipgloss.NewStyle().Width(width - 4).Render(content)
+	default:
+		body = m.theme.Muted.Render(block.State)
+	}
+
+	card := lipgloss.JoinVertical(lipgloss.Left, header, "", body)
+	return style.Width(width).Render(card)
+}
+
+func (m Model) renderCollapsedToolBody(block Block, width int) string {
+	innerW := max(1, width-4)
+	command := strings.TrimSpace(block.Meta["command"])
+	lines := []string{}
+	if command != "" {
+		lines = append(lines,
+			m.theme.Muted.Render("Command"),
+			lipgloss.NewStyle().Width(innerW).Render("$ "+command),
+		)
+	}
+
+	summary := strings.TrimSpace(block.Meta[tools.MetadataUICollapsedSummary])
+	if summary == "" {
+		summary = summarizeCollapsedOutput(block.Content)
+	}
+	lines = append(lines,
+		"",
+		m.theme.Muted.Render("Summary"),
+		m.theme.Muted.Render(summary),
+	)
+	if strings.TrimSpace(block.Content) != "" {
+		lines = append(lines, m.theme.Muted.Render("Double-click to expand."))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func (m Model) renderExpandedToolBody(block Block, width int) string {
+	innerW := max(1, width-4)
+	command := strings.TrimSpace(block.Meta["command"])
+	lines := []string{}
+	if command != "" {
+		lines = append(lines,
+			m.theme.Muted.Render("Command"),
+			lipgloss.NewStyle().Width(innerW).Render("$ "+command),
+			"",
+		)
+	}
+	content := strings.TrimSpace(block.Content)
+	if content == "" {
+		content = "No output."
+	}
+	lines = append(lines,
+		m.theme.Muted.Render("Output"),
+		lipgloss.NewStyle().Width(innerW).Render(content),
+		"",
+		m.theme.Muted.Render("Double-click to collapse."),
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func (m Model) renderDiffBody(block Block, width int) string {
+	if !m.isExpanded(block.ID) {
+		return renderDiff(m.theme, width-4, block.Diff)
+	}
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		renderDiff(m.theme, width-4, block.Diff),
+		"",
+		m.theme.Muted.Render("Double-click to collapse."),
+	)
+}
+
+func (m Model) renderCollapsedDiffBody(block Block, width int) string {
+	lines := strings.Split(strings.TrimSpace(block.Diff), "\n")
+	changed := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+			changed++
+		}
+	}
+	summary := fmt.Sprintf("Collapsed diff: %d line(s), %d changed line(s).", len(lines), changed)
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.theme.Muted.Render(summary),
+		m.theme.Muted.Render("Double-click to expand."),
+	)
+}
+
+// prefixLines prepends `prefix` to each line of `content`, word-wrapping
+// to `width`. The prefix itself counts as 1 display column so body width
+// gets width-1 cells.
+func prefixLines(content string, width int, prefix string) string {
+	body := lipgloss.NewStyle().Width(max(1, width-1)).Render(content)
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + " " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cleanText(s string) string {
@@ -235,12 +553,51 @@ func cleanText(s string) string {
 	return strings.TrimRight(clean, "\r")
 }
 
-func diffPreview(diff string, maxLines int) string {
-	lines := strings.Split(strings.TrimSpace(diff), "\n")
-	if len(lines) <= maxLines {
-		return strings.Join(lines, "\n")
+func summarizeCollapsedOutput(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
 	}
-	return strings.Join(lines[:maxLines], "\n") + "\n..."
+	lines := strings.Split(trimmed, "\n")
+	nonEmpty := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty == 0 {
+		nonEmpty = len(lines)
+	}
+	return fmt.Sprintf("Collapsed output: %d line(s), %d byte(s).", nonEmpty, len(trimmed))
+}
+
+func shouldHideTool(name string) bool {
+	return strings.TrimSpace(name) == "list_tools"
+}
+
+func (m Model) isExpanded(blockID string) bool {
+	return m.expanded[blockID]
+}
+
+func (m Model) shouldCollapseToolBlock(block Block) bool {
+	if block.Diff != "" {
+		return false
+	}
+	return block.Meta[tools.MetadataUIDefaultCollapsed] == "true"
+}
+
+func (m Model) isExpandableToolBlock(block Block) bool {
+	if block.Diff != "" {
+		return m.shouldCollapseDiff(block)
+	}
+	return m.shouldCollapseToolBlock(block) && strings.TrimSpace(block.Content) != ""
+}
+
+func (m Model) shouldCollapseDiff(block Block) bool {
+	if strings.TrimSpace(block.Diff) == "" {
+		return false
+	}
+	return strings.Count(block.Diff, "\n")+1 > diffCollapseLineThreshold || len(block.Diff) > diffCollapseByteThreshold
 }
 
 func decode[T any](payload any) T {
@@ -248,4 +605,55 @@ func decode[T any](payload any) T {
 	data, _ := json.Marshal(payload)
 	_ = json.Unmarshal(data, &out)
 	return out
+}
+
+func (m Model) blockIndexAtRow(row int) (int, bool) {
+	if row < 0 {
+		return 0, false
+	}
+	absRow := m.viewport.YOffset() + row
+	for i, span := range m.spans {
+		if absRow >= span.start && absRow <= span.end {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (m Model) selectionRange() (int, int, bool) {
+	if m.selAnchor < 0 || m.selFocus < 0 || len(m.blocks) == 0 {
+		return 0, 0, false
+	}
+	start, end := m.selAnchor, m.selFocus
+	if start > end {
+		start, end = end, start
+	}
+	if start < 0 || end >= len(m.blocks) {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func (m Model) isSelectedBlock(idx int) bool {
+	start, end, ok := m.selectionRange()
+	if !ok {
+		return false
+	}
+	return idx >= start && idx <= end
+}
+
+func (m Model) plainTextForBlock(block Block) string {
+	switch block.Kind {
+	case "tool":
+		if block.Diff != "" {
+			return block.Diff
+		}
+		if name := strings.TrimSpace(block.Meta["name"]); name != "" {
+			if content := strings.TrimSpace(block.Content); content != "" {
+				return name + "\n" + content
+			}
+			return name
+		}
+	}
+	return block.Content
 }
