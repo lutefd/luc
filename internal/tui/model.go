@@ -211,7 +211,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.lastClickAt = time.Time{}
 						m.lastClickID = ""
 						m.transcript.ClearSelection()
-						if m.transcript.ToggleToolExpansionAtRow(row) {
+						if m.transcript.ToggleBlockExpansionAtRow(row) {
 							return m, nil
 						}
 					}

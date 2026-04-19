@@ -190,6 +190,41 @@ func TestTranscriptToggleToolExpansionAtRow(t *testing.T) {
 	}
 }
 
+func TestTranscriptErrorBlockIsCollapsibleAndDefaultCollapsed(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(80, 20)
+	model.Apply(history.EventEnvelope{
+		Kind: "system.error",
+		Payload: history.MessagePayload{
+			ID:      "err1",
+			Content: "switch model failed: connection refused\n\nstack trace line 1\nstack trace line 2",
+		},
+	})
+
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Error") {
+		t.Fatalf("expected error header in view:\n%s", view)
+	}
+	if !strings.Contains(view, "switch model failed: connection refused") {
+		t.Fatalf("expected error summary (first line) in collapsed view:\n%s", view)
+	}
+	if !strings.Contains(view, "Double-click to expand.") {
+		t.Fatalf("expected expand hint in collapsed error view:\n%s", view)
+	}
+	if strings.Contains(view, "stack trace line 2") {
+		t.Fatalf("expected error to start collapsed, details should be hidden:\n%s", view)
+	}
+
+	row := model.spans[0].start - model.viewport.YOffset()
+	if ok := model.ToggleBlockExpansionAtRow(row); !ok {
+		t.Fatal("expected toggle to succeed for error block")
+	}
+	view = ansi.Strip(model.View())
+	if !strings.Contains(view, "stack trace line 2") || !strings.Contains(view, "Double-click to collapse.") {
+		t.Fatalf("expected expanded error body in view:\n%s", view)
+	}
+}
+
 func TestTranscriptHidesLoadSkillBodyAndShowsOnlyLabel(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(80, 20)

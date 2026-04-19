@@ -169,18 +169,27 @@ func (m Model) BlockIDAtRow(row int) (string, bool) {
 	return m.blocks[idx].ID, true
 }
 
-func (m *Model) ToggleToolExpansionAtRow(row int) bool {
+// ToggleBlockExpansionAtRow flips the expanded state of a tool or error
+// block at the given viewport row. Returns true if the toggle was applied.
+func (m *Model) ToggleBlockExpansionAtRow(row int) bool {
 	idx, ok := m.blockIndexAtRow(row)
 	if !ok || idx < 0 || idx >= len(m.blocks) {
 		return false
 	}
 	block := m.blocks[idx]
-	if block.Kind != "tool" || !m.isExpandableToolBlock(block) {
+	if !m.isExpandableBlock(block) {
 		return false
 	}
 	m.expanded[block.ID] = !m.expanded[block.ID]
 	m.render()
 	return true
+}
+
+// ToggleToolExpansionAtRow is kept as an alias for ToggleBlockExpansionAtRow
+// so existing tests and callers keep compiling. New code should use the
+// generalized name.
+func (m *Model) ToggleToolExpansionAtRow(row int) bool {
+	return m.ToggleBlockExpansionAtRow(row)
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
@@ -398,8 +407,7 @@ func (m Model) renderBlock(block Block) string {
 	case "tool":
 		return m.renderToolBlock(block, width)
 	case "error":
-		card := lipgloss.JoinVertical(lipgloss.Left, m.theme.ToolTitle.Render("Error"), block.Content)
-		return m.theme.ErrorCard.Width(width).Render(card)
+		return m.renderErrorBlock(block, width)
 	default:
 		return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(block.Content))
 	}
@@ -599,6 +607,71 @@ func (m Model) shouldCollapseToolBlock(block Block) bool {
 		return false
 	}
 	return block.Meta[tools.MetadataUIDefaultCollapsed] == "true"
+}
+
+// isExpandableBlock reports whether a block supports the expand/collapse
+// interaction. Currently tools and errors qualify; both share the same
+// m.expanded[block.ID] state.
+func (m Model) isExpandableBlock(block Block) bool {
+	switch block.Kind {
+	case "tool":
+		return m.isExpandableToolBlock(block)
+	case "error":
+		return strings.TrimSpace(block.Content) != ""
+	}
+	return false
+}
+
+// renderErrorBlock renders a stylized, collapsible error card. By default
+// the card shows only the header and a one-line summary; double-clicking
+// expands it to the full error body for debugging. This mirrors the tool
+// block treatment — the expanded state is tracked in m.expanded[block.ID].
+func (m Model) renderErrorBlock(block Block, width int) string {
+	style := m.theme.ErrorCard
+	header := m.theme.StatusError.Render("✗ Error")
+
+	content := strings.TrimSpace(block.Content)
+	if content == "" {
+		// No details worth expanding — render a minimal card with just the
+		// header so the user still gets a signal something went wrong.
+		return style.Width(width).Render(header)
+	}
+
+	summary := firstMeaningfulLine(content)
+	innerW := max(1, width-4)
+	var body string
+	if m.isExpanded(block.ID) {
+		body = lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.theme.Muted.Render("Details"),
+			lipgloss.NewStyle().Width(innerW).Render(content),
+			"",
+			m.theme.Muted.Render("Double-click to collapse."),
+		)
+	} else {
+		body = lipgloss.JoinVertical(
+			lipgloss.Left,
+			lipgloss.NewStyle().Width(innerW).Render(summary),
+			"",
+			m.theme.Muted.Render("Double-click to expand."),
+		)
+	}
+
+	card := lipgloss.JoinVertical(lipgloss.Left, header, "", body)
+	return style.Width(width).Render(card)
+}
+
+// firstMeaningfulLine returns the first non-empty trimmed line of s. Used
+// to show a compact summary in collapsed error cards without dumping a
+// multi-line stack trace.
+func firstMeaningfulLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.TrimSpace(s)
 }
 
 func (m Model) isExpandableToolBlock(block Block) bool {
