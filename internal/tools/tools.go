@@ -24,9 +24,16 @@ type Request struct {
 }
 
 type Result struct {
-	Content  string
-	Metadata map[string]any
+	Content          string
+	Metadata         map[string]any
+	DefaultCollapsed bool
+	CollapsedSummary string
 }
+
+const (
+	MetadataUIDefaultCollapsed = "ui_default_collapsed"
+	MetadataUICollapsedSummary = "ui_collapsed_summary"
+)
 
 type Tool interface {
 	Spec() provider.ToolSpec
@@ -70,7 +77,8 @@ func (m *Manager) Run(ctx context.Context, req Request) (Result, error) {
 	if !ok {
 		return Result{}, fmt.Errorf("unknown tool %q", req.Name)
 	}
-	return tool.Run(ctx, req)
+	result, err := tool.Run(ctx, req)
+	return normalizeResult(result), err
 }
 
 func safePath(root, target string) (string, error) {
@@ -150,7 +158,9 @@ func (t *readTool) Run(ctx context.Context, req Request) (Result, error) {
 
 	content := strings.Join(lines[start:end], "\n")
 	return Result{
-		Content: content,
+		Content:          content,
+		DefaultCollapsed: true,
+		CollapsedSummary: readSummary(path, start, end-start),
 		Metadata: map[string]any{
 			"path":   path,
 			"offset": start,
@@ -374,8 +384,10 @@ func (t *bashTool) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	return Result{
-		Content:  string(output),
-		Metadata: metadata,
+		Content:          string(output),
+		Metadata:         metadata,
+		DefaultCollapsed: true,
+		CollapsedSummary: summarizeOutput(string(output), execCtx.Err() == context.DeadlineExceeded),
 	}, err
 }
 
@@ -404,4 +416,48 @@ func (t *listToolsTool) Run(ctx context.Context, req Request) (Result, error) {
 func buildDiff(path, before, after string) string {
 	diff := udiff.Unified(path, path, before, after)
 	return strings.TrimSpace(diff)
+}
+
+func normalizeResult(result Result) Result {
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	if result.DefaultCollapsed {
+		result.Metadata[MetadataUIDefaultCollapsed] = true
+	}
+	if strings.TrimSpace(result.CollapsedSummary) != "" {
+		result.Metadata[MetadataUICollapsedSummary] = strings.TrimSpace(result.CollapsedSummary)
+	}
+	return result
+}
+
+func readSummary(path string, offset, lines int) string {
+	lineLabel := "lines"
+	if lines == 1 {
+		lineLabel = "line"
+	}
+	return fmt.Sprintf("Read %d %s from %s starting at line %d.", lines, lineLabel, path, offset+1)
+}
+
+func summarizeOutput(content string, timedOut bool) string {
+	trimmed := strings.TrimSpace(content)
+	lines := 0
+	if trimmed != "" {
+		for _, line := range strings.Split(trimmed, "\n") {
+			if strings.TrimSpace(line) != "" {
+				lines++
+			}
+		}
+		if lines == 0 {
+			lines = len(strings.Split(trimmed, "\n"))
+		}
+	}
+	summary := fmt.Sprintf("Collapsed output: %d line(s), %d byte(s).", lines, len(trimmed))
+	if strings.TrimSpace(trimmed) == "" {
+		summary = "No output."
+	}
+	if timedOut {
+		summary += " Timed out."
+	}
+	return summary
 }
