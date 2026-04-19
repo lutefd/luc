@@ -25,6 +25,7 @@ type SessionMeta struct {
 type MessagePayload struct {
 	ID          string              `json:"id"`
 	Content     string              `json:"content"`
+	Synthetic   bool                `json:"synthetic,omitempty"`
 	Attachments []AttachmentPayload `json:"attachments,omitempty"`
 }
 

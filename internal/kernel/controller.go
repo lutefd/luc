@@ -32,6 +32,8 @@ import (
 const (
 	skillToolName         = "load_skill"
 	skillResourceToolName = "read_skill_resource"
+	noResponseText        = "No response."
+	noUsableResponseText  = "Provider returned no usable response."
 )
 
 var newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
@@ -667,8 +669,18 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 		}
 
 		final := strings.TrimSpace(builder.String())
-		if final == "" {
-			final = "No response."
+		if final == "" || isNoResponsePlaceholder(final) {
+			c.emit("message.assistant.final", history.MessagePayload{
+				ID:        assistantID,
+				Content:   noUsableResponseText,
+				Synthetic: true,
+			})
+			errMsg := "provider returned an empty response"
+			if isNoResponsePlaceholder(final) {
+				errMsg = fmt.Sprintf("provider returned placeholder response %q", noResponseText)
+			}
+			c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: errMsg})
+			return nil
 		}
 		c.emit("message.assistant.final", history.MessagePayload{ID: assistantID, Content: final})
 		c.appendMessage(provider.Message{Role: "assistant", Content: final})
@@ -713,6 +725,7 @@ func (c *Controller) emit(kind string, payload any) {
 		c.session.UpdatedAt = ev.At
 		c.saveSessionMeta()
 	}
+	c.mirrorEventToLogs(kind, payload)
 
 	select {
 	case c.events <- ev:
@@ -720,6 +733,50 @@ func (c *Controller) emit(kind string, payload any) {
 		c.logger.Ring.Add("warn", "dropping UI event because channel is full")
 	}
 	c.dispatchHooks(ev)
+}
+
+func (c *Controller) mirrorEventToLogs(kind string, payload any) {
+	if c.logger == nil || c.logger.Ring == nil {
+		return
+	}
+
+	level, message, ok := eventLogEntry(kind, payload)
+	if !ok {
+		return
+	}
+	c.logger.Ring.Add(level, message)
+}
+
+func eventLogEntry(kind string, payload any) (level, message string, ok bool) {
+	switch kind {
+	case "system.error":
+		data := decode[history.MessagePayload](payload)
+		if strings.TrimSpace(data.Content) == "" {
+			return "", "", false
+		}
+		return "error", data.Content, true
+	case "reload.failed":
+		data := decode[history.ReloadPayload](payload)
+		message := strings.TrimSpace(data.Error)
+		if message == "" {
+			message = "reload failed"
+		} else {
+			message = "reload failed: " + message
+		}
+		return "error", message, true
+	case "tool.finished":
+		data := decode[history.ToolResultPayload](payload)
+		if strings.TrimSpace(data.Error) == "" {
+			return "", "", false
+		}
+		name := strings.TrimSpace(data.Name)
+		if name == "" {
+			name = "unknown"
+		}
+		return "error", fmt.Sprintf("tool %s failed: %s", name, data.Error), true
+	default:
+		return "", "", false
+	}
 }
 
 func (c *Controller) startNewSession() error {
@@ -886,6 +943,9 @@ func (c *Controller) replay(ev history.EventEnvelope) {
 		c.conversation = append(c.conversation, msg)
 	case "message.assistant.final":
 		payload := decode[history.MessagePayload](ev.Payload)
+		if payload.Synthetic || isNoResponsePlaceholder(payload.Content) {
+			return
+		}
 		c.conversation = append(c.conversation, provider.Message{Role: "assistant", Content: payload.Content})
 	case "message.assistant.tool_calls":
 		payload := decode[history.ToolCallBatchPayload](ev.Payload)
@@ -924,9 +984,18 @@ func (c *Controller) snapshotConversation() []provider.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	out := make([]provider.Message, len(c.conversation))
-	copy(out, c.conversation)
+	out := make([]provider.Message, 0, len(c.conversation))
+	for _, msg := range c.conversation {
+		if msg.Role == "assistant" && isNoResponsePlaceholder(msg.Content) {
+			continue
+		}
+		out = append(out, msg)
+	}
 	return out
+}
+
+func isNoResponsePlaceholder(text string) bool {
+	return strings.EqualFold(strings.TrimSpace(text), noResponseText)
 }
 
 func (c *Controller) loadSystemPrompt() string {
@@ -951,9 +1020,31 @@ func (c *Controller) loadSystemPrompt() string {
 }
 
 func (c *Controller) composeSystemPrompt(input string) (string, error) {
-	_ = input
 	var builder strings.Builder
 	builder.WriteString(c.systemPrompt)
+	if relevant := c.relevantSkills(input); len(relevant) > 0 {
+		builder.WriteString("\n\nLikely relevant skills for this request:\n")
+		builder.WriteString("Before editing luc core code or this repo for luc itself, load the most relevant skill first when the task is about extending luc or adding a runtime capability.\n")
+		if c.hasRelevantSkill(relevant, "runtime-extension-authoring") {
+			builder.WriteString("luc does support runtime UI manifests via `luc.ui/v1`. New runtime `inspector_tab` and `page` views are supported; only the built-in `Overview` tab remains core-owned.\n")
+		}
+		for _, skill := range relevant {
+			builder.WriteString("- ")
+			builder.WriteString(skill.Name)
+			label := strings.TrimSpace(skill.DisplayName)
+			if label != "" && label != skill.Name {
+				builder.WriteString(" (")
+				builder.WriteString(label)
+				builder.WriteString(")")
+			}
+			if desc := strings.TrimSpace(skill.Description); desc != "" {
+				builder.WriteString(": ")
+				builder.WriteString(desc)
+			}
+			builder.WriteString("\n")
+		}
+		builder.WriteString("Prefer implementing supported capabilities under `~/.luc` or `<workspace>/.luc` before changing core code.\n")
+	}
 	if catalog := c.skillCatalog(); strings.TrimSpace(catalog) != "" {
 		builder.WriteString("\n\nAvailable skills:\n")
 		builder.WriteString("Use the `load_skill` tool when a task matches a skill's description or the user explicitly names one.\n")
@@ -961,6 +1052,41 @@ func (c *Controller) composeSystemPrompt(input string) (string, error) {
 		builder.WriteString(catalog)
 	}
 	return strings.TrimSpace(builder.String()), nil
+}
+
+func (c *Controller) hasRelevantSkill(skills []extensions.Skill, name string) bool {
+	target := strings.ToLower(strings.TrimSpace(name))
+	for _, skill := range skills {
+		if strings.ToLower(strings.TrimSpace(skill.Name)) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Controller) relevantSkills(input string) []extensions.Skill {
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" {
+		return nil
+	}
+	var out []extensions.Skill
+	for _, skill := range c.skills {
+		if skill.Always {
+			out = append(out, skill)
+			continue
+		}
+		for _, trigger := range skill.Triggers {
+			trigger = strings.ToLower(strings.TrimSpace(trigger))
+			if trigger == "" {
+				continue
+			}
+			if strings.Contains(text, trigger) {
+				out = append(out, skill)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func (c *Controller) skillCatalog() string {
