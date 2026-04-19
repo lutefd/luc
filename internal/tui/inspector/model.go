@@ -81,6 +81,9 @@ func (m *Model) SetLogs(entries []logging.Entry) {
 }
 
 func (m *Model) SetSessionMeta(meta history.SessionMeta) {
+	if m.session == meta {
+		return
+	}
 	m.session = meta
 	if m.activeTab == tabOverview || m.activeTab == TabContext {
 		m.refreshContent()
@@ -148,35 +151,62 @@ func (m Model) RuntimeViewContent(viewID string) string {
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
+	if !m.applyEvent(ev) {
+		return
+	}
+	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
+		m.refreshContent()
+	}
+}
+
+func (m *Model) ApplyBatch(events []history.EventEnvelope) {
+	changed := false
+	for _, ev := range events {
+		if m.applyEvent(ev) {
+			changed = true
+		}
+	}
+	if changed && (m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount) {
+		m.refreshContent()
+	}
+}
+
+func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	switch ev.Kind {
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
 		m.userTurns++
 		m.lastUser = clampString(ansi.Strip(payload.Content), 180)
 		m.status = "Waiting for response"
+		return true
 	case "message.assistant.delta":
 		if strings.TrimSpace(m.status) == "" || strings.EqualFold(m.status, "Waiting for response") {
 			m.status = "Responding"
+			return true
 		}
+		return false
 	case "message.assistant.final":
 		payload := decode[history.MessagePayload](ev.Payload)
 		m.assistantTurns++
 		m.lastAssistant = clampString(ansi.Strip(payload.Content), 180)
 		m.status = "Ready"
+		return true
 	case "message.assistant.tool_calls":
 		m.status = "Running tools"
+		return true
 	case "tool.requested":
 		payload := decode[history.ToolCallPayload](ev.Payload)
 		if shouldHideTool(payload.Name) {
-			return
+			return false
 		}
 		m.lastCall = payload
 		m.toolCalls++
 		m.status = "Running " + m.lastCall.Name
+		return true
 	case "tool.finished":
 		payload := decode[history.ToolResultPayload](ev.Payload)
 		if shouldHideTool(payload.Name) {
-			return
+			return false
 		}
 		m.tool = payload
 		if m.tool.Error != "" {
@@ -185,10 +215,12 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		} else {
 			m.status = "Tool finished: " + m.tool.Name
 		}
+		return true
 	case "reload.finished":
 		payload := decode[history.ReloadPayload](ev.Payload)
 		m.reloadVersion = payload.Version
 		m.status = fmt.Sprintf("Reloaded v%d", payload.Version)
+		return true
 	case "reload.failed":
 		payload := decode[history.ReloadPayload](ev.Payload)
 		m.errorCount++
@@ -196,6 +228,7 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		if payload.Version > 0 {
 			m.reloadVersion = payload.Version
 		}
+		return true
 	case "status.thinking":
 		payload := decode[history.StatusPayload](ev.Payload)
 		if strings.TrimSpace(payload.Text) != "" {
@@ -203,16 +236,17 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		} else {
 			m.status = "Thinking..."
 		}
+		return true
 	case "system.error":
 		m.errorCount++
 		m.status = "Error"
+		return true
 	case "hook.failed":
 		m.errorCount++
 		m.status = "Hook failed"
+		return true
 	}
-	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
-		m.refreshContent()
-	}
+	return false
 }
 
 func (m *Model) NextTab() {
@@ -223,6 +257,10 @@ func (m *Model) NextTab() {
 func (m *Model) PrevTab() {
 	m.activeTab = (m.activeTab - 1 + m.totalTabs()) % m.totalTabs()
 	m.refreshContent()
+}
+
+func (m Model) IsLogsActive() bool {
+	return m.activeTab == TabLogs
 }
 
 func (m *Model) UpdateViewport(msg tea.Msg) {
