@@ -1,6 +1,8 @@
 package theme
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,5 +45,32 @@ func TestResolveVariant(t *testing.T) {
 	}
 	if got := ResolveVariant("light"); got != VariantLight {
 		t.Fatalf("expected explicit light variant, got %q", got)
+	}
+}
+
+func TestLoadCustomThemeFromGlobalLucDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".luc", "themes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := `inherits: light
+colors:
+  accent: "#ff5500"
+  panel: "#fef4ef"
+`
+	if err := os.WriteFile(filepath.Join(home, ".luc", "themes", "sunrise.yaml"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	th, variant, err := Load("sunrise", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if variant != VariantLight {
+		t.Fatalf("expected inherited light variant, got %q", variant)
+	}
+	if got := th.HeaderBrand.Render("luc"); !strings.Contains(got, "luc") {
+		t.Fatalf("expected loaded custom theme to render content, got %q", got)
 	}
 }

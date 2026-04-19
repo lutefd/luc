@@ -1,12 +1,14 @@
 package theme
 
 import (
+	"image/color"
 	"os"
 	"strings"
 
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/styles"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/lutefd/luc/internal/extensions"
 )
 
 const (
@@ -15,6 +17,14 @@ const (
 )
 
 type Theme struct {
+	// Background is the terminal background color to apply via
+	// tea.View.BackgroundColor, which triggers an OSC 11 sequence that
+	// repaints every cell of the alt-screen — including cells that no
+	// lipgloss style explicitly paints. Nil means "don't touch terminal
+	// background" (used for built-in light/dark so the user's terminal
+	// theme shows through). Set for custom themes whose declared bg
+	// differs from the user's terminal.
+	Background       color.Color
 	App              lipgloss.Style
 	HeaderBrand      lipgloss.Style
 	HeaderMeta       lipgloss.Style
@@ -47,6 +57,13 @@ type Theme struct {
 	StatusBusy       lipgloss.Style
 	StatusError      lipgloss.Style
 	PaletteFrame     lipgloss.Style
+	// PaletteSurface is the "canvas" the palette/picker renders content onto.
+	// Wrapping the JoinVertical'd body in this style (with an explicit Width)
+	// forces every inner cell — including JoinVertical's right-padding spaces
+	// between short rows and the widest row — to carry the panel background.
+	// Without this, those padded spaces have no ANSI bg and fall through to
+	// the terminal's OSC 11 bg, which shows as a visibly different shade.
+	PaletteSurface   lipgloss.Style
 	PaletteActive    lipgloss.Style
 	DiffAdd          lipgloss.Style
 	DiffDel          lipgloss.Style
@@ -56,58 +73,121 @@ type Theme struct {
 }
 
 func Default(variant string) Theme {
+	// Built-in light/dark variants intentionally leave the background
+	// unpainted so the user's terminal background (often a warmer/darker
+	// tone than pure #ffffff or #0d1117) shows through. Custom themes go
+	// through the painting path below.
 	p := paletteFor(ResolveVariant(variant))
+	return fromPalette(p, false)
+}
+
+func Load(name, workspaceRoot string) (Theme, string, error) {
+	if def, found, err := extensions.LoadTheme(workspaceRoot, name); err != nil {
+		return Default(ResolveVariant(name)), ResolveVariant(name), err
+	} else if found {
+		variant := ResolveVariant(def.Inherits)
+		p := applyThemeColors(paletteFor(variant), def.Colors)
+		// Custom themes must paint bg on every surface — otherwise their
+		// chosen background only shows in the sidebar while the rest of
+		// the UI leaks the terminal's default bg.
+		return fromPalette(p, true), variant, nil
+	}
+	variant := ResolveVariant(name)
+	return Default(variant), variant, nil
+}
+
+// fromPalette builds a Theme from a resolved palette. When paintBg is false,
+// every non-sidebar surface leaves the background unset so the terminal's
+// default background (which the user has presumably tuned to their taste)
+// shows through. When true, every surface explicitly paints `bg` — required
+// for custom themes whose chosen background differs from the terminal.
+func fromPalette(p palette, paintBg bool) Theme {
+	bg := lipgloss.Color(p.bg)
 	panel := lipgloss.Color(p.panel)
 	line := lipgloss.Color(p.line)
 	accent := lipgloss.Color(p.accent)
 	accentAlt := lipgloss.Color(p.accentAlt)
 	text := lipgloss.Color(p.text)
 	muted := lipgloss.Color(p.muted)
+	subtle := lipgloss.Color(p.subtle)
 	blue := lipgloss.Color(p.blue)
 	cyan := lipgloss.Color(p.cyan)
 	success := lipgloss.Color(p.success)
 	warn := lipgloss.Color(p.warn)
 	errorText := lipgloss.Color(p.errorText)
 
+	// IMPORTANT: fg-only styles intentionally leave Background UNSET, even
+	// when paintBg is true. For custom themes we set Theme.Background so the
+	// program emits OSC 11 and the terminal repaints its default bg; every
+	// cell we don't explicitly style then inherits that color for free.
+	//
+	// Setting a per-cell Background(bg) in addition to OSC 11 looks like it
+	// should be a no-op (same hex), but in practice terminals apply OSC 11
+	// and SGR 48;2 through different rendering paths — blending, transparency,
+	// profile conversion — producing visibly different shades. The result
+	// was darker bands behind every text run I'd painted bg on (labels,
+	// tool titles, system notes, transcript lines). Only genuine contrast
+	// surfaces (sidebar, palette frame, diff backgrounds) keep explicit
+	// Background calls because they *need* to differ from the base bg.
+	//
+	// For built-in themes paintBg is false, Theme.Background stays nil, and
+	// the user's terminal bg shows uniformly across the whole UI.
+	_ = bg
+	_ = paintBg
+
+	onBg := func() lipgloss.Style {
+		return lipgloss.NewStyle()
+	}
+	onPanel := func() lipgloss.Style {
+		return lipgloss.NewStyle().Background(panel)
+	}
+
+	var termBg color.Color
+	if paintBg {
+		termBg = bg
+	}
+
 	return Theme{
-		App:              lipgloss.NewStyle().Foreground(text),
-		HeaderBrand:      lipgloss.NewStyle().Foreground(accent).Bold(true),
-		HeaderMeta:       lipgloss.NewStyle().Foreground(muted),
-		HeaderRule:       lipgloss.NewStyle().Foreground(accentAlt),
-		Body:             lipgloss.NewStyle().Foreground(text),
-		Muted:            lipgloss.NewStyle().Foreground(muted),
-		Subtle:           lipgloss.NewStyle().Foreground(lipgloss.Color(p.subtle)),
-		UserLabel:        lipgloss.NewStyle().Foreground(cyan).Bold(true),
-		UserBubble:       lipgloss.NewStyle().Foreground(text),
-		UserPrefix:       lipgloss.NewStyle().Foreground(cyan),
-		AssistantLabel:   lipgloss.NewStyle().Foreground(accent).Bold(true),
-		AssistantBody:    lipgloss.NewStyle().Foreground(text),
-		AssistantPrefix:  lipgloss.NewStyle().Foreground(accent),
-		ToolCard:         lipgloss.NewStyle().Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
-		ToolTitle:        lipgloss.NewStyle().Foreground(blue).Bold(true),
-		ErrorCard:        lipgloss.NewStyle().Foreground(errorText).Border(lipgloss.RoundedBorder()).BorderForeground(warn).Padding(0, 1),
-		Sidebar:          lipgloss.NewStyle().Background(panel).Foreground(text).Padding(1, 2),
-		SidebarTitle:     lipgloss.NewStyle().Background(panel).Foreground(accent).Bold(true),
-		SidebarLabel:     lipgloss.NewStyle().Background(panel).Foreground(muted),
-		SidebarValue:     lipgloss.NewStyle().Background(panel).Foreground(text),
-		SidebarSection:   lipgloss.NewStyle().Background(panel).Foreground(line),
-		SidebarTabActive: lipgloss.NewStyle().Background(panel).Foreground(accent).Bold(true).Underline(true),
-		SidebarTab:       lipgloss.NewStyle().Background(panel).Foreground(muted),
-		InputFrame:       lipgloss.NewStyle().Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
-		InputPrompt:      lipgloss.NewStyle().Foreground(cyan).Bold(true),
-		InputPlaceholder: lipgloss.NewStyle().Foreground(muted),
-		InputText:        lipgloss.NewStyle().Foreground(text),
-		Footer:           lipgloss.NewStyle().Foreground(muted),
-		StatusReady:      lipgloss.NewStyle().Foreground(success),
-		StatusBusy:       lipgloss.NewStyle().Foreground(blue),
-		StatusError:      lipgloss.NewStyle().Foreground(warn),
+		Background:       termBg,
+		App:              onBg().Foreground(text),
+		HeaderBrand:      onBg().Foreground(accent).Bold(true),
+		HeaderMeta:       onBg().Foreground(muted),
+		HeaderRule:       onBg().Foreground(accentAlt),
+		Body:             onBg().Foreground(text),
+		Muted:            onBg().Foreground(muted),
+		Subtle:           onBg().Foreground(subtle),
+		UserLabel:        onBg().Foreground(cyan).Bold(true),
+		UserBubble:       onBg().Foreground(text),
+		UserPrefix:       onBg().Foreground(cyan),
+		AssistantLabel:   onBg().Foreground(accent).Bold(true),
+		AssistantBody:    onBg().Foreground(text),
+		AssistantPrefix:  onBg().Foreground(accent),
+		ToolCard:         onBg().Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
+		ToolTitle:        onBg().Foreground(blue).Bold(true),
+		ErrorCard:        onBg().Foreground(errorText).Border(lipgloss.RoundedBorder()).BorderForeground(warn).Padding(0, 1),
+		Sidebar:          onPanel().Foreground(text).Padding(1, 2),
+		SidebarTitle:     onPanel().Foreground(accent).Bold(true),
+		SidebarLabel:     onPanel().Foreground(muted),
+		SidebarValue:     onPanel().Foreground(text),
+		SidebarSection:   onPanel().Foreground(line),
+		SidebarTabActive: onPanel().Foreground(accent).Bold(true).Underline(true),
+		SidebarTab:       onPanel().Foreground(muted),
+		InputFrame:       onBg().Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(line).Padding(0, 1),
+		InputPrompt:      onBg().Foreground(cyan).Bold(true),
+		InputPlaceholder: onBg().Foreground(muted),
+		InputText:        onBg().Foreground(text),
+		Footer:           onBg().Foreground(muted),
+		StatusReady:      onBg().Foreground(success),
+		StatusBusy:       onBg().Foreground(blue),
+		StatusError:      onBg().Foreground(warn),
 		PaletteFrame:     lipgloss.NewStyle().Background(panel).Foreground(text).Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(1, 2),
-		PaletteActive:    lipgloss.NewStyle().Background(accent).Foreground(lipgloss.Color(p.bg)).Bold(true),
+		PaletteSurface:   lipgloss.NewStyle().Background(panel).Foreground(text),
+		PaletteActive:    lipgloss.NewStyle().Background(accent).Foreground(bg).Bold(true),
 		DiffAdd:          lipgloss.NewStyle().Background(lipgloss.Color(p.diffAddBG)).Foreground(lipgloss.Color(p.diffAddFG)),
 		DiffDel:          lipgloss.NewStyle().Background(lipgloss.Color(p.diffDelBG)).Foreground(lipgloss.Color(p.diffDelFG)),
-		DiffContext:      lipgloss.NewStyle().Foreground(text),
-		DiffHunk:         lipgloss.NewStyle().Foreground(muted).Italic(true),
-		DiffGutter:       lipgloss.NewStyle().Foreground(lipgloss.Color(p.subtle)),
+		DiffContext:      onBg().Foreground(text),
+		DiffHunk:         onBg().Foreground(muted).Italic(true),
+		DiffGutter:       onBg().Foreground(subtle),
 	}
 }
 
@@ -207,4 +287,62 @@ func paletteFor(variant string) palette {
 		diffDelBG: "#f5d1d8",
 		diffDelFG: "#67060c",
 	}
+}
+
+func applyThemeColors(p palette, c extensions.ThemeColors) palette {
+	if c.Bg != "" {
+		p.bg = c.Bg
+	}
+	if c.Panel != "" {
+		p.panel = c.Panel
+	}
+	if c.PanelAlt != "" {
+		p.panelAlt = c.PanelAlt
+	}
+	if c.Line != "" {
+		p.line = c.Line
+	}
+	if c.Accent != "" {
+		p.accent = c.Accent
+	}
+	if c.AccentAlt != "" {
+		p.accentAlt = c.AccentAlt
+	}
+	if c.Text != "" {
+		p.text = c.Text
+	}
+	if c.Muted != "" {
+		p.muted = c.Muted
+	}
+	if c.Subtle != "" {
+		p.subtle = c.Subtle
+	}
+	if c.Success != "" {
+		p.success = c.Success
+	}
+	if c.Warn != "" {
+		p.warn = c.Warn
+	}
+	if c.Blue != "" {
+		p.blue = c.Blue
+	}
+	if c.Cyan != "" {
+		p.cyan = c.Cyan
+	}
+	if c.ErrorText != "" {
+		p.errorText = c.ErrorText
+	}
+	if c.DiffAddBG != "" {
+		p.diffAddBG = c.DiffAddBG
+	}
+	if c.DiffAddFG != "" {
+		p.diffAddFG = c.DiffAddFG
+	}
+	if c.DiffDelBG != "" {
+		p.diffDelBG = c.DiffDelBG
+	}
+	if c.DiffDelFG != "" {
+		p.diffDelFG = c.DiffDelFG
+	}
+	return p
 }

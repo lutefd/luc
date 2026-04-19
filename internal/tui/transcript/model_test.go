@@ -190,6 +190,36 @@ func TestTranscriptToggleToolExpansionAtRow(t *testing.T) {
 	}
 }
 
+func TestTranscriptHidesLoadSkillBodyAndShowsOnlyLabel(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(80, 20)
+	model.Apply(history.EventEnvelope{
+		Kind: "tool.finished",
+		Payload: history.ToolResultPayload{
+			ID:      "skill1",
+			Name:    "load_skill",
+			Content: "<skill_content name=\"rails\">Prefer bin/rails.</skill_content>",
+			Metadata: map[string]any{
+				tools.MetadataUIHideContent: true,
+				tools.MetadataUILabel:       "skill loaded rails",
+			},
+		},
+	})
+
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "skill loaded rails") {
+		t.Fatalf("expected skill label in transcript view:\n%s", view)
+	}
+	if strings.Contains(view, "Prefer bin/rails") || strings.Contains(view, "Double-click") {
+		t.Fatalf("expected skill body to stay hidden and non-expandable:\n%s", view)
+	}
+
+	row := model.spans[0].start - model.viewport.YOffset()
+	if ok := model.ToggleToolExpansionAtRow(row); ok {
+		t.Fatalf("expected hidden skill tool block to be non-expandable")
+	}
+}
+
 func TestTranscriptHidesListToolsFromView(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(80, 20)

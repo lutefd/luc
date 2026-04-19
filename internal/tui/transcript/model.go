@@ -246,6 +246,12 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		if summary, ok := payload.Metadata[tools.MetadataUICollapsedSummary].(string); ok {
 			block.Meta[tools.MetadataUICollapsedSummary] = cleanText(summary)
 		}
+		if hidden, ok := payload.Metadata[tools.MetadataUIHideContent].(bool); ok && hidden {
+			block.Meta[tools.MetadataUIHideContent] = "true"
+		}
+		if label, ok := payload.Metadata[tools.MetadataUILabel].(string); ok {
+			block.Meta[tools.MetadataUILabel] = cleanText(label)
+		}
 	case "system.note", "system.error":
 		payload := decode[history.MessagePayload](ev.Payload)
 		kind := "note"
@@ -404,6 +410,9 @@ func (m Model) renderToolBlock(block Block, width int) string {
 	if title == "" {
 		title = "tool"
 	}
+	if label := strings.TrimSpace(block.Meta[tools.MetadataUILabel]); label != "" {
+		title = label
+	}
 	path := block.Meta["path"]
 
 	style := m.theme.ToolCard
@@ -425,6 +434,9 @@ func (m Model) renderToolBlock(block Block, width int) string {
 	header := m.theme.ToolTitle.Render(statusGlyph + " " + title)
 	if path != "" {
 		header = lipgloss.JoinHorizontal(lipgloss.Left, header, " ", m.theme.Muted.Render(path))
+	}
+	if m.shouldHideToolContent(block) {
+		return style.Width(width).Render(header)
 	}
 
 	content := strings.TrimSpace(block.Content)
@@ -583,6 +595,9 @@ func (m Model) shouldCollapseToolBlock(block Block) bool {
 	if block.Diff != "" {
 		return false
 	}
+	if m.shouldHideToolContent(block) {
+		return false
+	}
 	return block.Meta[tools.MetadataUIDefaultCollapsed] == "true"
 }
 
@@ -590,7 +605,14 @@ func (m Model) isExpandableToolBlock(block Block) bool {
 	if block.Diff != "" {
 		return m.shouldCollapseDiff(block)
 	}
+	if m.shouldHideToolContent(block) {
+		return false
+	}
 	return m.shouldCollapseToolBlock(block) && strings.TrimSpace(block.Content) != ""
+}
+
+func (m Model) shouldHideToolContent(block Block) bool {
+	return block.Meta[tools.MetadataUIHideContent] == "true"
 }
 
 func (m Model) shouldCollapseDiff(block Block) bool {

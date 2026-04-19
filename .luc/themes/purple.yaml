@@ -1,0 +1,21 @@
+inherits: dark
+colors:
+  accent: "#a855f7"
+  accent_alt: "#7c3aed"
+  panel: "#1a1325"
+  panel_alt: "#221a33"
+  line: "#3b2f52"
+  text: "#f3f0ff"
+  muted: "#b7accf"
+  subtle: "#6b5a8e"
+
+  blue: "#8b5cf6"
+  cyan: "#c084fc"
+  success: "#22c55e"
+  warn: "#f59e0b"
+  error_text: "#ef4444"
+
+  diff_add_bg: "#132a1c"
+  diff_add_fg: "#86efac"
+  diff_del_bg: "#34131d"
+  diff_del_fg: "#fda4af"

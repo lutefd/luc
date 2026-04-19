@@ -12,6 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
+	"github.com/lutefd/luc/internal/config"
+	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/kernel"
 	"github.com/lutefd/luc/internal/theme"
@@ -19,6 +21,7 @@ import (
 	"github.com/lutefd/luc/internal/tui/inspector"
 	modelspicker "github.com/lutefd/luc/internal/tui/models"
 	sessionpicker "github.com/lutefd/luc/internal/tui/sessions"
+	themepicker "github.com/lutefd/luc/internal/tui/themes"
 	"github.com/lutefd/luc/internal/tui/transcript"
 )
 
@@ -29,6 +32,8 @@ type toggleInspectorMsg struct{}
 type nextTabMsg struct{}
 type openModelPickerMsg struct{}
 type openSessionPickerMsg struct{}
+type openThemePickerMsg struct{}
+type resetThemeMsg struct{}
 type newSessionMsg struct{}
 type copySelectionMsg struct{}
 
@@ -64,6 +69,7 @@ type Model struct {
 	palette       commands.Model
 	modelPicker   modelspicker.Model
 	sessionPicker sessionpicker.Model
+	themePicker   themepicker.Model
 	registry      *commands.Registry
 	keys          keyMap
 	theme         theme.Theme
@@ -76,9 +82,7 @@ type Model struct {
 }
 
 func New(controller *kernel.Controller) Model {
-	variant := theme.ResolveVariant(controller.Config().UI.Theme)
-	th := theme.Default(variant)
-	isDark := variant == theme.VariantDark
+	th, variant, _ := theme.Load(controller.Config().UI.Theme, controller.Workspace().Root)
 
 	input := textarea.New()
 	input.Placeholder = "Tell luc what to inspect or change..."
@@ -88,14 +92,7 @@ func New(controller *kernel.Controller) Model {
 	input.Prompt = "> "
 	input.CharLimit = 0
 	input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "alt+enter"), key.WithHelp("shift+enter", "newline"))
-
-	styles := textarea.DefaultStyles(isDark)
-	styles.Focused.Base = th.InputText
-	styles.Focused.CursorLine = th.InputText
-	styles.Focused.Placeholder = th.InputPlaceholder
-	styles.Focused.Prompt = th.InputPrompt
-	styles.Blurred = styles.Focused
-	input.SetStyles(styles)
+	applyInputTheme(&input, th, variant)
 
 	registry := commands.NewRegistry()
 	model := Model{
@@ -106,6 +103,7 @@ func New(controller *kernel.Controller) Model {
 		palette:       commands.New(registry, th),
 		modelPicker:   modelspicker.New(controller.Registry(), th),
 		sessionPicker: sessionpicker.New(th),
+		themePicker:   themepicker.New(th),
 		registry:      registry,
 		theme:         th,
 		inspectorOpen: controller.Config().UI.InspectorOpen,
@@ -156,6 +154,14 @@ func New(controller *kernel.Controller) Model {
 		Run: func() tea.Cmd { return func() tea.Msg { return copySelectionMsg{} } },
 	})
 	registry.Register(commands.Command{
+		ID: "theme.switch", Name: "Switch theme…", Shortcut: "",
+		Run: func() tea.Cmd { return func() tea.Msg { return openThemePickerMsg{} } },
+	})
+	registry.Register(commands.Command{
+		ID: "theme.reset", Name: "Reset theme to default", Shortcut: "",
+		Run: func() tea.Cmd { return func() tea.Msg { return resetThemeMsg{} } },
+	})
+	registry.Register(commands.Command{
 		ID: "quit", Name: "Quit", Shortcut: "ctrl+c",
 		Run: func() tea.Cmd { return tea.Quit },
 	})
@@ -181,7 +187,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
 			return m, nil
 		}
 		if !m.wheelInBody(msg) {
@@ -194,7 +200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseClickMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
@@ -221,7 +227,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMotionMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
@@ -245,6 +251,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.modelPicker.IsOpen() {
 			cmd, _, handled := m.modelPicker.Update(msg)
+			if handled {
+				return m, cmd
+			}
+		}
+		if m.themePicker.IsOpen() {
+			cmd, _, handled := m.themePicker.Update(msg)
 			if handled {
 				return m, cmd
 			}
@@ -377,6 +389,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Model: " + msg.ModelID)
 		}
 		return m, nil
+	case openThemePickerMsg:
+		entries := m.availableThemes()
+		m.themePicker.Open(entries, m.controller.Config().UI.Theme)
+		return m, nil
+	case resetThemeMsg:
+		m.applyTheme(config.Default().UI.Theme)
+		return m, nil
+	case themepicker.Selected:
+		m.applyTheme(msg.ThemeName)
+		return m, nil
 	case sessionpicker.Selected:
 		if err := m.controller.OpenSession(msg.SessionID); err != nil {
 			m.setStatus("Error: " + err.Error())
@@ -424,10 +446,14 @@ func (m Model) View() tea.View {
 
 	body := m.renderBodyWithHeight(bodyH)
 
-	// Clamp each section to its target height so nothing overflows.
-	headerSection := lipgloss.NewStyle().Width(m.width).Height(headerH).MaxHeight(headerH).Render(header)
-	bodySection := lipgloss.NewStyle().Width(m.width).Height(bodyH).MaxHeight(bodyH).Render(body)
-	footerSection := lipgloss.NewStyle().Width(m.width).Height(footerH).MaxHeight(footerH).Render(footer)
+	// Clamp each section to its target height so nothing overflows. Each
+	// section inherits the app background so unpainted gutter cells (padding
+	// introduced by the clamp, whitespace between header/body/footer) pick up
+	// the theme color instead of leaking the terminal's default background.
+	sectionStyle := m.theme.App
+	headerSection := sectionStyle.Width(m.width).Height(headerH).MaxHeight(headerH).Render(header)
+	bodySection := sectionStyle.Width(m.width).Height(bodyH).MaxHeight(bodyH).Render(body)
+	footerSection := sectionStyle.Width(m.width).Height(footerH).MaxHeight(footerH).Render(footer)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, headerSection, bodySection, footerSection)
 
@@ -447,6 +473,13 @@ func (m Model) View() tea.View {
 			m.modelPicker.View(),
 			lipgloss.WithWhitespaceChars(" "),
 		)
+	case m.themePicker.IsOpen():
+		content = lipgloss.Place(
+			m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			m.themePicker.View(),
+			lipgloss.WithWhitespaceChars(" "),
+		)
 	case m.palette.IsOpen():
 		content = lipgloss.Place(
 			m.width, m.height,
@@ -459,6 +492,13 @@ func (m Model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
+	// BackgroundColor is painted by the terminal (OSC 11), so every cell of
+	// the alt-screen — including cells we never style with lipgloss — picks
+	// up the theme bg. Without this, any row or column a child renderer
+	// forgets to paint (e.g. bubbles textarea's untouched rows, padding
+	// gutters, viewport empties) leaks the user's terminal background.
+	// Built-in themes leave this nil so the terminal's native bg stays.
+	v.BackgroundColor = m.theme.Background
 	return v
 }
 
@@ -473,6 +513,7 @@ func (m *Model) resize() {
 	m.palette.SetSize(m.width, m.height)
 	m.modelPicker.SetSize(m.width, m.height)
 	m.sessionPicker.SetSize(m.width, m.height)
+	m.themePicker.SetSize(m.width, m.height)
 }
 
 func (m Model) transcriptWidth() int {
@@ -627,9 +668,14 @@ func copySelectionCmd() tea.Cmd {
 }
 
 func (m *Model) resetSessionViews() {
-	variant := theme.ResolveVariant(m.controller.Config().UI.Theme)
+	th, variant, _ := theme.Load(m.controller.Config().UI.Theme, m.controller.Workspace().Root)
+	m.theme = th
 	m.transcript = transcript.New(m.theme, variant)
 	m.inspector = inspector.New(m.controller.Workspace(), m.controller.Session(), m.theme)
+	m.palette = commands.New(m.registry, m.theme)
+	m.modelPicker = modelspicker.New(m.controller.Registry(), m.theme)
+	m.sessionPicker = sessionpicker.New(m.theme)
+	applyInputTheme(&m.input, m.theme, variant)
 	for _, ev := range m.controller.InitialEvents() {
 		m.transcript.Apply(ev)
 		m.inspector.Apply(ev)
@@ -642,6 +688,85 @@ func (m *Model) resetSessionViews() {
 func (m *Model) setStatus(status string) {
 	m.status = status
 	m.inspector.SetStatus(status)
+}
+
+// availableThemes enumerates the entries shown by the theme picker: the two
+// compiled-in variants (light/dark) plus every YAML/JSON file found under the
+// workspace and user theme directories.
+func (m Model) availableThemes() []themepicker.Entry {
+	entries := []themepicker.Entry{
+		{Name: theme.VariantLight, Display: "light", BuiltIn: true},
+		{Name: theme.VariantDark, Display: "dark", BuiltIn: true},
+	}
+	names, err := extensions.ListThemes(m.controller.Workspace().Root)
+	if err == nil {
+		for _, name := range names {
+			if name == theme.VariantLight || name == theme.VariantDark {
+				continue
+			}
+			entries = append(entries, themepicker.Entry{Name: name, Display: name})
+		}
+	}
+	return entries
+}
+
+// applyTheme swaps the active theme and rebuilds every view that caches
+// styles. The transcript is re-populated from the controller's initial event
+// log so no session content is lost. The active scroll position is
+// intentionally not preserved — re-theming is uncommon and avoiding a partial
+// redraw is simpler than selectively recomputing styles.
+func (m *Model) applyTheme(name string) {
+	m.controller.SetTheme(name)
+	th, variant, err := theme.Load(name, m.controller.Workspace().Root)
+	if err != nil {
+		m.setStatus("Theme error: " + err.Error())
+		return
+	}
+	m.theme = th
+	m.transcript = transcript.New(m.theme, variant)
+	m.inspector = inspector.New(m.controller.Workspace(), m.controller.Session(), m.theme)
+	m.palette = commands.New(m.registry, m.theme)
+	m.modelPicker = modelspicker.New(m.controller.Registry(), m.theme)
+	m.sessionPicker = sessionpicker.New(m.theme)
+	m.themePicker = themepicker.New(m.theme)
+	applyInputTheme(&m.input, m.theme, variant)
+	for _, ev := range m.controller.InitialEvents() {
+		m.transcript.Apply(ev)
+		m.inspector.Apply(ev)
+	}
+	m.inspector.SetLogs(m.controller.LogEntries())
+	m.inspector.SetStatus(m.status)
+	m.resize()
+
+	if name == "" {
+		m.setStatus("Theme: default")
+	} else {
+		m.setStatus("Theme: " + name)
+	}
+}
+
+func applyInputTheme(input *textarea.Model, th theme.Theme, variant string) {
+	// The bubbles textarea has eight distinct style slots per focus state
+	// (Base, Text, LineNumber, CursorLineNumber, CursorLine, EndOfBuffer,
+	// Placeholder, Prompt). Leaving any of them at bubbles' default means
+	// some cell in the input area will render with bubbles' assumed
+	// background instead of our theme's — visible as a light band inside
+	// the rounded input frame on dark themes. Set every slot explicitly.
+	styles := textarea.DefaultStyles(variant == theme.VariantDark)
+	base := th.InputText
+	state := textarea.StyleState{
+		Base:             base,
+		Text:             base,
+		LineNumber:       base,
+		CursorLineNumber: base,
+		CursorLine:       base,
+		EndOfBuffer:      base,
+		Placeholder:      th.InputPlaceholder,
+		Prompt:           th.InputPrompt,
+	}
+	styles.Focused = state
+	styles.Blurred = state
+	input.SetStyles(styles)
 }
 
 func decode[T any](payload any) T {
