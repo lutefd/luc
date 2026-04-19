@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -62,6 +63,8 @@ type Provider interface {
 	Name() string
 	Start(ctx context.Context, req Request) (Stream, error)
 }
+
+var ErrExceededToolLimits = errors.New("exceeded_tool_limits")
 
 func (m Message) ContentParts() []ContentPart {
 	if len(m.Parts) > 0 {

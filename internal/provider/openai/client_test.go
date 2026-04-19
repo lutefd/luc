@@ -3,6 +3,7 @@ package openai
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -88,6 +89,24 @@ func TestStreamRecvParsesThinkingTextAndToolCalls(t *testing.T) {
 	}
 	if ev.Type != "done" || !ev.Completed {
 		t.Fatalf("expected done event, got %#v", ev)
+	}
+}
+
+func TestStreamRecvReturnsExceededToolLimitsFromCompletedResponse(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"response.completed","response":{"status":"incomplete","incomplete_details":{"reason":"exceeded_tool_limits"}}}`,
+		"",
+	}, "\n")
+
+	s := &stream{
+		body:    io.NopCloser(strings.NewReader(body)),
+		scanner: bufio.NewScanner(strings.NewReader(body)),
+		calls:   make(map[int]provider.ToolCall),
+	}
+
+	_, err := s.Recv()
+	if !errors.Is(err, provider.ErrExceededToolLimits) {
+		t.Fatalf("expected ErrExceededToolLimits, got %#v", err)
 	}
 }
 

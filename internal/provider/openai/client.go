@@ -167,6 +167,9 @@ func (s *stream) Recv() (provider.Event, error) {
 			}
 			return provider.Event{Type: "tool_call", ToolCall: call}, nil
 		case "response.completed":
+			if err := completedResponseError(ev); err != nil {
+				return provider.Event{}, err
+			}
 			return provider.Event{Type: "done", Completed: true}, nil
 		case "response.failed", "error":
 			return provider.Event{}, streamError(ev)
@@ -249,8 +252,11 @@ type responseStreamEvent struct {
 	Arguments   string              `json:"arguments"`
 	CallID      string              `json:"call_id"`
 	OutputIndex int                 `json:"output_index"`
+	Status      string              `json:"status"`
 	Item        responseStreamItem  `json:"item"`
+	Response    responseState       `json:"response"`
 	Error       *responseErrorField `json:"error"`
+	Incomplete  *responseIncomplete `json:"incomplete_details,omitempty"`
 }
 
 type responseStreamItem struct {
@@ -265,6 +271,16 @@ type responseErrorField struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 	Code    string `json:"code"`
+}
+
+type responseIncomplete struct {
+	Reason string `json:"reason"`
+}
+
+type responseState struct {
+	Status     string              `json:"status"`
+	Error      *responseErrorField `json:"error,omitempty"`
+	Incomplete *responseIncomplete `json:"incomplete_details,omitempty"`
 }
 
 func responseInputFromProvider(messages []provider.Message) []any {
@@ -378,13 +394,46 @@ func toolCallFromResponseItem(item responseStreamItem, outputIndex int) provider
 
 func streamError(ev responseStreamEvent) error {
 	if ev.Error == nil {
+		if ev.Response.Error != nil {
+			return responseError(ev.Response.Error)
+		}
 		return errors.New("provider stream failed")
 	}
-	msg := strings.TrimSpace(ev.Error.Message)
+	return responseError(ev.Error)
+}
+
+func responseError(field *responseErrorField) error {
+	if field == nil {
+		return errors.New("provider stream failed")
+	}
+	msg := strings.TrimSpace(field.Message)
 	if msg == "" {
 		msg = "provider stream failed"
 	}
+	if strings.EqualFold(strings.TrimSpace(field.Code), provider.ErrExceededToolLimits.Error()) {
+		return fmt.Errorf("%w: %s", provider.ErrExceededToolLimits, msg)
+	}
 	return errors.New(msg)
+}
+
+func completedResponseError(ev responseStreamEvent) error {
+	state := ev.Response
+	if strings.TrimSpace(state.Status) == "" {
+		state.Status = ev.Status
+	}
+	if state.Incomplete == nil {
+		state.Incomplete = ev.Incomplete
+	}
+	if state.Error != nil {
+		return responseError(state.Error)
+	}
+	if state.Incomplete == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(state.Incomplete.Reason), provider.ErrExceededToolLimits.Error()) {
+		return nil
+	}
+	return provider.ErrExceededToolLimits
 }
 
 func firstNonEmpty(values ...string) string {
