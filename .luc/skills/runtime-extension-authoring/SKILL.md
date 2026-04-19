@@ -1,7 +1,6 @@
 ---
 name: runtime-extension-authoring
 description: How luc expands itself at runtime through tools, themes, prompts, and skills.
-triggers: ["extension", "extensions", "plugin", "plugins", "runtime tool", "runtime theme", "skill", "skills", "expand itself", "self expand", "extensibility"]
 ---
 When the task is about extending luc, prefer runtime extension mechanisms before
 proposing core code changes.

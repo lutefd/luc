@@ -1,7 +1,6 @@
 ---
 name: skill-usage
 description: How luc currently uses runtime skills and what its limits are.
-triggers: ["does it know how to use skills", "use skills", "skill matching", "runtime skills", "skill behavior"]
 ---
 luc does know how to use runtime skills, but the behavior is currently simple.
 
