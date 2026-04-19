@@ -16,14 +16,18 @@ import (
 	udiff "github.com/aymanbagabas/go-udiff"
 	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/provider"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 )
 
 type Request struct {
-	Name      string
-	Arguments string
-	Workspace string
-	SessionID string
-	AgentID   string
+	Name             string
+	Arguments        string
+	Workspace        string
+	SessionID        string
+	AgentID          string
+	HostCapabilities []string
+	ViewContext      *luruntime.ViewContext
+	UIBroker         luruntime.UIBroker
 }
 
 type Result struct {

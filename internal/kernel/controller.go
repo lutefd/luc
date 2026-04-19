@@ -260,6 +260,27 @@ func (c *Controller) RuntimeContributions() luruntime.ContributionSet {
 	return c.runtime
 }
 
+func (c *Controller) RenderRuntimeView(ctx context.Context, viewID string) (luruntime.RuntimeView, tools.Result, error) {
+	view, ok := c.runtime.UI.View(viewID)
+	if !ok {
+		return luruntime.RuntimeView{}, tools.Result{}, fmt.Errorf("runtime view %q not found", viewID)
+	}
+	result, err := c.tools.Run(ctx, tools.Request{
+		Name:             view.SourceTool,
+		Arguments:        `{}`,
+		Workspace:        c.workspace.Root,
+		SessionID:        c.session.SessionID,
+		AgentID:          "root",
+		HostCapabilities: c.HostCapabilities(),
+		ViewContext: &luruntime.ViewContext{
+			ViewID:    view.ID,
+			Placement: view.Placement,
+		},
+		UIBroker: c.UIBroker(),
+	})
+	return view, result, err
+}
+
 // SwitchModel hot-swaps the active model. If the model belongs to a
 // different provider (or no provider is currently bound), it also rebuilds
 // the provider client. The session remains intact — subsequent turns use

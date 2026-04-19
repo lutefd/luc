@@ -83,6 +83,9 @@ type Model struct {
 	status        string
 	lastClickAt   time.Time
 	lastClickID   string
+	runtimeBroker *teaUIBroker
+	runtimePage   runtimePageState
+	runtimeDialog runtimeDialogState
 }
 
 func New(controller *kernel.Controller) Model {
@@ -129,48 +132,7 @@ func New(controller *kernel.Controller) Model {
 			Quit:        key.NewBinding(key.WithKeys("ctrl+c", "ctrl+q"), key.WithHelp("ctrl+c", "quit")),
 		},
 	}
-
-	// Seed built-in commands. Extensions can append more via model.registry.Register(...).
-	registry.Register(commands.Command{
-		ID: "reload", Name: "Reload runtime", Shortcut: "ctrl+r",
-		Run: func() tea.Cmd { return reloadCmd(controller) },
-	})
-	registry.Register(commands.Command{
-		ID: "toggle.inspector", Name: "Toggle inspector details", Shortcut: "ctrl+o",
-		Run: func() tea.Cmd { return func() tea.Msg { return toggleInspectorMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "inspector.tab.next", Name: "Inspector: next tab", Shortcut: "ctrl+]",
-		Run: func() tea.Cmd { return func() tea.Msg { return nextTabMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "model.switch", Name: "Switch model…", Shortcut: "ctrl+m",
-		Run: func() tea.Cmd { return func() tea.Msg { return openModelPickerMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "session.new", Name: "New session", Shortcut: "",
-		Run: func() tea.Cmd { return func() tea.Msg { return newSessionMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "session.switch", Name: "Switch session…", Shortcut: "ctrl+l",
-		Run: func() tea.Cmd { return func() tea.Msg { return openSessionPickerMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "selection.copy", Name: "Copy selection", Shortcut: "ctrl+y",
-		Run: func() tea.Cmd { return func() tea.Msg { return copySelectionMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "theme.switch", Name: "Switch theme…", Shortcut: "",
-		Run: func() tea.Cmd { return func() tea.Msg { return openThemePickerMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "theme.reset", Name: "Reset theme to default", Shortcut: "",
-		Run: func() tea.Cmd { return func() tea.Msg { return resetThemeMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "quit", Name: "Quit", Shortcut: "ctrl+c",
-		Run: func() tea.Cmd { return tea.Quit },
-	})
+	model.installRuntimeUI()
 
 	for _, ev := range controller.InitialEvents() {
 		model.transcript.Apply(ev)
@@ -182,7 +144,7 @@ func New(controller *kernel.Controller) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, waitForEvent(m.controller.Events()))
+	return tea.Batch(textarea.Blink, waitForEvent(m.controller.Events()), waitForUIBroker(m.runtimeBroker.actions))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -193,7 +155,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
 		}
 		if !m.wheelInBody(msg) {
@@ -206,7 +168,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseClickMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
@@ -233,7 +195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMotionMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
 		}
 		if msg.Button == tea.MouseLeft {
@@ -248,7 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.PasteMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() {
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
 		}
 		if attachment, ok, err := attachmentFromPasteContent(msg.Content); err != nil {
@@ -264,7 +226,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, readClipboardImageCmd()
 		}
 	case tea.KeyPressMsg:
-		// Route to open modal first.
+		if m.runtimeDialog.open {
+			return m, m.handleRuntimeDialogKey(msg)
+		}
 		if m.sessionPicker.IsOpen() {
 			cmd, _, handled := m.sessionPicker.Update(msg)
 			if handled {
@@ -288,6 +252,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled {
 				return m, cmd
 			}
+		}
+		if m.runtimePage.open {
+			if cmd := m.handleRuntimePageKey(msg); cmd != nil {
+				return m, cmd
+			}
+			return m, nil
 		}
 		switch {
 		case key.Matches(msg, m.keys.Quit):
@@ -341,12 +311,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.inspectorOpen {
 				m.inspector.NextTab()
 			}
-			return m, nil
+			return m, m.maybeRefreshActiveRuntimeView()
 		case key.Matches(msg, m.keys.PrevTab):
 			if m.inspectorOpen {
 				m.inspector.PrevTab()
 			}
-			return m, nil
+			return m, m.maybeRefreshActiveRuntimeView()
 		case key.Matches(msg, m.keys.ScrollUp):
 			m.transcript.UpdateViewport(msg)
 			return m, nil
@@ -373,11 +343,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Ready")
 		case "reload.finished":
 			m.setStatus("Reloaded")
+			m.syncRuntimeUI()
 		case "reload.failed", "system.error":
 			m.setStatus("Error")
 		}
 		m.inspector.SetStatus(m.status)
 		return m, waitForEvent(m.controller.Events())
+	case uiBrokerActionMsg:
+		return m, tea.Batch(m.handleRuntimeAction(msg.request.action, msg.request.response), waitForUIBroker(m.runtimeBroker.actions))
 	case toggleInspectorMsg:
 		m.inspectorOpen = !m.inspectorOpen
 		m.resize()
@@ -473,6 +446,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		m.setStatus("Attached image: " + msg.attached.Name)
 		return m, nil
+	case runRuntimeCommandMsg:
+		return m, m.handleRuntimeCommand(msg.CommandID)
+	case runtimeViewLoadedMsg:
+		if msg.Err != nil {
+			if m.runtimePage.open && m.runtimePage.view.ID == msg.ViewID {
+				m.runtimePage.loading = false
+				m.runtimePage.err = msg.Err.Error()
+			}
+			m.inspector.SetRuntimeViewContent(msg.ViewID, "Error: "+msg.Err.Error())
+			m.setStatus("Runtime view error")
+			return m, nil
+		}
+		m.inspector.SetRuntimeViewContent(msg.ViewID, msg.Rendered)
+		if m.runtimePage.open && m.runtimePage.view.ID == msg.ViewID {
+			m.runtimePage.loading = false
+			m.runtimePage.content = msg.Rendered
+			m.runtimePage.err = ""
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -539,6 +531,10 @@ func (m Model) View() tea.View {
 			m.palette.View(),
 			lipgloss.WithWhitespaceChars(" "),
 		)
+	case m.runtimeDialog.open:
+		content = m.renderRuntimeDialog()
+	case m.runtimePage.open:
+		content = m.renderRuntimePage()
 	}
 
 	v := tea.NewView(content)
@@ -740,12 +736,15 @@ func (m *Model) resetSessionViews() {
 	m.sessionPicker = sessionpicker.New(m.theme)
 	m.pendingImages = nil
 	applyInputTheme(&m.input, m.theme, variant)
+	m.runtimeDialog = runtimeDialogState{}
+	m.runtimePage = runtimePageState{}
 	for _, ev := range m.controller.InitialEvents() {
 		m.transcript.Apply(ev)
 		m.inspector.Apply(ev)
 	}
 	m.inspector.SetLogs(m.controller.LogEntries())
 	m.inspector.SetStatus(m.status)
+	m.syncRuntimeUI()
 	m.resize()
 }
 

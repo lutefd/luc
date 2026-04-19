@@ -12,21 +12,20 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/logging"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/workspace"
 )
 
-type Tab int
-
 const (
-	TabOverview Tab = iota
+	tabOverview = iota
 	TabTool
 	TabLogs
 	TabContext
-	tabCount
+	builtInTabCount
 )
 
-var tabNames = [tabCount]string{"Overview", "Tool", "Logs", "Context"}
+var tabNames = [builtInTabCount]string{"Overview", "Tool", "Logs", "Context"}
 
 type Model struct {
 	width          int
@@ -45,8 +44,10 @@ type Model struct {
 	errorCount     int
 	reloadVersion  uint64
 	theme          theme.Theme
-	activeTab      Tab
+	activeTab      int
 	viewport       viewport.Model
+	runtimeViews   []luruntime.RuntimeView
+	runtimeContent map[string]string
 }
 
 func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
@@ -54,12 +55,13 @@ func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
 	vp.MouseWheelEnabled = false
 	vp.SoftWrap = true
 	return Model{
-		workspace: ws,
-		session:   session,
-		status:    "Ready",
-		theme:     th,
-		activeTab: TabOverview,
-		viewport:  vp,
+		workspace:      ws,
+		session:        session,
+		status:         "Ready",
+		theme:          th,
+		activeTab:      tabOverview,
+		viewport:       vp,
+		runtimeContent: map[string]string{},
 	}
 }
 
@@ -80,7 +82,7 @@ func (m *Model) SetLogs(entries []logging.Entry) {
 
 func (m *Model) SetSessionMeta(meta history.SessionMeta) {
 	m.session = meta
-	if m.activeTab == TabOverview || m.activeTab == TabContext {
+	if m.activeTab == tabOverview || m.activeTab == TabContext {
 		m.refreshContent()
 	}
 }
@@ -94,9 +96,55 @@ func (m *Model) SetStatus(status string) {
 		return
 	}
 	m.status = status
-	if m.activeTab == TabOverview || m.activeTab == TabContext {
+	if m.activeTab == tabOverview || m.activeTab == TabContext {
 		m.refreshContent()
 	}
+}
+
+func (m *Model) SetRuntimeViews(views []luruntime.RuntimeView) {
+	m.runtimeViews = append([]luruntime.RuntimeView(nil), views...)
+	valid := map[string]struct{}{}
+	for _, view := range views {
+		valid[view.ID] = struct{}{}
+	}
+	for id := range m.runtimeContent {
+		if _, ok := valid[id]; !ok {
+			delete(m.runtimeContent, id)
+		}
+	}
+	if m.activeTab >= m.totalTabs() {
+		m.activeTab = tabOverview
+	}
+	m.refreshContent()
+}
+
+func (m *Model) SetRuntimeViewContent(viewID, content string) {
+	if m.runtimeContent == nil {
+		m.runtimeContent = map[string]string{}
+	}
+	m.runtimeContent[viewID] = content
+	if active, ok := m.activeRuntimeView(); ok && active.ID == viewID {
+		m.refreshContent()
+	}
+}
+
+func (m *Model) ActivateRuntimeView(viewID string) bool {
+	for i, view := range m.runtimeViews {
+		if view.ID == viewID {
+			m.activeTab = builtInTabCount + i
+			m.refreshContent()
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) ActiveRuntimeView() (luruntime.RuntimeView, bool) {
+	return m.activeRuntimeView()
+}
+
+func (m Model) RuntimeViewContent(viewID string) string {
+	return m.runtimeContent[viewID]
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
@@ -159,18 +207,18 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 		m.errorCount++
 		m.status = "Error"
 	}
-	if m.activeTab == TabOverview || m.activeTab == TabTool || m.activeTab == TabContext {
+	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
 		m.refreshContent()
 	}
 }
 
 func (m *Model) NextTab() {
-	m.activeTab = (m.activeTab + 1) % tabCount
+	m.activeTab = (m.activeTab + 1) % m.totalTabs()
 	m.refreshContent()
 }
 
 func (m *Model) PrevTab() {
-	m.activeTab = (m.activeTab - 1 + tabCount) % tabCount
+	m.activeTab = (m.activeTab - 1 + m.totalTabs()) % m.totalTabs()
 	m.refreshContent()
 }
 
@@ -211,7 +259,7 @@ func (m *Model) refreshContent() {
 	}
 	var content string
 	switch m.activeTab {
-	case TabOverview:
+	case tabOverview:
 		content = m.overviewView()
 	case TabTool:
 		content = m.toolView(true)
@@ -219,15 +267,28 @@ func (m *Model) refreshContent() {
 		content = m.logsView()
 	case TabContext:
 		content = m.contextView()
+	default:
+		content = m.runtimeView()
 	}
 	m.viewport.SetContent(content)
 }
 
 func (m Model) renderTabBar() string {
 	var tabs []string
-	for i := Tab(0); i < tabCount; i++ {
+	for i := 0; i < builtInTabCount; i++ {
 		name := tabNames[i]
 		if i == m.activeTab {
+			tabs = append(tabs, m.theme.SidebarTabActive.Render(name))
+		} else {
+			tabs = append(tabs, m.theme.SidebarTab.Render(name))
+		}
+	}
+	for i, view := range m.runtimeViews {
+		name := strings.TrimSpace(view.Title)
+		if name == "" {
+			name = view.ID
+		}
+		if builtInTabCount+i == m.activeTab {
 			tabs = append(tabs, m.theme.SidebarTabActive.Render(name))
 		} else {
 			tabs = append(tabs, m.theme.SidebarTab.Render(name))
@@ -240,6 +301,18 @@ func (m Model) renderTabBar() string {
 
 func (m Model) sessionView() string {
 	return m.overviewView()
+}
+
+func (m Model) totalTabs() int {
+	return builtInTabCount + len(m.runtimeViews)
+}
+
+func (m Model) activeRuntimeView() (luruntime.RuntimeView, bool) {
+	index := m.activeTab - builtInTabCount
+	if index < 0 || index >= len(m.runtimeViews) {
+		return luruntime.RuntimeView{}, false
+	}
+	return m.runtimeViews[index], true
 }
 
 func (m Model) overviewView() string {
@@ -410,6 +483,25 @@ func (m Model) contextView() string {
 	return strings.Join([]string{
 		m.theme.SidebarLabel.Render("Context"),
 		m.theme.SidebarValue.Render(string(data)),
+	}, "\n")
+}
+
+func (m Model) runtimeView() string {
+	view, ok := m.activeRuntimeView()
+	if !ok {
+		return ""
+	}
+	title := strings.TrimSpace(view.Title)
+	if title == "" {
+		title = view.ID
+	}
+	content := strings.TrimSpace(m.runtimeContent[view.ID])
+	if content == "" {
+		content = "Loading runtime view..."
+	}
+	return strings.Join([]string{
+		m.theme.SidebarLabel.Render(title),
+		m.theme.SidebarValue.Render(content),
 	}, "\n")
 }
 
