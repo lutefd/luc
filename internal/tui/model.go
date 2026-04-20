@@ -167,9 +167,9 @@ func New(controller *kernel.Controller) Model {
 			Palette:     key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "commands")),
 			ModelPick:   key.NewBinding(key.WithKeys("ctrl+m"), key.WithHelp("ctrl+m", "model")),
 			SessionPick: key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "sessions")),
-			Paste:       key.NewBinding(key.WithKeys("ctrl+v", "super+v"), key.WithHelp("ctrl/cmd+v", "paste")),
+			Paste:       platformPasteBinding(),
 			RemoveImage: key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "drop image")),
-			Copy:        key.NewBinding(key.WithKeys("ctrl+y", "super+c"), key.WithHelp("ctrl+y/cmd+c", "copy")),
+			Copy:        platformCopyBinding(),
 			Quit:        key.NewBinding(key.WithKeys("ctrl+c", "ctrl+q"), key.WithHelp("ctrl+c", "quit")),
 		},
 	}
@@ -661,7 +661,7 @@ func (m *Model) clearComposer() bool {
 
 func (m *Model) handleComposerKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
 	switch {
-	case msg.Code == 'a' && msg.Mod == tea.ModSuper:
+	case platformSelectAllMsg(msg):
 		if !m.selectAllComposer() {
 			m.setStatus("Nothing to select")
 			return true, nil
@@ -1184,10 +1184,10 @@ func (m Model) renderFooterHints() string {
 	bindings := []string{
 		"enter send",
 		"shift+enter newline",
-		"cmd+a select all",
+		platformHint("cmd+a select all", "ctrl+a select all"),
 		"shift+←/→ select",
 		"esc clear",
-		"ctrl/cmd+v paste",
+		platformHint("ctrl/cmd+v paste", "ctrl+v paste"),
 	}
 	if turnActive {
 		bindings = append(bindings, "ctrl+. stop")
@@ -1196,7 +1196,7 @@ func (m Model) renderFooterHints() string {
 		"ctrl+p commands",
 		"ctrl+m model",
 		"ctrl+l sessions",
-		"ctrl+y/cmd+c copy",
+		platformHint("ctrl+y/cmd+c copy", "ctrl+y/ctrl+c copy"),
 		"ctrl+o details",
 	)
 	if len(m.pendingImages) > 0 {
