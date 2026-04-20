@@ -123,6 +123,13 @@ type HookPayload struct {
 	Error      string `json:"error,omitempty"`
 }
 
+type ExtensionPayload struct {
+	ExtensionID string `json:"extension_id"`
+	EventKind   string `json:"event_kind,omitempty"`
+	SourcePath  string `json:"source_path,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
 func DecodePayload[T any](payload any) T {
 	var out T
 	if payload == nil {
