@@ -55,9 +55,14 @@ type Tool interface {
 	Run(ctx context.Context, req Request) (Result, error)
 }
 
+type HostedToolInvoker interface {
+	InvokeHostedTool(ctx context.Context, def extensions.ToolDef, req Request) (Result, error)
+}
+
 type Manager struct {
-	workspace string
-	tools     map[string]Tool
+	workspace     string
+	tools         map[string]Tool
+	hostedInvoker HostedToolInvoker
 }
 
 func NewManager(workspaceRoot string) (*Manager, error) {
@@ -102,6 +107,15 @@ func (m *Manager) Run(ctx context.Context, req Request) (Result, error) {
 	}
 	result, err := tool.Run(ctx, req)
 	return normalizeResult(result), err
+}
+
+func (m *Manager) SetHostedToolInvoker(invoker HostedToolInvoker) {
+	m.hostedInvoker = invoker
+	for _, tool := range m.tools {
+		if runtimeTool, ok := tool.(*runtimeTool); ok {
+			runtimeTool.hostedInvoker = invoker
+		}
+	}
 }
 
 func safePath(root, target string) (string, error) {
@@ -442,8 +456,9 @@ func buildDiff(path, before, after string) string {
 }
 
 type runtimeTool struct {
-	workspace string
-	def       extensions.ToolDef
+	workspace     string
+	def           extensions.ToolDef
+	hostedInvoker HostedToolInvoker
 }
 
 func (t *runtimeTool) Spec() provider.ToolSpec {
@@ -455,6 +470,12 @@ func (t *runtimeTool) Spec() provider.ToolSpec {
 }
 
 func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
+	if t.def.RuntimeKind == "extension" {
+		if t.hostedInvoker == nil {
+			return Result{}, fmt.Errorf("hosted tool %s has no extension invoker", t.def.Name)
+		}
+		return t.hostedInvoker.InvokeHostedTool(ctx, t.def, req)
+	}
 	if luruntime.HasCapability(t.def.Capabilities, luruntime.CapabilityStructuredIO) {
 		return t.runStructured(ctx, req)
 	}
