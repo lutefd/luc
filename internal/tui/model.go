@@ -384,7 +384,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.palette.Open()
 			return m, nil
 		case key.Matches(msg, m.keys.ModelPick):
-			m.modelPicker.Open(m.controller.Config().Provider.Model)
+			m.modelPicker.Open(m.controller.Config().Provider.Kind, m.controller.Config().Provider.Model)
 			return m, nil
 		case key.Matches(msg, m.keys.SessionPick):
 			sessions, err := m.controller.Sessions()
@@ -504,7 +504,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case openModelPickerMsg:
-		m.modelPicker.Open(m.controller.Config().Provider.Model)
+		m.modelPicker.Open(m.controller.Config().Provider.Kind, m.controller.Config().Provider.Model)
 		return m, nil
 	case openSessionPickerMsg:
 		sessions, err := m.controller.Sessions()

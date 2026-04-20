@@ -21,7 +21,7 @@ func TestModelPickerSearchInputUsesInputTextStyle(t *testing.T) {
 
 	model := New(registry, th)
 	model.SetSize(100, 30)
-	model.Open("gpt-5.4")
+	model.Open("openai-compatible", "gpt-5.4")
 	model.input.SetValue("gpt")
 
 	view := model.View()

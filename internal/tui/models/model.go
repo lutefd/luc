@@ -61,11 +61,9 @@ func New(registry *provider.Registry, th theme.Theme) Model {
 func (m *Model) SetSize(w, h int) { m.width, m.height = w, h }
 func (m Model) IsOpen() bool      { return m.open }
 
-// Open shows the modal. currentModelID is used to render a ● marker next to
-// the currently-active model so users see where they are.
-func (m *Model) Open(currentModelID string) {
+func (m *Model) Open(currentProviderID, currentModelID string) {
 	m.open = true
-	m.current = currentModelID
+	m.current = currentProviderID + ":" + currentModelID
 	m.input.Reset()
 	m.input.Focus()
 	m.active = 0
@@ -135,6 +133,22 @@ func selectableCount(rows []row) int {
 	return n
 }
 
+func countSelectableInRendered(rows []row, fromRendered, toRendered int) int {
+	idx := 0
+	n := 0
+	for _, r := range rows {
+		if r.isHeader {
+			idx += 2
+			continue
+		}
+		if idx >= fromRendered && idx < toRendered {
+			n++
+		}
+		idx++
+	}
+	return n
+}
+
 func (m *Model) listMaxRows() int {
 	// Reserve lines for: header, blank, input, blank, blank, hint = 6
 	available := m.height - 6
@@ -147,30 +161,31 @@ func (m *Model) listMaxRows() int {
 	return available
 }
 
-func (m *Model) ensureVisible(rows []row) {
-	max := m.listMaxRows()
-	// Map active (selectable index) to rendered row index.
-	renderIdx := 0
+func renderedIndex(rows []row, active int) int {
+	idx := 0
 	selIdx := 0
 	for _, r := range rows {
 		if r.isHeader {
-			renderIdx++
-			if renderIdx > 0 {
-				renderIdx++ // blank line before header
-			}
+			idx += 2 // blank + provider name
 			continue
 		}
-		if selIdx == m.active {
-			break
+		if selIdx == active {
+			return idx
 		}
 		selIdx++
-		renderIdx++
+		idx++
 	}
-	if renderIdx < m.scroll {
-		m.scroll = renderIdx
+	return idx
+}
+
+func (m *Model) ensureVisible(rows []row) {
+	maxR := m.listMaxRows()
+	target := renderedIndex(rows, m.active)
+	if target < m.scroll {
+		m.scroll = target
 	}
-	if renderIdx >= m.scroll+max {
-		m.scroll = renderIdx - max + 1
+	if target >= m.scroll+maxR {
+		m.scroll = target - maxR + 1
 	}
 }
 
@@ -247,7 +262,7 @@ func (m Model) View() string {
 			rendered = append(rendered, m.theme.SidebarTitle.Render(r.provider.Name))
 			continue
 		}
-		rendered = append(rendered, renderModelRow(m.theme, r.model, innerW, cursorIdx == m.active, r.model.ID == m.current))
+		rendered = append(rendered, renderModelRow(m.theme, r.model, innerW, cursorIdx == m.active, r.provider.ID+":"+r.model.ID == m.current))
 		cursorIdx++
 	}
 	if len(rendered) == 0 {
@@ -260,23 +275,26 @@ func (m Model) View() string {
 	if scroll < 0 {
 		scroll = 0
 	}
-	aboveCount := scroll
 	visible := rendered
 	if scroll < len(rendered) {
 		visible = rendered[scroll:]
 	} else {
 		visible = nil
 	}
-	belowCount := 0
 	if len(visible) > maxRows {
-		belowCount = len(visible) - maxRows
 		visible = visible[:maxRows]
 	}
-	if aboveCount > 0 {
-		visible = append([]string{m.theme.Muted.Render("  ↑ " + itoa(aboveCount) + " more")}, visible...)
+
+	// Count only selectable model rows (not headers/blanks) for the indicators.
+	aboveModels := countSelectableInRendered(rows, 0, scroll)
+	belowStart := scroll + maxRows
+	belowModels := countSelectableInRendered(rows, belowStart, len(rendered))
+
+	if aboveModels > 0 {
+		visible = append([]string{m.theme.Muted.Render("  ↑ " + itoa(aboveModels) + " more")}, visible...)
 	}
-	if belowCount > 0 {
-		visible = append(visible, m.theme.Muted.Render("  ↓ "+itoa(belowCount)+" more"))
+	if belowModels > 0 {
+		visible = append(visible, m.theme.Muted.Render("  ↓ "+itoa(belowModels)+" more"))
 	}
 
 	hint := m.theme.Footer.Render("↑↓ choose  •  enter select  •  esc cancel")
