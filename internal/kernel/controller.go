@@ -275,6 +275,10 @@ func (c *Controller) SessionEvents() []history.EventEnvelope {
 	return out
 }
 
+func (c *Controller) VisibleEvents() []history.EventEnvelope {
+	return history.VisibleEvents(c.SessionEvents())
+}
+
 func (c *Controller) LogEntries() []logging.Entry {
 	return c.logger.Ring.Snapshot()
 }
@@ -287,6 +291,10 @@ func (c *Controller) Registry() *provider.Registry {
 		return c.registry
 	}
 	return provider.DefaultRegistry()
+}
+
+func (c *Controller) AvailableModels() []provider.ModelDef {
+	return c.Registry().AllModels()
 }
 
 func (c *Controller) HostCapabilities() []string {
@@ -316,6 +324,12 @@ func (c *Controller) UIBroker() luruntime.UIBroker {
 
 func (c *Controller) RuntimeContributions() luruntime.ContributionSet {
 	return c.runtime
+}
+
+func (c *Controller) RuntimeDiagnostics() []luruntime.Diagnostic {
+	out := make([]luruntime.Diagnostic, len(c.runtime.Diagnostics))
+	copy(out, c.runtime.Diagnostics)
+	return out
 }
 
 func (c *Controller) RenderRuntimeView(ctx context.Context, viewID string) (luruntime.RuntimeView, tools.Result, error) {

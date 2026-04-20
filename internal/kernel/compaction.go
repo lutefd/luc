@@ -91,6 +91,14 @@ func (c *Controller) maybeAutoCompact(ctx context.Context) error {
 	return err
 }
 
+func (c *Controller) Compact(ctx context.Context, instructions string) error {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+
+	_, err := c.runCompaction(ctx, instructions, "manual", estimateRequestTokens(c.mustComposeSystemPrompt(), c.snapshotConversation()))
+	return err
+}
+
 func (c *Controller) runCompaction(ctx context.Context, instructions, reason string, tokensBefore int) (bool, error) {
 	if c.provider == nil {
 		return false, errors.New("provider is not ready; check API key configuration")
