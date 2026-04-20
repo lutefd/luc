@@ -161,28 +161,44 @@ func (m *Model) listMaxRows() int {
 	return available
 }
 
-func renderedIndex(rows []row, active int) int {
+// renderedIndex returns the rendered[] index for the active selectable row,
+// plus the rendered[] index of its provider header if this is the first model
+// in the group (so ensureVisible can include the header when scrolling up).
+func renderedIndex(rows []row, active int) (modelIdx, headerIdx int) {
 	idx := 0
 	selIdx := 0
+	lastHeaderIdx := -1
+	firstInGroup := false
 	for _, r := range rows {
 		if r.isHeader {
-			idx += 2 // blank + provider name
+			lastHeaderIdx = idx
+			firstInGroup = true
+			idx += 2
 			continue
 		}
 		if selIdx == active {
-			return idx
+			h := -1
+			if firstInGroup {
+				h = lastHeaderIdx
+			}
+			return idx, h
 		}
+		firstInGroup = false
 		selIdx++
 		idx++
 	}
-	return idx
+	return idx, -1
 }
 
 func (m *Model) ensureVisible(rows []row) {
 	maxR := m.listMaxRows()
-	target := renderedIndex(rows, m.active)
+	target, headerIdx := renderedIndex(rows, m.active)
 	if target < m.scroll {
-		m.scroll = target
+		scrollTo := target
+		if headerIdx >= 0 {
+			scrollTo = headerIdx
+		}
+		m.scroll = scrollTo
 	}
 	if target >= m.scroll+maxR {
 		m.scroll = target - maxR + 1
