@@ -28,6 +28,7 @@ func (c *Controller) recordingUIBroker() luruntime.UIBroker {
 }
 
 func (b *recordingBroker) Publish(action luruntime.UIAction) error {
+	ensureUIActionID(&action)
 	b.controller.emitUIAction(action)
 	err := b.base.Publish(action)
 	data := map[string]any{}
@@ -39,6 +40,7 @@ func (b *recordingBroker) Publish(action luruntime.UIAction) error {
 }
 
 func (b *recordingBroker) Request(ctx context.Context, action luruntime.UIAction) (luruntime.UIResult, error) {
+	ensureUIActionID(&action)
 	b.controller.emitUIAction(action)
 	result, err := b.base.Request(ctx, action)
 	if err != nil {
@@ -49,6 +51,13 @@ func (b *recordingBroker) Request(ctx context.Context, action luruntime.UIAction
 	}
 	b.controller.emitUIResult(result)
 	return result, err
+}
+
+func ensureUIActionID(action *luruntime.UIAction) {
+	if action == nil || strings.TrimSpace(action.ID) != "" {
+		return
+	}
+	action.ID = nextID("ui")
 }
 
 func (c *Controller) emitUIAction(action luruntime.UIAction) {
