@@ -19,6 +19,7 @@ type Model struct {
 	theme    theme.Theme
 	input    textinput.Model
 	active   int
+	scroll   int
 	width    int
 	height   int
 	open     bool
@@ -61,11 +62,36 @@ func (m *Model) Open(current string, sessions []history.SessionMeta) {
 	m.input.Reset()
 	m.input.Focus()
 	m.active = 0
+	m.scroll = 0
 }
 
 func (m *Model) Close() {
 	m.open = false
 	m.input.Blur()
+}
+
+func (m *Model) listMaxRows() int {
+	available := m.height - 6
+	if available < 4 {
+		available = 4
+	}
+	if available > 16 {
+		available = 16
+	}
+	return available
+}
+
+func (m *Model) ensureVisible() {
+	maxR := m.listMaxRows()
+	if m.active < m.scroll {
+		m.scroll = m.active
+	}
+	if m.active >= m.scroll+maxR {
+		m.scroll = m.active - maxR + 1
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
 }
 
 func (m Model) filtered() []history.SessionMeta {
@@ -96,12 +122,14 @@ func (m *Model) Update(msg tea.KeyPressMsg) (tea.Cmd, bool, bool) {
 		if m.active > 0 {
 			m.active--
 		}
+		m.ensureVisible()
 		return nil, false, true
 	case key.Matches(msg, m.keys.Down):
 		filtered := m.filtered()
 		if m.active < len(filtered)-1 {
 			m.active++
 		}
+		m.ensureVisible()
 		return nil, false, true
 	case key.Matches(msg, m.keys.Select):
 		filtered := m.filtered()
@@ -118,6 +146,7 @@ func (m *Model) Update(msg tea.KeyPressMsg) (tea.Cmd, bool, bool) {
 	if filtered := m.filtered(); m.active >= len(filtered) {
 		m.active = max(0, len(filtered)-1)
 	}
+	m.ensureVisible()
 	_ = cmd
 	return nil, false, true
 }
@@ -148,6 +177,28 @@ func (m Model) View() string {
 		rows = append(rows, m.theme.Muted.Render("  no matches"))
 	}
 
+	maxRows := m.listMaxRows()
+	scroll := m.scroll
+	if scroll < 0 {
+		scroll = 0
+	}
+	visible := rows
+	if scroll < len(rows) {
+		visible = rows[scroll:]
+	} else {
+		visible = nil
+	}
+	if len(visible) > maxRows {
+		visible = visible[:maxRows]
+	}
+	if scroll > 0 {
+		visible = append([]string{m.theme.Muted.Render("  ↑ " + itoa(scroll) + " more")}, visible...)
+	}
+	below := len(rows) - scroll - maxRows
+	if below > 0 {
+		visible = append(visible, m.theme.Muted.Render("  ↓ "+itoa(below)+" more"))
+	}
+
 	hint := m.theme.Footer.Render("↑↓ choose  •  enter open  •  esc cancel")
 	body := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -155,7 +206,7 @@ func (m Model) View() string {
 		"",
 		inputLine,
 		"",
-		strings.Join(rows, "\n"),
+		strings.Join(visible, "\n"),
 		"",
 		hint,
 	)
@@ -213,4 +264,21 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	if n < 0 {
+		return "-" + itoa(-n)
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
