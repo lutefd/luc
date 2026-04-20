@@ -330,8 +330,11 @@ func (c *Controller) RuntimeContributions() luruntime.ContributionSet {
 }
 
 func (c *Controller) RuntimeDiagnostics() []luruntime.Diagnostic {
-	out := make([]luruntime.Diagnostic, len(c.runtime.Diagnostics))
-	copy(out, c.runtime.Diagnostics)
+	out := make([]luruntime.Diagnostic, 0, len(c.runtime.Diagnostics)+4)
+	out = append(out, c.runtime.Diagnostics...)
+	if c.extensionHosts != nil {
+		out = append(out, c.extensionHosts.Diagnostics()...)
+	}
 	return out
 }
 

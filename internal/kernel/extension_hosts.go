@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,20 +22,30 @@ import (
 	"github.com/lutefd/luc/internal/tools"
 )
 
-const (
-	extensionReadyTimeout    = 3 * time.Second
-	extensionShutdownTimeout = 750 * time.Millisecond
-	extensionStorageMaxBytes = 64 * 1024
+var (
+	extensionReadyTimeout     = 3 * time.Second
+	extensionShutdownTimeout  = 750 * time.Millisecond
+	extensionRestartBaseDelay = 250 * time.Millisecond
+	extensionRestartMaxDelay  = 2 * time.Second
+	extensionRestartAttempts  = 4
 )
+
+const extensionStorageMaxBytes = 64 * 1024
 
 type extensionSupervisor struct {
 	controller *Controller
 
-	mu    sync.Mutex
-	hosts map[string]*managedExtensionHost
+	mu         sync.Mutex
+	hosts      map[string]*managedExtensionHost
+	desired    map[string]luruntime.ExtensionHost
+	generation uint64
+
+	diagMu      sync.Mutex
+	diagnostics map[string]luruntime.Diagnostic
 }
 
 type managedExtensionHost struct {
+	supervisor *extensionSupervisor
 	controller *Controller
 	def        luruntime.ExtensionHost
 	cmd        *exec.Cmd
@@ -54,6 +65,9 @@ type managedExtensionHost struct {
 	pendingTools map[string]chan hostedToolResult
 	stopping     atomic.Bool
 	unhealthy    atomic.Bool
+
+	generation     uint64
+	restartAttempt int
 }
 
 type extensionDecisionResult struct {
@@ -66,10 +80,27 @@ type hostedToolResult struct {
 	err    error
 }
 
+type reportedExtensionStartError struct {
+	err error
+}
+
+func (e reportedExtensionStartError) Error() string {
+	if e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e reportedExtensionStartError) Unwrap() error {
+	return e.err
+}
+
 func newExtensionSupervisor(controller *Controller) *extensionSupervisor {
 	return &extensionSupervisor{
-		controller: controller,
-		hosts:      map[string]*managedExtensionHost{},
+		controller:  controller,
+		hosts:       map[string]*managedExtensionHost{},
+		desired:     map[string]luruntime.ExtensionHost{},
+		diagnostics: map[string]luruntime.Diagnostic{},
 	}
 }
 
@@ -112,20 +143,17 @@ func (c *Controller) dispatchExtensionObserveEvents(ev history.EventEnvelope) {
 
 func (s *extensionSupervisor) Replace(ctx context.Context, defs []luruntime.ExtensionHost) {
 	s.Shutdown(ctx, "reload")
-
-	nextHosts := make(map[string]*managedExtensionHost, len(defs))
-	for _, def := range defs {
-		host, err := startManagedExtensionHost(ctx, s.controller, def)
-		if err != nil {
-			s.controller.logger.Ring.Add("error", fmt.Sprintf("extension %s failed to start: %v", def.ID, err))
-			continue
-		}
-		nextHosts[strings.ToLower(def.ID)] = host
-	}
-
 	s.mu.Lock()
-	s.hosts = nextHosts
+	s.desired = make(map[string]luruntime.ExtensionHost, len(defs))
+	generation := s.generation
+	for _, def := range defs {
+		s.desired[strings.ToLower(def.ID)] = def
+	}
 	s.mu.Unlock()
+	s.clearDiagnostics()
+	for _, def := range defs {
+		s.start(ctx, def, generation, 0)
+	}
 }
 
 func (s *extensionSupervisor) Shutdown(ctx context.Context, reason string) {
@@ -135,7 +163,10 @@ func (s *extensionSupervisor) Shutdown(ctx context.Context, reason string) {
 		hosts = append(hosts, host)
 	}
 	s.hosts = map[string]*managedExtensionHost{}
+	s.desired = map[string]luruntime.ExtensionHost{}
+	s.generation++
 	s.mu.Unlock()
+	s.clearDiagnostics()
 
 	for _, host := range hosts {
 		host.shutdown(ctx, reason)
@@ -196,7 +227,140 @@ func (s *extensionSupervisor) InvokeHostedTool(ctx context.Context, extensionID,
 	return host.invokeHostedTool(requestCtx, handler, req)
 }
 
-func startManagedExtensionHost(ctx context.Context, controller *Controller, def luruntime.ExtensionHost) (*managedExtensionHost, error) {
+func (s *extensionSupervisor) Diagnostics() []luruntime.Diagnostic {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+
+	if len(s.diagnostics) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(s.diagnostics))
+	for key := range s.diagnostics {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]luruntime.Diagnostic, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, s.diagnostics[key])
+	}
+	return out
+}
+
+func (s *extensionSupervisor) start(ctx context.Context, def luruntime.ExtensionHost, generation uint64, restartAttempt int) {
+	if !s.shouldRun(def.ID, generation) {
+		return
+	}
+	host, err := startManagedExtensionHost(ctx, s, s.controller, def, generation, restartAttempt)
+	if err != nil {
+		var reported reportedExtensionStartError
+		if errors.As(err, &reported) {
+			return
+		}
+		s.controller.logger.Ring.Add("error", fmt.Sprintf("extension %s failed to start: %v", def.ID, err))
+		s.scheduleRestart(def, generation, restartAttempt+1, err)
+		return
+	}
+	if !s.shouldRun(def.ID, generation) {
+		host.shutdown(context.Background(), "superseded")
+		return
+	}
+
+	s.mu.Lock()
+	s.hosts[strings.ToLower(def.ID)] = host
+	s.mu.Unlock()
+	s.clearDiagnostic(def.ID)
+	if restartAttempt > 0 {
+		s.controller.logger.Ring.Add("info", fmt.Sprintf("extension %s restarted after failure", def.ID))
+	}
+}
+
+func (s *extensionSupervisor) scheduleRestart(def luruntime.ExtensionHost, generation uint64, restartAttempt int, err error) {
+	if !s.shouldRun(def.ID, generation) {
+		return
+	}
+	if restartAttempt > extensionRestartAttempts {
+		message := fmt.Sprintf("extension %s disabled for this session after %d restart attempts: %v", def.ID, extensionRestartAttempts, err)
+		s.setDiagnostic(def, message)
+		s.controller.logger.Ring.Add("warn", message)
+		return
+	}
+
+	delay := extensionRestartDelay(restartAttempt)
+	message := fmt.Sprintf("extension %s unavailable; retrying in %s (%d/%d): %v", def.ID, delay.Round(time.Millisecond), restartAttempt, extensionRestartAttempts, err)
+	s.setDiagnostic(def, message)
+	s.controller.logger.Ring.Add("info", message)
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		<-timer.C
+		s.start(context.Background(), def, generation, restartAttempt)
+	}()
+}
+
+func (s *extensionSupervisor) handleRuntimeFailure(host *managedExtensionHost, err error) {
+	if host == nil || err == nil || host.stopping.Load() {
+		return
+	}
+	if !s.shouldRun(host.def.ID, host.generation) {
+		return
+	}
+
+	s.mu.Lock()
+	key := strings.ToLower(host.def.ID)
+	if current := s.hosts[key]; current == host {
+		delete(s.hosts, key)
+	}
+	s.mu.Unlock()
+	s.scheduleRestart(host.def, host.generation, host.restartAttempt+1, err)
+}
+
+func (s *extensionSupervisor) shouldRun(extensionID string, generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generation != generation {
+		return false
+	}
+	_, ok := s.desired[strings.ToLower(strings.TrimSpace(extensionID))]
+	return ok
+}
+
+func (s *extensionSupervisor) clearDiagnostics() {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	s.diagnostics = map[string]luruntime.Diagnostic{}
+}
+
+func (s *extensionSupervisor) setDiagnostic(def luruntime.ExtensionHost, message string) {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	s.diagnostics[strings.ToLower(def.ID)] = luruntime.Diagnostic{
+		SourcePath: def.SourcePath,
+		Kind:       "extension",
+		Message:    message,
+	}
+}
+
+func (s *extensionSupervisor) clearDiagnostic(extensionID string) {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	delete(s.diagnostics, strings.ToLower(strings.TrimSpace(extensionID)))
+}
+
+func extensionRestartDelay(restartAttempt int) time.Duration {
+	delay := extensionRestartBaseDelay
+	for i := 1; i < restartAttempt; i++ {
+		delay *= 2
+		if delay >= extensionRestartMaxDelay {
+			return extensionRestartMaxDelay
+		}
+	}
+	if delay <= 0 {
+		return extensionRestartBaseDelay
+	}
+	return delay
+}
+
+func startManagedExtensionHost(ctx context.Context, supervisor *extensionSupervisor, controller *Controller, def luruntime.ExtensionHost, generation uint64, restartAttempt int) (*managedExtensionHost, error) {
 	cmd, err := buildExtensionCommand(ctx, def)
 	if err != nil {
 		return nil, err
@@ -225,15 +389,18 @@ func startManagedExtensionHost(ctx context.Context, controller *Controller, def 
 	}
 
 	host := &managedExtensionHost{
-		controller:   controller,
-		def:          def,
-		cmd:          cmd,
-		stdin:        stdin,
-		encoder:      json.NewEncoder(stdin),
-		readyCh:      make(chan error, 1),
-		exitCh:       make(chan error, 1),
-		pending:      map[string]chan extensionDecisionResult{},
-		pendingTools: map[string]chan hostedToolResult{},
+		supervisor:     supervisor,
+		controller:     controller,
+		def:            def,
+		cmd:            cmd,
+		stdin:          stdin,
+		encoder:        json.NewEncoder(stdin),
+		readyCh:        make(chan error, 1),
+		exitCh:         make(chan error, 1),
+		pending:        map[string]chan extensionDecisionResult{},
+		pendingTools:   map[string]chan hostedToolResult{},
+		generation:     generation,
+		restartAttempt: restartAttempt,
 	}
 
 	controller.emit("extension.started", history.ExtensionPayload{
@@ -257,7 +424,7 @@ func startManagedExtensionHost(ctx context.Context, controller *Controller, def 
 		HostCapabilities: controller.HostCapabilities(),
 	}); err != nil {
 		host.reportFailure(err)
-		return nil, err
+		return nil, reportedExtensionStartError{err: err}
 	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, extensionReadyTimeout)
@@ -265,17 +432,17 @@ func startManagedExtensionHost(ctx context.Context, controller *Controller, def 
 	select {
 	case err := <-host.readyCh:
 		if err != nil {
-			return nil, err
+			return nil, reportedExtensionStartError{err: err}
 		}
 	case <-readyCtx.Done():
 		host.reportFailure(readyCtx.Err())
-		return nil, readyCtx.Err()
+		return nil, reportedExtensionStartError{err: readyCtx.Err()}
 	}
 
 	sessionStore, workspaceStore, err := loadExtensionStorageSnapshot(controller.workspace.Root, controller.session.SessionID, def.ID)
 	if err != nil {
 		host.reportFailure(err)
-		return nil, err
+		return nil, reportedExtensionStartError{err: err}
 	}
 	if err := host.send(luruntime.ExtensionStorageSnapshotEnvelope{
 		Type:      "storage_snapshot",
@@ -283,7 +450,7 @@ func startManagedExtensionHost(ctx context.Context, controller *Controller, def 
 		Workspace: workspaceStore,
 	}); err != nil {
 		host.reportFailure(err)
-		return nil, err
+		return nil, reportedExtensionStartError{err: err}
 	}
 	if err := host.send(luruntime.ExtensionSessionEnvelope{
 		Type:      "session_start",
@@ -291,7 +458,7 @@ func startManagedExtensionHost(ctx context.Context, controller *Controller, def 
 		Workspace: extensionWorkspaceContext(controller),
 	}); err != nil {
 		host.reportFailure(err)
-		return nil, err
+		return nil, reportedExtensionStartError{err: err}
 	}
 	return host, nil
 }
@@ -668,6 +835,9 @@ func (h *managedExtensionHost) reportFailure(err error) {
 			Error:       err.Error(),
 		})
 		h.controller.logger.Ring.Add("error", fmt.Sprintf("extension %s failed: %v", h.def.ID, err))
+		if h.supervisor != nil {
+			h.supervisor.handleRuntimeFailure(h, err)
+		}
 		if !h.stopping.Load() && h.cmd.Process != nil {
 			_ = h.cmd.Process.Kill()
 		}

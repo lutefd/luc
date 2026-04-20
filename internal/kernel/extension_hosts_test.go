@@ -13,6 +13,7 @@ import (
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/provider"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/tools"
 )
 
@@ -472,6 +473,259 @@ input_schema:
 	}
 }
 
+func TestControllerExtensionHostRestartsAfterObserveCrash(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	restore := setExtensionRestartPolicyForTest(t, 20*time.Millisecond, 40*time.Millisecond, 2)
+	defer restore()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "first"},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "second"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(root, "restart-count.txt")
+	logPath := filepath.Join(root, "extension-log.jsonl")
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "audit.yaml"), `schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+subscriptions:
+  - event: message.assistant.final
+`)
+	script := "#!/usr/bin/env python3\n" +
+		"import json, os, sys\n" +
+		"state_path = r'" + statePath + "'\n" +
+		"log_path = r'" + logPath + "'\n" +
+		"instance = 0\n" +
+		"if os.path.exists(state_path):\n" +
+		"    with open(state_path, 'r', encoding='utf-8') as fh:\n" +
+		"        raw = fh.read().strip()\n" +
+		"        if raw:\n" +
+		"            instance = int(raw)\n" +
+		"instance += 1\n" +
+		"with open(state_path, 'w', encoding='utf-8') as fh:\n" +
+		"    fh.write(str(instance))\n" +
+		"def log(obj):\n" +
+		"    with open(log_path, 'a', encoding='utf-8') as fh:\n" +
+		"        fh.write(json.dumps(obj) + '\\n')\n" +
+		"def emit(obj):\n" +
+		"    sys.stdout.write(json.dumps(obj) + '\\n')\n" +
+		"    sys.stdout.flush()\n" +
+		"for line in sys.stdin:\n" +
+		"    msg = json.loads(line)\n" +
+		"    log({'instance': instance, 'type': msg.get('type'), 'event': msg.get('event')})\n" +
+		"    if msg.get('type') == 'hello':\n" +
+		"        emit({'type': 'ready', 'protocol_version': 1})\n" +
+		"    elif msg.get('type') == 'event' and msg.get('event') == 'message.assistant.final':\n" +
+		"        if instance == 1:\n" +
+		"            sys.exit(1)\n" +
+		"        log({'instance': instance, 'handled': msg.get('event')})\n" +
+		"    elif msg.get('type') == 'session_shutdown':\n" +
+		"        break\n"
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "host.py"), script)
+	if err := os.Chmod(filepath.Join(root, ".luc", "extensions", "host.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+
+	if err := controller.Submit(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	waitForExtensionValue(t, statePath, func(raw string) bool { return strings.TrimSpace(raw) == "2" })
+	waitForExtensionMessages(t, logPath, func(messages []map[string]any) bool {
+		for _, message := range messages {
+			if message["type"] == "hello" && message["instance"] == float64(2) {
+				return true
+			}
+		}
+		return false
+	})
+
+	if err := controller.Submit(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	waitForExtensionMessages(t, logPath, func(messages []map[string]any) bool {
+		for _, message := range messages {
+			if message["handled"] == "message.assistant.final" && message["instance"] == float64(2) {
+				return true
+			}
+		}
+		return false
+	})
+	waitForExtensionDiagnostics(t, controller, func(diags []luruntime.Diagnostic) bool { return len(diags) == 0 })
+
+	if !extensionHistoryEventSeen(controller.SessionEvents(), "extension.failed", "audit") {
+		t.Fatalf("expected extension.failed event after crash, got %#v", controller.SessionEvents())
+	}
+}
+
+func TestControllerExtensionHostRecoversFromMalformedStartupProtocol(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	restore := setExtensionRestartPolicyForTest(t, 20*time.Millisecond, 40*time.Millisecond, 2)
+	defer restore()
+
+	providerStub := &fakeProvider{}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(root, "startup-count.txt")
+	logPath := filepath.Join(root, "startup-log.jsonl")
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "audit.yaml"), `schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+subscriptions:
+  - event: session.start
+`)
+	script := "#!/usr/bin/env python3\n" +
+		"import json, os, sys\n" +
+		"state_path = r'" + statePath + "'\n" +
+		"log_path = r'" + logPath + "'\n" +
+		"instance = 0\n" +
+		"if os.path.exists(state_path):\n" +
+		"    with open(state_path, 'r', encoding='utf-8') as fh:\n" +
+		"        raw = fh.read().strip()\n" +
+		"        if raw:\n" +
+		"            instance = int(raw)\n" +
+		"instance += 1\n" +
+		"with open(state_path, 'w', encoding='utf-8') as fh:\n" +
+		"    fh.write(str(instance))\n" +
+		"def log(obj):\n" +
+		"    with open(log_path, 'a', encoding='utf-8') as fh:\n" +
+		"        fh.write(json.dumps(obj) + '\\n')\n" +
+		"def emit(obj):\n" +
+		"    sys.stdout.write(json.dumps(obj) + '\\n')\n" +
+		"    sys.stdout.flush()\n" +
+		"for line in sys.stdin:\n" +
+		"    log({'instance': instance, 'line': line.strip()})\n" +
+		"    msg = json.loads(line)\n" +
+		"    if msg.get('type') == 'hello':\n" +
+		"        if instance == 1:\n" +
+		"            sys.stdout.write('not-json\\n')\n" +
+		"            sys.stdout.flush()\n" +
+		"            break\n" +
+		"        emit({'type': 'ready', 'protocol_version': 1})\n" +
+		"    elif msg.get('type') == 'session_shutdown':\n" +
+		"        break\n"
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "host.py"), script)
+	if err := os.Chmod(filepath.Join(root, ".luc", "extensions", "host.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+
+	waitForExtensionValue(t, statePath, func(raw string) bool { return strings.TrimSpace(raw) == "2" })
+	waitForExtensionDiagnostics(t, controller, func(diags []luruntime.Diagnostic) bool { return len(diags) == 0 })
+	waitForExtensionMessages(t, logPath, func(messages []map[string]any) bool {
+		for _, message := range messages {
+			if strings.Contains(asString(message["line"]), `"type":"session_start"`) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestControllerExtensionHostExposesDiagnosticsAfterRestartBudgetExhausted(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	restore := setExtensionRestartPolicyForTest(t, 20*time.Millisecond, 40*time.Millisecond, 2)
+	defer restore()
+
+	providerStub := &fakeProvider{}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(root, "exhausted-count.txt")
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "audit.yaml"), `schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+subscriptions:
+  - event: session.start
+`)
+	script := "#!/usr/bin/env python3\n" +
+		"import os, sys\n" +
+		"state_path = r'" + statePath + "'\n" +
+		"instance = 0\n" +
+		"if os.path.exists(state_path):\n" +
+		"    with open(state_path, 'r', encoding='utf-8') as fh:\n" +
+		"        raw = fh.read().strip()\n" +
+		"        if raw:\n" +
+		"            instance = int(raw)\n" +
+		"instance += 1\n" +
+		"with open(state_path, 'w', encoding='utf-8') as fh:\n" +
+		"    fh.write(str(instance))\n" +
+		"sys.stdout.write('not-json\\n')\n" +
+		"sys.stdout.flush()\n"
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "host.py"), script)
+	if err := os.Chmod(filepath.Join(root, ".luc", "extensions", "host.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+
+	waitForExtensionValue(t, statePath, func(raw string) bool { return strings.TrimSpace(raw) == "3" })
+	waitForExtensionDiagnostics(t, controller, func(diags []luruntime.Diagnostic) bool {
+		return len(diags) == 1 && strings.Contains(diags[0].Message, "disabled for this session")
+	})
+}
+
 func waitForExtensionMessages(t *testing.T, path string, predicate func([]map[string]any) bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -542,4 +796,67 @@ func extensionMessagesOfType(messages []map[string]any, typ string) []map[string
 		}
 	}
 	return out
+}
+
+func setExtensionRestartPolicyForTest(t *testing.T, baseDelay, maxDelay time.Duration, attempts int) func() {
+	t.Helper()
+	prevBase := extensionRestartBaseDelay
+	prevMax := extensionRestartMaxDelay
+	prevAttempts := extensionRestartAttempts
+	extensionRestartBaseDelay = baseDelay
+	extensionRestartMaxDelay = maxDelay
+	extensionRestartAttempts = attempts
+	return func() {
+		extensionRestartBaseDelay = prevBase
+		extensionRestartMaxDelay = prevMax
+		extensionRestartAttempts = prevAttempts
+	}
+}
+
+func waitForExtensionValue(t *testing.T, path string, predicate func(string) bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil && predicate(string(data)) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("timed out waiting for %s: %v", path, err)
+	}
+	t.Fatalf("timed out waiting for %s; saw %q", path, string(data))
+}
+
+func waitForExtensionDiagnostics(t *testing.T, controller *Controller, predicate func([]luruntime.Diagnostic) bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		diags := controller.RuntimeDiagnostics()
+		if predicate(diags) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for extension diagnostics; saw %#v", controller.RuntimeDiagnostics())
+}
+
+func extensionHistoryEventSeen(events []history.EventEnvelope, kind, extensionID string) bool {
+	for _, ev := range events {
+		if ev.Kind != kind {
+			continue
+		}
+		payload := decode[history.ExtensionPayload](ev.Payload)
+		if payload.ExtensionID == extensionID {
+			return true
+		}
+	}
+	return false
+}
+
+func asString(value any) string {
+	text, _ := value.(string)
+	return text
 }
