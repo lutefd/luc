@@ -203,6 +203,7 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		runtime:      runtimeSet,
 		hookSeen:     map[string]struct{}{},
 	}
+	toolManager.SetHostedToolInvoker(controller)
 	controller.uiBroker = controllerUIBroker(cfg, logger)
 	configureRuntimeProvider(controller.provider, controller.recordingUIBroker(), controller.hostCaps)
 	for _, diagnostic := range runtimeSet.Diagnostics {
@@ -562,6 +563,7 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.skills = skills
 	c.promptExts = promptExts
 	c.tools = toolManager
+	c.tools.SetHostedToolInvoker(c)
 	c.registry = registry
 	c.provider = client
 	configureRuntimeProvider(c.provider, c.recordingUIBroker(), c.HostCapabilities())
@@ -610,6 +612,19 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 		return c.handleCommand(ctx, text)
 	}
 
+	transformedText, handled, handledMessage, err := c.applyInputTransforms(ctx, text, attachments)
+	if err != nil {
+		c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
+		return err
+	}
+	if handled {
+		if message := strings.TrimSpace(handledMessage); message != "" {
+			c.emit("system.note", history.MessagePayload{ID: nextID("note"), Content: message})
+		}
+		return nil
+	}
+	text = transformedText
+
 	if c.provider == nil {
 		err := errors.New("provider is not ready; check API key configuration")
 		c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
@@ -637,7 +652,7 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 	c.beginTurn(cancel)
 	defer c.endTurn()
 
-	systemPrompt, err := c.composeSystemPrompt(text)
+	systemPrompt, err := c.composeTurnSystemPrompt(turnCtx, text, attachments)
 	if err != nil {
 		c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
 		return err
@@ -737,29 +752,41 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 				c.appendMessage(assistantMsg)
 
 				for _, call := range calls {
+					preparedCall, preflightErr := c.prepareToolCall(turnCtx, call)
 					c.emit("tool.requested", history.ToolCallPayload{
-						ID:        call.ID,
-						Name:      call.Name,
-						Arguments: call.Arguments,
+						ID:        preparedCall.ID,
+						Name:      preparedCall.Name,
+						Arguments: preparedCall.Arguments,
 					})
-					result, err := c.runToolCall(turnCtx, call)
+					var (
+						result tools.Result
+						err    error
+					)
+					if preflightErr != nil {
+						err = preflightErr
+					} else {
+						result, err = c.runPreparedToolCall(turnCtx, preparedCall)
+					}
 					if turnCtx.Err() != nil || errors.Is(err, context.Canceled) {
 						return c.handleTurnCanceled()
 					}
 					payload := history.ToolResultPayload{
-						ID:       call.ID,
-						Name:     call.Name,
+						ID:       preparedCall.ID,
+						Name:     preparedCall.Name,
 						Content:  result.Content,
 						Metadata: result.Metadata,
 					}
 					if err != nil {
 						payload.Error = err.Error()
 					}
+					if preflightErr == nil {
+						payload = c.applyToolResultPatches(turnCtx, preparedCall, payload)
+					}
 					c.emit("tool.finished", payload)
 					c.appendMessage(provider.Message{
 						Role:       "tool",
-						ToolCallID: call.ID,
-						Name:       call.Name,
+						ToolCallID: preparedCall.ID,
+						Name:       preparedCall.Name,
 						Content:    toolResponseContent(payload),
 					})
 				}
@@ -1391,25 +1418,11 @@ func (c *Controller) skillResourceToolSpec() provider.ToolSpec {
 }
 
 func (c *Controller) runToolCall(ctx context.Context, call provider.ToolCall) (tools.Result, error) {
-	switch call.Name {
-	case skillToolName:
-		return c.runLoadSkillTool(call.Arguments)
-	case skillResourceToolName:
-		return c.runReadSkillResourceTool(call.Arguments)
-	default:
-		if err := c.maybeAuthorizeTool(ctx, call.Name, call.Arguments); err != nil {
-			return tools.Result{}, err
-		}
-		return c.tools.Run(ctx, tools.Request{
-			Name:             call.Name,
-			Arguments:        call.Arguments,
-			Workspace:        c.workspace.Root,
-			SessionID:        c.session.SessionID,
-			AgentID:          "root",
-			HostCapabilities: c.HostCapabilities(),
-			UIBroker:         c.recordingUIBroker(),
-		})
+	prepared, err := c.prepareToolCall(ctx, call)
+	if err != nil {
+		return tools.Result{}, err
 	}
+	return c.runPreparedToolCall(ctx, prepared)
 }
 
 func (c *Controller) runLoadSkillTool(raw string) (tools.Result, error) {

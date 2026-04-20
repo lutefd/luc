@@ -18,6 +18,7 @@ import (
 
 	"github.com/lutefd/luc/internal/history"
 	luruntime "github.com/lutefd/luc/internal/runtime"
+	"github.com/lutefd/luc/internal/tools"
 )
 
 const (
@@ -40,15 +41,29 @@ type managedExtensionHost struct {
 	stdin      io.WriteCloser
 	encoder    *json.Encoder
 
-	encMu     sync.Mutex
-	readyOnce sync.Once
-	failOnce  sync.Once
-	stopOnce  sync.Once
+	encMu      sync.Mutex
+	pendingMu  sync.Mutex
+	readyOnce  sync.Once
+	failOnce   sync.Once
+	stopOnce   sync.Once
+	requestSeq atomic.Uint64
 
-	readyCh   chan error
-	exitCh    chan error
-	stopping  atomic.Bool
-	unhealthy atomic.Bool
+	readyCh      chan error
+	exitCh       chan error
+	pending      map[string]chan extensionDecisionResult
+	pendingTools map[string]chan hostedToolResult
+	stopping     atomic.Bool
+	unhealthy    atomic.Bool
+}
+
+type extensionDecisionResult struct {
+	decision luruntime.ExtensionDecisionEnvelope
+	err      error
+}
+
+type hostedToolResult struct {
+	result tools.Result
+	err    error
 }
 
 func newExtensionSupervisor(controller *Controller) *extensionSupervisor {
@@ -148,6 +163,39 @@ func (s *extensionSupervisor) Dispatch(event string, payload any, seq uint64, at
 	}
 }
 
+func (s *extensionSupervisor) RequestDecision(ctx context.Context, binding luruntime.ExtensionBinding, event string, payload any) (luruntime.ExtensionDecisionEnvelope, error) {
+	timeout := binding.Subscription.TimeoutMS
+	if timeout <= 0 {
+		timeout = luruntime.DefaultSyncTimeoutMS(event)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
+	defer cancel()
+
+	s.mu.Lock()
+	host := s.hosts[strings.ToLower(binding.Host.ID)]
+	s.mu.Unlock()
+	if host == nil {
+		return luruntime.ExtensionDecisionEnvelope{}, fmt.Errorf("extension %s is not running", binding.Host.ID)
+	}
+	return host.requestDecision(requestCtx, event, payload)
+}
+
+func (s *extensionSupervisor) InvokeHostedTool(ctx context.Context, extensionID, handler string, req luruntime.ToolRequestEnvelope, timeout time.Duration) (tools.Result, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	s.mu.Lock()
+	host := s.hosts[strings.ToLower(strings.TrimSpace(extensionID))]
+	s.mu.Unlock()
+	if host == nil {
+		return tools.Result{}, fmt.Errorf("extension %s is not running", extensionID)
+	}
+	return host.invokeHostedTool(requestCtx, handler, req)
+}
+
 func startManagedExtensionHost(ctx context.Context, controller *Controller, def luruntime.ExtensionHost) (*managedExtensionHost, error) {
 	cmd, err := buildExtensionCommand(ctx, def)
 	if err != nil {
@@ -177,13 +225,15 @@ func startManagedExtensionHost(ctx context.Context, controller *Controller, def 
 	}
 
 	host := &managedExtensionHost{
-		controller: controller,
-		def:        def,
-		cmd:        cmd,
-		stdin:      stdin,
-		encoder:    json.NewEncoder(stdin),
-		readyCh:    make(chan error, 1),
-		exitCh:     make(chan error, 1),
+		controller:   controller,
+		def:          def,
+		cmd:          cmd,
+		stdin:        stdin,
+		encoder:      json.NewEncoder(stdin),
+		readyCh:      make(chan error, 1),
+		exitCh:       make(chan error, 1),
+		pending:      map[string]chan extensionDecisionResult{},
+		pendingTools: map[string]chan hostedToolResult{},
 	}
 
 	controller.emit("extension.started", history.ExtensionPayload{
@@ -280,6 +330,89 @@ func (h *managedExtensionHost) dispatchEvent(event string, payload any, seq uint
 	}
 }
 
+func (h *managedExtensionHost) requestDecision(ctx context.Context, event string, payload any) (luruntime.ExtensionDecisionEnvelope, error) {
+	if h.unhealthy.Load() {
+		return luruntime.ExtensionDecisionEnvelope{}, fmt.Errorf("extension %s is unhealthy", h.def.ID)
+	}
+	if h.stopping.Load() {
+		return luruntime.ExtensionDecisionEnvelope{}, fmt.Errorf("extension %s is stopping", h.def.ID)
+	}
+
+	requestID := fmt.Sprintf("%s_req_%d", safeExtensionPathPart(h.def.ID), h.requestSeq.Add(1))
+	resultCh := make(chan extensionDecisionResult, 1)
+
+	h.pendingMu.Lock()
+	h.pending[requestID] = resultCh
+	h.pendingMu.Unlock()
+
+	err := h.send(luruntime.ExtensionEventEnvelope{
+		Type:      "event",
+		Event:     event,
+		RequestID: requestID,
+		At:        time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:   payload,
+		Session:   extensionSessionContext(h.controller),
+		Workspace: extensionWorkspaceContext(h.controller),
+	})
+	if err != nil {
+		h.pendingMu.Lock()
+		delete(h.pending, requestID)
+		h.pendingMu.Unlock()
+		return luruntime.ExtensionDecisionEnvelope{}, err
+	}
+
+	select {
+	case result := <-resultCh:
+		return result.decision, result.err
+	case <-ctx.Done():
+		h.pendingMu.Lock()
+		delete(h.pending, requestID)
+		h.pendingMu.Unlock()
+		h.reportFailure(ctx.Err())
+		return luruntime.ExtensionDecisionEnvelope{}, ctx.Err()
+	}
+}
+
+func (h *managedExtensionHost) invokeHostedTool(ctx context.Context, handler string, req luruntime.ToolRequestEnvelope) (tools.Result, error) {
+	if h.unhealthy.Load() {
+		return tools.Result{}, fmt.Errorf("extension %s is unhealthy", h.def.ID)
+	}
+	if h.stopping.Load() {
+		return tools.Result{}, fmt.Errorf("extension %s is stopping", h.def.ID)
+	}
+
+	requestID := fmt.Sprintf("%s_tool_%d", safeExtensionPathPart(h.def.ID), h.requestSeq.Add(1))
+	resultCh := make(chan hostedToolResult, 1)
+
+	h.pendingMu.Lock()
+	h.pendingTools[requestID] = resultCh
+	h.pendingMu.Unlock()
+
+	err := h.send(luruntime.HostedToolInvokeEnvelope{
+		Type:      "tool_invoke",
+		RequestID: requestID,
+		Handler:   strings.TrimSpace(handler),
+		Tool:      req,
+	})
+	if err != nil {
+		h.pendingMu.Lock()
+		delete(h.pendingTools, requestID)
+		h.pendingMu.Unlock()
+		return tools.Result{}, err
+	}
+
+	select {
+	case result := <-resultCh:
+		return result.result, result.err
+	case <-ctx.Done():
+		h.pendingMu.Lock()
+		delete(h.pendingTools, requestID)
+		h.pendingMu.Unlock()
+		h.reportFailure(ctx.Err())
+		return tools.Result{}, ctx.Err()
+	}
+}
+
 func (h *managedExtensionHost) readLoop(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
@@ -359,6 +492,24 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 		if err := persistExtensionStorageUpdate(h.controller.workspace.Root, h.controller.session.SessionID, h.def.ID, event.Scope, event.Value); err != nil {
 			h.reportFailure(err)
 		}
+	case "decision":
+		h.resolveDecision(luruntime.ExtensionDecisionEnvelope{
+			Type:                event.Type,
+			RequestID:           event.RequestID,
+			Decision:            event.Decision,
+			Message:             event.Message,
+			Text:                event.Text,
+			SystemAppend:        append([]string(nil), event.SystemAppend...),
+			HiddenContext:       append([]string(nil), event.HiddenContext...),
+			Arguments:           cloneAnyMap(event.Arguments),
+			Content:             event.Content,
+			Metadata:            cloneAnyMap(event.Metadata),
+			Error:               event.Error,
+			CollapsedSummary:    event.CollapsedSummary,
+			ErrorClassification: event.ErrorClassification,
+		})
+	case "tool_result":
+		h.resolveHostedToolResult(event)
 	case "error":
 		h.reportFailure(errors.New(kernelFirstNonEmpty(event.Error, event.Message, "extension failed")))
 	case "done":
@@ -366,6 +517,61 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 	default:
 		h.reportFailure(fmt.Errorf("unsupported extension message type %q", event.Type))
 	}
+}
+
+func (h *managedExtensionHost) resolveDecision(decision luruntime.ExtensionDecisionEnvelope) {
+	requestID := strings.TrimSpace(decision.RequestID)
+	if requestID == "" {
+		h.reportFailure(errors.New("extension decision is missing request_id"))
+		return
+	}
+
+	h.pendingMu.Lock()
+	resultCh := h.pending[requestID]
+	if resultCh != nil {
+		delete(h.pending, requestID)
+	}
+	h.pendingMu.Unlock()
+	if resultCh == nil {
+		return
+	}
+	resultCh <- extensionDecisionResult{decision: decision}
+}
+
+func (h *managedExtensionHost) resolveHostedToolResult(event luruntime.ExtensionHostEvent) {
+	requestID := strings.TrimSpace(event.RequestID)
+	if requestID == "" {
+		h.reportFailure(errors.New("extension tool_result is missing request_id"))
+		return
+	}
+
+	h.pendingMu.Lock()
+	resultCh := h.pendingTools[requestID]
+	if resultCh != nil {
+		delete(h.pendingTools, requestID)
+	}
+	h.pendingMu.Unlock()
+	if resultCh == nil {
+		return
+	}
+
+	if event.Result == nil && strings.TrimSpace(event.Error) == "" {
+		resultCh <- hostedToolResult{err: errors.New("extension tool_result is missing result payload")}
+		return
+	}
+
+	result := tools.Result{}
+	if event.Result != nil {
+		result.Content = event.Result.Content
+		result.Metadata = cloneAnyMap(event.Result.Metadata)
+		result.DefaultCollapsed = event.Result.DefaultCollapsed
+		result.CollapsedSummary = event.Result.CollapsedSummary
+	}
+	if strings.TrimSpace(event.Error) != "" {
+		resultCh <- hostedToolResult{result: result, err: errors.New(strings.TrimSpace(event.Error))}
+		return
+	}
+	resultCh <- hostedToolResult{result: result}
 }
 
 func (h *managedExtensionHost) waitLoop(stderrBuf *bytes.Buffer, stderrDone <-chan struct{}) {
@@ -435,9 +641,27 @@ func (h *managedExtensionHost) reportFailure(err error) {
 	}
 	h.failOnce.Do(func() {
 		h.unhealthy.Store(true)
+		h.pendingMu.Lock()
+		pending := make([]chan extensionDecisionResult, 0, len(h.pending))
+		pendingTools := make([]chan hostedToolResult, 0, len(h.pendingTools))
+		for id, ch := range h.pending {
+			delete(h.pending, id)
+			pending = append(pending, ch)
+		}
+		for id, ch := range h.pendingTools {
+			delete(h.pendingTools, id)
+			pendingTools = append(pendingTools, ch)
+		}
+		h.pendingMu.Unlock()
 		h.readyOnce.Do(func() {
 			h.readyCh <- err
 		})
+		for _, ch := range pending {
+			ch <- extensionDecisionResult{err: err}
+		}
+		for _, ch := range pendingTools {
+			ch <- hostedToolResult{err: err}
+		}
 		h.controller.emit("extension.failed", history.ExtensionPayload{
 			ExtensionID: h.def.ID,
 			SourcePath:  h.def.SourcePath,
@@ -543,4 +767,15 @@ func safeExtensionPathPart(value string) string {
 		return "default"
 	}
 	return value
+}
+
+func cloneAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
 }
