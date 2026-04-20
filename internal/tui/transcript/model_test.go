@@ -549,3 +549,22 @@ func TestTranscriptCollapsesLargeWriteDiffEarlierThanGenericDiffs(t *testing.T) 
 		t.Fatalf("expected large write diff to collapse earlier:\n%s", view)
 	}
 }
+
+func TestTranscriptShowsCompactionBlock(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(90, 20)
+	model.Apply(history.EventEnvelope{
+		Seq:  4,
+		Kind: "session.compaction",
+		Payload: history.CompactionPayload{
+			Summary:      "## Goal\nHandle the prior request",
+			TokensBefore: 32100,
+			Reason:       "manual",
+		},
+	})
+
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Compaction") || !strings.Contains(view, "Handle the prior request") {
+		t.Fatalf("expected compaction block in transcript view:\n%s", view)
+	}
+}

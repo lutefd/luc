@@ -45,6 +45,7 @@ type Model struct {
 	userTurns      int
 	assistantTurns int
 	toolCalls      int
+	compactions    int
 	errorCount     int
 	reloadVersion  uint64
 	theme          theme.Theme
@@ -191,8 +192,31 @@ func (m *Model) ApplyBatch(events []history.EventEnvelope) {
 	}
 }
 
+func (m *Model) Reset(session history.SessionMeta) {
+	m.session = session
+	m.tool = history.ToolResultPayload{}
+	m.lastCall = history.ToolCallPayload{}
+	m.status = "Ready"
+	m.lastUser = ""
+	m.lastAssistant = ""
+	m.userTurns = 0
+	m.assistantTurns = 0
+	m.toolCalls = 0
+	m.compactions = 0
+	m.errorCount = 0
+	m.reloadVersion = 0
+	m.stateVer++
+	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
+		m.refreshContent()
+	}
+}
+
 func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	switch ev.Kind {
+	case "session.compaction":
+		m.compactions++
+		m.status = "Context compacted"
+		return true
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
 		if payload.Synthetic {
@@ -479,6 +503,9 @@ func (m Model) overviewView() string {
 		status = "Ready"
 	}
 	activity := fmt.Sprintf("%d user  •  %d assistant  •  %d tools", m.userTurns, m.assistantTurns, m.toolCalls)
+	if m.compactions > 0 {
+		activity += fmt.Sprintf("  •  %d compacted", m.compactions)
+	}
 	workspaceSummary := project
 	if m.workspace.HasGit {
 		workspaceSummary += "  •  git"
@@ -616,6 +643,7 @@ func (m Model) contextView() string {
 		"user_turns":      m.userTurns,
 		"assistant_turns": m.assistantTurns,
 		"tool_calls":      m.toolCalls,
+		"compactions":     m.compactions,
 		"errors":          m.errorCount,
 		"reload_version":  m.reloadVersion,
 		"has_git":         m.workspace.HasGit,

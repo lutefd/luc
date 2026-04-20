@@ -271,8 +271,43 @@ func (m *Model) ApplyBatch(events []history.EventEnvelope) {
 	}
 }
 
+func (m *Model) Reset() {
+	m.blocks = nil
+	m.spans = nil
+	m.contentLines = 0
+	m.contentVer = 0
+	m.cache = make(map[string]string)
+	m.expanded = make(map[string]bool)
+	m.autoFollow = true
+	m.selAnchor = -1
+	m.selFocus = -1
+	m.selecting = false
+	m.windowStart = 0
+	m.viewKey = ""
+	m.viewCache = ""
+	if m.width > 0 && m.height > 0 {
+		m.render()
+	}
+}
+
 func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	switch ev.Kind {
+	case "session.compaction":
+		payload := decode[history.CompactionPayload](ev.Payload)
+		meta := map[string]string{
+			"tokens_before": fmt.Sprintf("%d", payload.TokensBefore),
+		}
+		if reason := strings.TrimSpace(payload.Reason); reason != "" {
+			meta["reason"] = reason
+		}
+		m.blocks = append(m.blocks, Block{
+			ID:      fmt.Sprintf("compaction_%d", ev.Seq),
+			Kind:    "compaction",
+			Content: cleanText(payload.Summary),
+			State:   "done",
+			Meta:    meta,
+		})
+		return true
 	case "message.user":
 		payload := decode[history.MessagePayload](ev.Payload)
 		if payload.Synthetic {
@@ -558,6 +593,8 @@ func (m Model) renderBlock(block Block) string {
 		return lipgloss.JoinVertical(lipgloss.Left, label, body)
 	case "tool":
 		return m.renderToolBlock(block, width)
+	case "compaction":
+		return m.renderCompactionBlock(block, width)
 	case "error":
 		return m.renderErrorBlock(block, width)
 	default:
@@ -768,10 +805,40 @@ func (m Model) isExpandableBlock(block Block) bool {
 	switch block.Kind {
 	case "tool":
 		return m.isExpandableToolBlock(block)
+	case "compaction":
+		return strings.TrimSpace(block.Content) != ""
 	case "error":
 		return strings.TrimSpace(block.Content) != ""
 	}
 	return false
+}
+
+func (m Model) renderCompactionBlock(block Block, width int) string {
+	style := m.theme.ToolCard
+	header := m.theme.ToolTitle.Render("↺ Compaction")
+	if tokens := strings.TrimSpace(block.Meta["tokens_before"]); tokens != "" {
+		header = lipgloss.JoinHorizontal(lipgloss.Left, header, " ", m.theme.Muted.Render("from "+tokens+" tokens"))
+	}
+
+	innerW := max(1, width-4)
+	body := lipgloss.JoinVertical(
+		lipgloss.Left,
+		m.theme.Muted.Render(firstCompactionSummaryLine(block.Content)),
+		"",
+		m.theme.Muted.Render("Double-click to expand."),
+	)
+	if m.isExpanded(block.ID) {
+		body = lipgloss.JoinVertical(
+			lipgloss.Left,
+			m.theme.Muted.Render("Summary"),
+			lipgloss.NewStyle().Width(innerW).Render(strings.TrimSpace(block.Content)),
+			"",
+			m.theme.Muted.Render("Double-click to collapse."),
+		)
+	}
+
+	card := lipgloss.JoinVertical(lipgloss.Left, header, "", body)
+	return style.Width(width).Render(card)
 }
 
 // renderErrorBlock renders a stylized, collapsible error card. By default
@@ -824,6 +891,20 @@ func firstMeaningfulLine(s string) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+func firstCompactionSummaryLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return trimmed
+	}
+	return firstMeaningfulLine(s)
 }
 
 func (m Model) isExpandableToolBlock(block Block) bool {
@@ -990,6 +1071,8 @@ func (m Model) plainTextForBlock(block Block) string {
 		}
 	}
 	switch block.Kind {
+	case "compaction":
+		return block.Content
 	case "tool":
 		if block.Diff != "" {
 			return block.Diff
