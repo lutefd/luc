@@ -76,6 +76,7 @@ type HookRegistry struct {
 type ContributionSet struct {
 	UI          UIRegistry
 	Hooks       HookRegistry
+	Extensions  ExtensionRegistry
 	Diagnostics []Diagnostic
 }
 

@@ -8,11 +8,14 @@ const (
 )
 
 const (
-	HostCapabilityUIModal    = "ui.modal"
-	HostCapabilityUIConfirm  = "ui.confirm"
-	HostCapabilityUIViewOpen = "ui.view.open"
-	HostCapabilityUICommand  = "ui.command"
-	HostCapabilityLiveHooks  = "hooks.live_events"
+	HostCapabilityUIModal                 = "ui.modal"
+	HostCapabilityUIConfirm               = "ui.confirm"
+	HostCapabilityUIViewOpen              = "ui.view.open"
+	HostCapabilityUICommand               = "ui.command"
+	HostCapabilityLiveHooks               = "hooks.live_events"
+	HostCapabilityExtensionObserveEvents  = "extensions.observe_events"
+	HostCapabilityExtensionSessionStorage = "extensions.storage.session"
+	HostCapabilityExtensionWorkspaceStore = "extensions.storage.workspace"
 )
 
 type UIAction struct {
@@ -119,5 +122,8 @@ func DefaultHostCapabilities() []string {
 		HostCapabilityUIViewOpen,
 		HostCapabilityUICommand,
 		HostCapabilityLiveHooks,
+		HostCapabilityExtensionObserveEvents,
+		HostCapabilityExtensionSessionStorage,
+		HostCapabilityExtensionWorkspaceStore,
 	}
 }
