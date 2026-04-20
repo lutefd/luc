@@ -67,3 +67,31 @@ models:
 		t.Fatalf("unexpected capabilities %#v", def.Capabilities)
 	}
 }
+
+func TestParseToolDefSupportsExtensionRuntime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosted-tool.yaml")
+	content := `schema: luc.tool/v2
+name: stateful_echo
+description: Echo through an extension host.
+runtime:
+  kind: extension
+  extension_id: audit
+  handler: echo
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	def, err := parseToolDef(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.RuntimeKind != "extension" || def.ExtensionID != "audit" || def.Handler != "echo" || def.SchemaVersion != "luc.tool/v2" {
+		t.Fatalf("unexpected hosted tool def %#v", def)
+	}
+}

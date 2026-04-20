@@ -23,7 +23,11 @@ type ToolDef struct {
 	Name           string
 	Description    string
 	Schema         json.RawMessage
+	SchemaVersion  string
+	RuntimeKind    string
 	Command        string
+	ExtensionID    string
+	Handler        string
 	Capabilities   []string
 	TimeoutSeconds int
 	UI             ToolUI
@@ -518,6 +522,8 @@ func parseToolDef(path string) (ToolDef, error) {
 		Runtime        struct {
 			Kind         string   `yaml:"kind" json:"kind"`
 			Command      string   `yaml:"command" json:"command"`
+			ExtensionID  string   `yaml:"extension_id" json:"extension_id"`
+			Handler      string   `yaml:"handler" json:"handler"`
 			Capabilities []string `yaml:"capabilities" json:"capabilities"`
 		} `yaml:"runtime" json:"runtime"`
 	}
@@ -530,18 +536,12 @@ func parseToolDef(path string) (ToolDef, error) {
 	if strings.TrimSpace(raw.Description) == "" {
 		return ToolDef{}, fmt.Errorf("%s: description is required", path)
 	}
-	command := strings.TrimSpace(firstNonEmpty(raw.Runtime.Command, raw.Command))
-	if command == "" {
-		return ToolDef{}, fmt.Errorf("%s: command is required", path)
-	}
-	if kind := strings.TrimSpace(firstNonEmpty(raw.Runtime.Kind, "exec")); kind != "exec" {
-		return ToolDef{}, fmt.Errorf("%s: unsupported runtime kind %q", path, kind)
-	}
-
 	schema := json.RawMessage(`{"type":"object","properties":{}}`)
 	schemaSource := raw.Schema
+	schemaVersion := "luc.tool/v1"
 	if version, ok := raw.Schema.(string); ok {
-		if strings.TrimSpace(version) != "luc.tool/v1" {
+		schemaVersion = strings.TrimSpace(version)
+		if schemaVersion != "luc.tool/v1" && schemaVersion != "luc.tool/v2" {
 			return ToolDef{}, fmt.Errorf("%s: unsupported tool schema version %q", path, version)
 		}
 		schemaSource = raw.InputSchema
@@ -556,16 +556,53 @@ func parseToolDef(path string) (ToolDef, error) {
 		}
 		schema = schemaData
 	}
-	return ToolDef{
-		Name:           raw.Name,
-		Description:    raw.Description,
-		Schema:         schema,
-		Command:        command,
-		Capabilities:   luruntime.NormalizeCapabilities(raw.Runtime.Capabilities),
-		TimeoutSeconds: raw.TimeoutSeconds,
-		UI:             raw.UI,
-		SourcePath:     path,
-	}, nil
+
+	runtimeKind := strings.TrimSpace(firstNonEmpty(raw.Runtime.Kind, "exec"))
+	switch runtimeKind {
+	case "exec":
+		command := strings.TrimSpace(firstNonEmpty(raw.Runtime.Command, raw.Command))
+		if command == "" {
+			return ToolDef{}, fmt.Errorf("%s: command is required", path)
+		}
+		return ToolDef{
+			Name:           raw.Name,
+			Description:    raw.Description,
+			Schema:         schema,
+			SchemaVersion:  schemaVersion,
+			RuntimeKind:    runtimeKind,
+			Command:        command,
+			Capabilities:   luruntime.NormalizeCapabilities(raw.Runtime.Capabilities),
+			TimeoutSeconds: raw.TimeoutSeconds,
+			UI:             raw.UI,
+			SourcePath:     path,
+		}, nil
+	case "extension":
+		if schemaVersion != "luc.tool/v2" {
+			return ToolDef{}, fmt.Errorf("%s: runtime.kind %q requires schema luc.tool/v2", path, runtimeKind)
+		}
+		extensionID := strings.TrimSpace(raw.Runtime.ExtensionID)
+		if extensionID == "" {
+			return ToolDef{}, fmt.Errorf("%s: runtime.extension_id is required for extension tools", path)
+		}
+		handler := strings.TrimSpace(raw.Runtime.Handler)
+		if handler == "" {
+			return ToolDef{}, fmt.Errorf("%s: runtime.handler is required for extension tools", path)
+		}
+		return ToolDef{
+			Name:           raw.Name,
+			Description:    raw.Description,
+			Schema:         schema,
+			SchemaVersion:  schemaVersion,
+			RuntimeKind:    runtimeKind,
+			ExtensionID:    extensionID,
+			Handler:        handler,
+			TimeoutSeconds: raw.TimeoutSeconds,
+			UI:             raw.UI,
+			SourcePath:     path,
+		}, nil
+	default:
+		return ToolDef{}, fmt.Errorf("%s: unsupported runtime kind %q", path, runtimeKind)
+	}
 }
 
 func parseProviderDef(path string) (ProviderDef, error) {
