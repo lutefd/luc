@@ -438,16 +438,28 @@ func parseExtensionManifest(path string) (luruntime.ExtensionHost, error) {
 		if event == "" {
 			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].event is required", path, i)
 		}
-		if !luruntime.SupportsObserveEvent(event) {
-			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].event %q is not supported in this phase", path, i, event)
-		}
 		mode := strings.TrimSpace(firstNonEmpty(subscription.Mode, luruntime.ExtensionModeObserve))
-		if mode != luruntime.ExtensionModeObserve {
-			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].mode %q is not supported in this phase", path, i, mode)
+		switch mode {
+		case luruntime.ExtensionModeObserve:
+			if !luruntime.SupportsObserveEvent(event) {
+				return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].event %q is not supported for observe mode", path, i, event)
+			}
+		case luruntime.ExtensionModeSync:
+			if !luruntime.SupportsSyncEvent(event) {
+				return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].event %q is not supported for sync mode", path, i, event)
+			}
+		default:
+			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].mode %q is invalid", path, i, mode)
 		}
 		failureMode := strings.TrimSpace(firstNonEmpty(subscription.FailureMode, luruntime.ExtensionFailureModeOpen))
-		if failureMode != luruntime.ExtensionFailureModeOpen {
-			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].failure_mode %q is not supported in this phase", path, i, failureMode)
+		switch failureMode {
+		case luruntime.ExtensionFailureModeOpen:
+		case luruntime.ExtensionFailureModeClosed:
+			if event != luruntime.ExtensionEventInputTransform && event != luruntime.ExtensionEventToolPreflight {
+				return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].failure_mode %q is only allowed for %q and %q", path, i, failureMode, luruntime.ExtensionEventInputTransform, luruntime.ExtensionEventToolPreflight)
+			}
+		default:
+			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].failure_mode %q is invalid", path, i, failureMode)
 		}
 		subscriptions = append(subscriptions, luruntime.ExtensionSubscription{
 			Event:       event,

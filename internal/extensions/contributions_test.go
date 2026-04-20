@@ -183,6 +183,37 @@ subscriptions:
 	}
 }
 
+func TestLoadRuntimeContributionsAcceptsSyncExtensionSubscriptions(t *testing.T) {
+	root := t.TempDir()
+	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "extensions", "sync.yaml"), `schema: luc.extension/v1
+id: sync
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+subscriptions:
+  - event: input.transform
+    mode: sync
+    timeout_ms: 250
+    failure_mode: closed
+  - event: prompt.context
+    mode: sync
+`)
+
+	set, err := LoadRuntimeContributions(root, luruntime.DefaultHostCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bindings := set.Extensions.SyncSubscribers("input.transform")
+	if len(bindings) != 1 {
+		t.Fatalf("expected one sync subscriber, got %#v", bindings)
+	}
+	if bindings[0].Subscription.FailureMode != luruntime.ExtensionFailureModeClosed || bindings[0].Subscription.TimeoutMS != 250 {
+		t.Fatalf("unexpected sync subscription %#v", bindings[0])
+	}
+}
+
 func mustWriteRuntimeManifest(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
