@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -71,6 +72,7 @@ func (s *fakeStream) Close() error { return nil }
 type errorThenTextProvider struct {
 	requests []provider.Request
 	calls    int
+	err      error
 }
 
 func (p *errorThenTextProvider) Name() string { return "error-then-text" }
@@ -80,7 +82,11 @@ func (p *errorThenTextProvider) Start(ctx context.Context, req provider.Request)
 	p.requests = append(p.requests, req)
 	p.calls++
 	if p.calls == 1 {
-		return &errorStream{err: provider.ErrExceededToolLimits}, nil
+		err := p.err
+		if err == nil {
+			err = provider.ErrExceededToolLimits
+		}
+		return &errorStream{err: err}, nil
 	}
 	return &fakeStream{events: []provider.Event{
 		{Type: "text_delta", Text: "ok"},
@@ -134,6 +140,33 @@ func (s *cancelAwareStream) Recv() (provider.Event, error) {
 }
 
 func (s *cancelAwareStream) Close() error { return nil }
+
+type longToolLoopProvider struct {
+	requests []provider.Request
+	calls    int
+}
+
+func (p *longToolLoopProvider) Name() string { return "long-tool-loop" }
+
+func (p *longToolLoopProvider) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
+	_ = ctx
+	p.requests = append(p.requests, req)
+	p.calls++
+	if p.calls <= maxToolLoopRounds {
+		return &fakeStream{events: []provider.Event{
+			{Type: "tool_call", ToolCall: provider.ToolCall{
+				ID:        "call_1",
+				Name:      "read",
+				Arguments: `{"path":"go.mod"}`,
+			}},
+			{Type: "done", Completed: true},
+		}}, nil
+	}
+	return &fakeStream{events: []provider.Event{
+		{Type: "text_delta", Text: "ok"},
+		{Type: "done", Completed: true},
+	}}, nil
+}
 
 func TestControllerEmitMirrorsFailuresToLogs(t *testing.T) {
 	controller := &Controller{
@@ -443,6 +476,101 @@ func TestControllerSubmitMessageAutoContinuesExceededToolLimits(t *testing.T) {
 			}
 		case "system.error":
 			t.Fatalf("unexpected system.error during auto-continue flow: %#v", ev)
+		}
+	}
+	if !sawSyntheticContinue || !sawFinal {
+		t.Fatalf("expected synthetic continue + final assistant response, got %#v", stored)
+	}
+}
+
+func TestControllerSubmitMessageAutoContinuesToolLoopLimitMessage(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &errorThenTextProvider{err: errors.New("exceeded tool loop limit")}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected retry after tool loop limit message, got %d request(s)", len(providerStub.requests))
+	}
+	second := providerStub.requests[1].Messages
+	if len(second) < 2 || second[len(second)-1].Role != "user" || second[len(second)-1].Content != autoContinueText {
+		t.Fatalf("expected synthetic continue in retry request, got %#v", second)
+	}
+}
+
+func TestControllerSubmitMessageAutoContinuesInternalToolLoopLimit(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &longToolLoopProvider{}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module luc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "keep going"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(providerStub.requests) != maxToolLoopRounds+1 {
+		t.Fatalf("expected %d request(s), got %d", maxToolLoopRounds+1, len(providerStub.requests))
+	}
+	last := providerStub.requests[len(providerStub.requests)-1].Messages
+	if len(last) < 2 || last[len(last)-1].Role != "user" || last[len(last)-1].Content != autoContinueText {
+		t.Fatalf("expected synthetic continue before final retry, got %#v", last)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sawSyntheticContinue, sawFinal bool
+	for _, ev := range stored {
+		switch ev.Kind {
+		case "message.user":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Synthetic && payload.Content == autoContinueText {
+				sawSyntheticContinue = true
+			}
+		case "message.assistant.final":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Content == "ok" {
+				sawFinal = true
+			}
+		case "system.error":
+			t.Fatalf("unexpected system.error during internal tool-loop auto-continue: %#v", ev)
 		}
 	}
 	if !sawSyntheticContinue || !sawFinal {

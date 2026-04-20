@@ -35,7 +35,11 @@ const (
 	noResponseText        = "No response."
 	noUsableResponseText  = "Provider returned no usable response."
 	autoContinueText      = "continue"
+	maxToolLoopRounds     = 8
+	maxAutoContinues      = 4
 )
+
+var errExceededToolLoopLimit = errors.New("exceeded tool loop limit")
 
 var newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
 	// Prefer a provider registered in the registry by ID if one matches
@@ -606,147 +610,154 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 		return err
 	}
 
-toolLoop:
-	for range 8 {
-		stream, err := c.provider.Start(turnCtx, provider.Request{
-			Model:       c.config.Provider.Model,
-			System:      systemPrompt,
-			Messages:    c.snapshotConversation(),
-			Tools:       c.toolSpecs(),
-			Temperature: c.config.Provider.Temperature,
-			MaxTokens:   c.config.Provider.MaxTokens,
-		})
-		if err != nil {
-			if turnCtx.Err() != nil {
-				return c.handleTurnCanceled()
-			}
-			c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
-			return err
-		}
+	autoContinues := 0
 
-		assistantID := nextID("assistant")
-		var builder strings.Builder
-		var calls []provider.ToolCall
-
-		for {
-			ev, err := stream.Recv()
-			if turnCtx.Err() != nil {
-				_ = stream.Close()
-				return c.handleTurnCanceled()
-			}
-			if errors.Is(err, context.Canceled) {
-				_ = stream.Close()
-				return c.handleTurnCanceled()
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				_ = stream.Close()
+	for {
+	toolLoop:
+		for range maxToolLoopRounds {
+			stream, err := c.provider.Start(turnCtx, provider.Request{
+				Model:       c.config.Provider.Model,
+				System:      systemPrompt,
+				Messages:    c.snapshotConversation(),
+				Tools:       c.toolSpecs(),
+				Temperature: c.config.Provider.Temperature,
+				MaxTokens:   c.config.Provider.MaxTokens,
+			})
+			if err != nil {
+				if turnCtx.Err() != nil {
+					return c.handleTurnCanceled()
+				}
+				c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
 				return err
 			}
-			if errors.Is(err, os.ErrClosed) || errors.Is(err, context.Canceled) {
-				_ = stream.Close()
-				return c.handleTurnCanceled()
-			}
-			if err != nil {
+
+			assistantID := nextID("assistant")
+			var builder strings.Builder
+			var calls []provider.ToolCall
+
+			for {
+				ev, err := stream.Recv()
+				if turnCtx.Err() != nil {
+					_ = stream.Close()
+					return c.handleTurnCanceled()
+				}
+				if errors.Is(err, context.Canceled) {
+					_ = stream.Close()
+					return c.handleTurnCanceled()
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					_ = stream.Close()
+					return err
+				}
 				if errors.Is(err, os.ErrClosed) || errors.Is(err, context.Canceled) {
 					_ = stream.Close()
 					return c.handleTurnCanceled()
 				}
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				_ = stream.Close()
-				if errors.Is(err, context.Canceled) {
-					return c.handleTurnCanceled()
-				}
-				if shouldAutoContinueToolLimit(err) {
-					c.appendSyntheticUserMessage(autoContinueText)
-					continue toolLoop
-				}
-				return err
-			}
-
-			switch ev.Type {
-			case "thinking":
-				text := strings.TrimSpace(ev.Text)
-				if text == "" {
-					text = "Thinking..."
-				}
-				c.emit("status.thinking", history.StatusPayload{Text: text})
-			case "text_delta":
-				builder.WriteString(ev.Text)
-				c.emit("message.assistant.delta", history.MessageDeltaPayload{ID: assistantID, Delta: ev.Text})
-			case "tool_call":
-				calls = append(calls, ev.ToolCall)
-			case "done":
-				goto streamDone
-			}
-		}
-	streamDone:
-		_ = stream.Close()
-
-		if len(calls) > 0 {
-			payload := history.ToolCallBatchPayload{ID: assistantID}
-			assistantMsg := provider.Message{Role: "assistant", ToolCalls: calls}
-			for _, call := range calls {
-				payload.Calls = append(payload.Calls, history.ToolCallPayload{
-					ID:        call.ID,
-					Name:      call.Name,
-					Arguments: call.Arguments,
-				})
-			}
-			c.emit("message.assistant.tool_calls", payload)
-			c.appendMessage(assistantMsg)
-
-			for _, call := range calls {
-				c.emit("tool.requested", history.ToolCallPayload{
-					ID:        call.ID,
-					Name:      call.Name,
-					Arguments: call.Arguments,
-				})
-				result, err := c.runToolCall(turnCtx, call)
-				if turnCtx.Err() != nil || errors.Is(err, context.Canceled) {
-					return c.handleTurnCanceled()
-				}
-				payload := history.ToolResultPayload{
-					ID:       call.ID,
-					Name:     call.Name,
-					Content:  result.Content,
-					Metadata: result.Metadata,
-				}
 				if err != nil {
-					payload.Error = err.Error()
+					if errors.Is(err, os.ErrClosed) || errors.Is(err, context.Canceled) {
+						_ = stream.Close()
+						return c.handleTurnCanceled()
+					}
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					_ = stream.Close()
+					if errors.Is(err, context.Canceled) {
+						return c.handleTurnCanceled()
+					}
+					if shouldAutoContinueToolLimit(err) {
+						break toolLoop
+					}
+					return err
 				}
-				c.emit("tool.finished", payload)
-				c.appendMessage(provider.Message{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					Name:       call.Name,
-					Content:    toolResponseContent(payload),
-				})
-			}
-			continue
-		}
 
-		final := strings.TrimSpace(builder.String())
-		if final == "" || isNoResponsePlaceholder(final) {
-			c.emit("message.assistant.final", history.MessagePayload{
-				ID:        assistantID,
-				Content:   noUsableResponseText,
-				Synthetic: true,
-			})
-			errMsg := "provider returned an empty response"
-			if isNoResponsePlaceholder(final) {
-				errMsg = fmt.Sprintf("provider returned placeholder response %q", noResponseText)
+				switch ev.Type {
+				case "thinking":
+					text := strings.TrimSpace(ev.Text)
+					if text == "" {
+						text = "Thinking..."
+					}
+					c.emit("status.thinking", history.StatusPayload{Text: text})
+				case "text_delta":
+					builder.WriteString(ev.Text)
+					c.emit("message.assistant.delta", history.MessageDeltaPayload{ID: assistantID, Delta: ev.Text})
+				case "tool_call":
+					calls = append(calls, ev.ToolCall)
+				case "done":
+					goto streamDone
+				}
 			}
-			c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: errMsg})
+		streamDone:
+			_ = stream.Close()
+
+			if len(calls) > 0 {
+				payload := history.ToolCallBatchPayload{ID: assistantID}
+				assistantMsg := provider.Message{Role: "assistant", ToolCalls: calls}
+				for _, call := range calls {
+					payload.Calls = append(payload.Calls, history.ToolCallPayload{
+						ID:        call.ID,
+						Name:      call.Name,
+						Arguments: call.Arguments,
+					})
+				}
+				c.emit("message.assistant.tool_calls", payload)
+				c.appendMessage(assistantMsg)
+
+				for _, call := range calls {
+					c.emit("tool.requested", history.ToolCallPayload{
+						ID:        call.ID,
+						Name:      call.Name,
+						Arguments: call.Arguments,
+					})
+					result, err := c.runToolCall(turnCtx, call)
+					if turnCtx.Err() != nil || errors.Is(err, context.Canceled) {
+						return c.handleTurnCanceled()
+					}
+					payload := history.ToolResultPayload{
+						ID:       call.ID,
+						Name:     call.Name,
+						Content:  result.Content,
+						Metadata: result.Metadata,
+					}
+					if err != nil {
+						payload.Error = err.Error()
+					}
+					c.emit("tool.finished", payload)
+					c.appendMessage(provider.Message{
+						Role:       "tool",
+						ToolCallID: call.ID,
+						Name:       call.Name,
+						Content:    toolResponseContent(payload),
+					})
+				}
+				continue
+			}
+
+			final := strings.TrimSpace(builder.String())
+			if final == "" || isNoResponsePlaceholder(final) {
+				c.emit("message.assistant.final", history.MessagePayload{
+					ID:        assistantID,
+					Content:   noUsableResponseText,
+					Synthetic: true,
+				})
+				errMsg := "provider returned an empty response"
+				if isNoResponsePlaceholder(final) {
+					errMsg = fmt.Sprintf("provider returned placeholder response %q", noResponseText)
+				}
+				c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: errMsg})
+				return nil
+			}
+			c.emit("message.assistant.final", history.MessagePayload{ID: assistantID, Content: final})
+			c.appendMessage(provider.Message{Role: "assistant", Content: final})
 			return nil
 		}
-		c.emit("message.assistant.final", history.MessagePayload{ID: assistantID, Content: final})
-		c.appendMessage(provider.Message{Role: "assistant", Content: final})
-		return nil
-	}
 
-	return errors.New("exceeded tool loop limit")
+		if autoContinues >= maxAutoContinues {
+			return errExceededToolLoopLimit
+		}
+		c.appendSyntheticUserMessage(autoContinueText)
+		autoContinues++
+	}
 }
 
 func (c *Controller) beginTurn(cancel context.CancelFunc) {
@@ -775,12 +786,14 @@ func shouldAutoContinueToolLimit(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, provider.ErrExceededToolLimits) {
+	if errors.Is(err, provider.ErrExceededToolLimits) || errors.Is(err, errExceededToolLoopLimit) {
 		return true
 	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, provider.ErrExceededToolLimits.Error()) ||
-		strings.Contains(msg, "exceeded tool limits")
+		strings.Contains(msg, "exceeded tool limits") ||
+		(strings.Contains(msg, "tool loop") &&
+			(strings.Contains(msg, "exceeded") || strings.Contains(msg, "limit")))
 }
 
 func (c *Controller) appendSyntheticUserMessage(text string) {
