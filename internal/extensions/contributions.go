@@ -60,6 +60,25 @@ type hookManifest struct {
 	} `yaml:"delivery" json:"delivery"`
 }
 
+type extensionManifest struct {
+	Schema                   string   `yaml:"schema" json:"schema"`
+	ID                       string   `yaml:"id" json:"id"`
+	ProtocolVersion          int      `yaml:"protocol_version" json:"protocol_version"`
+	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
+	Runtime                  struct {
+		Kind    string            `yaml:"kind" json:"kind"`
+		Command string            `yaml:"command" json:"command"`
+		Args    []string          `yaml:"args" json:"args"`
+		Env     map[string]string `yaml:"env" json:"env"`
+	} `yaml:"runtime" json:"runtime"`
+	Subscriptions []struct {
+		Event       string `yaml:"event" json:"event"`
+		Mode        string `yaml:"mode" json:"mode"`
+		TimeoutMS   int    `yaml:"timeout_ms" json:"timeout_ms"`
+		FailureMode string `yaml:"failure_mode" json:"failure_mode"`
+	} `yaml:"subscriptions" json:"subscriptions"`
+}
+
 func LoadRuntimeContributions(workspaceRoot string, hostCapabilities []string) (luruntime.ContributionSet, error) {
 	hostCapabilities = luruntime.NormalizeCapabilities(hostCapabilities)
 
@@ -71,11 +90,17 @@ func LoadRuntimeContributions(workspaceRoot string, hostCapabilities []string) (
 	if err != nil {
 		return luruntime.ContributionSet{}, err
 	}
+	extensionHosts, extensionDiagnostics, err := loadExtensionRegistry(workspaceRoot, hostCapabilities)
+	if err != nil {
+		return luruntime.ContributionSet{}, err
+	}
 
 	diagnostics := append(uiDiagnostics, hookDiagnostics...)
+	diagnostics = append(diagnostics, extensionDiagnostics...)
 	return luruntime.ContributionSet{
 		UI:          luruntime.NewUIRegistry(commands, views, policies),
 		Hooks:       luruntime.NewHookRegistry(hooks),
+		Extensions:  luruntime.NewExtensionRegistry(extensionHosts),
 		Diagnostics: diagnostics,
 	}, nil
 }
@@ -219,6 +244,37 @@ func loadHookRegistry(workspaceRoot string, hostCapabilities []string) ([]lurunt
 	return hooks, diagnostics, nil
 }
 
+func loadExtensionRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntime.ExtensionHost, []luruntime.Diagnostic, error) {
+	files, err := layeredManifestFiles(workspaceRoot, "extensions")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	order := []string{}
+	byID := map[string]luruntime.ExtensionHost{}
+	var diagnostics []luruntime.Diagnostic
+	for _, path := range files {
+		host, err := parseExtensionManifest(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		if check := luruntime.CheckHostRequirements(host.RequiresHostCapabilities, hostCapabilities); !check.Supported() {
+			diagnostics = append(diagnostics, luruntime.DiagnosticForMissingCapabilities(path, "extension", check.Missing))
+			continue
+		}
+		if _, ok := byID[host.ID]; !ok {
+			order = append(order, host.ID)
+		}
+		byID[host.ID] = host
+	}
+
+	hosts := make([]luruntime.ExtensionHost, 0, len(order))
+	for _, id := range order {
+		hosts = append(hosts, byID[id])
+	}
+	return hosts, diagnostics, nil
+}
+
 func layeredManifestFiles(workspaceRoot, category string) ([]string, error) {
 	globalRoot, err := configRoot()
 	if err != nil {
@@ -344,4 +400,85 @@ func parseHookManifest(path string) (hookManifest, error) {
 		return hookManifest{}, fmt.Errorf("%s: unsupported delivery mode %q", path, manifest.Delivery.Mode)
 	}
 	return manifest, nil
+}
+
+func parseExtensionManifest(path string) (luruntime.ExtensionHost, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return luruntime.ExtensionHost{}, err
+	}
+
+	var manifest extensionManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if strings.TrimSpace(manifest.Schema) != "luc.extension/v1" {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: unsupported extension schema %q", path, manifest.Schema)
+	}
+	id := strings.TrimSpace(manifest.ID)
+	if id == "" {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: id is required", path)
+	}
+	if manifest.ProtocolVersion != 1 {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: unsupported protocol_version %d", path, manifest.ProtocolVersion)
+	}
+	if kind := strings.TrimSpace(manifest.Runtime.Kind); kind != "exec" {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: unsupported extension runtime kind %q", path, kind)
+	}
+	if strings.TrimSpace(manifest.Runtime.Command) == "" {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: runtime.command is required", path)
+	}
+	if len(manifest.Subscriptions) == 0 {
+		return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions are required", path)
+	}
+
+	subscriptions := make([]luruntime.ExtensionSubscription, 0, len(manifest.Subscriptions))
+	for i, subscription := range manifest.Subscriptions {
+		event := strings.TrimSpace(subscription.Event)
+		if event == "" {
+			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].event is required", path, i)
+		}
+		if !luruntime.SupportsObserveEvent(event) {
+			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].event %q is not supported in this phase", path, i, event)
+		}
+		mode := strings.TrimSpace(firstNonEmpty(subscription.Mode, luruntime.ExtensionModeObserve))
+		if mode != luruntime.ExtensionModeObserve {
+			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].mode %q is not supported in this phase", path, i, mode)
+		}
+		failureMode := strings.TrimSpace(firstNonEmpty(subscription.FailureMode, luruntime.ExtensionFailureModeOpen))
+		if failureMode != luruntime.ExtensionFailureModeOpen {
+			return luruntime.ExtensionHost{}, fmt.Errorf("%s: subscriptions[%d].failure_mode %q is not supported in this phase", path, i, failureMode)
+		}
+		subscriptions = append(subscriptions, luruntime.ExtensionSubscription{
+			Event:       event,
+			Mode:        mode,
+			TimeoutMS:   subscription.TimeoutMS,
+			FailureMode: failureMode,
+		})
+	}
+
+	return luruntime.ExtensionHost{
+		ID:              id,
+		ProtocolVersion: manifest.ProtocolVersion,
+		Runtime: luruntime.ExtensionRuntime{
+			Kind:    strings.TrimSpace(manifest.Runtime.Kind),
+			Command: strings.TrimSpace(manifest.Runtime.Command),
+			Args:    append([]string(nil), manifest.Runtime.Args...),
+			Env:     cloneStringMap(manifest.Runtime.Env),
+		},
+		Subscriptions:            subscriptions,
+		RequiresHostCapabilities: luruntime.NormalizeCapabilities(manifest.RequiresHostCapabilities),
+		SourcePath:               path,
+	}, nil
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
 }

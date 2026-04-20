@@ -143,6 +143,46 @@ delivery:
 	}
 }
 
+func TestLoadRuntimeContributionsLoadsExtensionHostsWithPackagePrecedence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+
+	mustWriteRuntimeManifest(t, filepath.Join(home, ".luc", "extensions", "global.yaml"), `schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./global-host.py
+subscriptions:
+  - event: message.assistant.final
+`)
+	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "packages", "audit@1.0.0", "extensions", "package.yaml"), `schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./package-host.py
+  args: [--jsonl]
+subscriptions:
+  - event: message.assistant.final
+  - event: compaction.completed
+`)
+
+	set, err := LoadRuntimeContributions(root, luruntime.DefaultHostCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hosts := set.Extensions.Hosts()
+	if len(hosts) != 1 {
+		t.Fatalf("expected one extension host, got %#v", hosts)
+	}
+	if hosts[0].Runtime.Command != "./package-host.py" || len(hosts[0].Subscriptions) != 2 {
+		t.Fatalf("expected package override for extension host, got %#v", hosts[0])
+	}
+}
+
 func mustWriteRuntimeManifest(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
