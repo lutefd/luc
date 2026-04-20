@@ -105,7 +105,7 @@ func LoadToolDefs(workspaceRoot string) ([]ToolDef, error) {
 	byName := map[string]ToolDef{}
 	var errs []error
 	for _, dir := range dirs {
-		paths, err := listManifestFiles(dir, false)
+		paths, err := listManifestFiles(dir, true)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -145,7 +145,7 @@ func LoadProviderDefs(workspaceRoot string) ([]ProviderDef, error) {
 	byID := map[string]ProviderDef{}
 	var errs []error
 	for _, dir := range dirs {
-		paths, err := listManifestFiles(dir, false)
+		paths, err := listManifestFiles(dir, true)
 		if err != nil {
 			errs = append(errs, err)
 			continue
