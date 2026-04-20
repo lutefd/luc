@@ -50,6 +50,7 @@ type Model struct {
 	theme    theme.Theme
 	input    textinput.Model
 	active   int
+	scroll   int
 	width    int
 	height   int
 	open     bool
@@ -94,6 +95,28 @@ func (m *Model) Open() {
 	m.input.Reset()
 	m.input.Focus()
 	m.active = 0
+	m.scroll = 0
+}
+
+func (m *Model) listMaxRows() int {
+	available := m.height - 6
+	if available < 4 {
+		available = 4
+	}
+	if available > 16 {
+		available = 16
+	}
+	return available
+}
+
+func (m *Model) ensureVisible() {
+	maxR := m.listMaxRows()
+	if m.active < m.scroll {
+		m.scroll = m.active
+	}
+	if m.active >= m.scroll+maxR {
+		m.scroll = m.active - maxR + 1
+	}
 }
 
 func (m *Model) Close() {
@@ -115,12 +138,14 @@ func (m *Model) Update(msg tea.KeyPressMsg) (tea.Cmd, bool, bool) {
 		if m.active > 0 {
 			m.active--
 		}
+		m.ensureVisible()
 		return nil, false, true
 	case key.Matches(msg, m.keys.Down):
 		filtered := m.filtered()
 		if m.active < len(filtered)-1 {
 			m.active++
 		}
+		m.ensureVisible()
 		return nil, false, true
 	case key.Matches(msg, m.keys.Select):
 		filtered := m.filtered()
@@ -192,6 +217,28 @@ func (m Model) View() string {
 		items = append(items, m.theme.Muted.Render("  no matches"))
 	}
 
+	maxRows := m.listMaxRows()
+	scroll := m.scroll
+	if scroll < 0 {
+		scroll = 0
+	}
+	visible := items
+	if scroll < len(items) {
+		visible = items[scroll:]
+	} else {
+		visible = nil
+	}
+	if len(visible) > maxRows {
+		visible = visible[:maxRows]
+	}
+	if scroll > 0 {
+		visible = append([]string{m.theme.Muted.Render("  ↑ " + itoa(scroll) + " more")}, visible...)
+	}
+	below := len(items) - scroll - maxRows
+	if below > 0 {
+		visible = append(visible, m.theme.Muted.Render("  ↓ "+itoa(below)+" more"))
+	}
+
 	hint := m.theme.Footer.Render("↑↓ choose  •  enter confirm  •  esc cancel")
 
 	body := lipgloss.JoinVertical(
@@ -200,7 +247,7 @@ func (m Model) View() string {
 		"",
 		inputLine,
 		"",
-		strings.Join(items, "\n"),
+		strings.Join(visible, "\n"),
 		"",
 		hint,
 	)
@@ -234,4 +281,21 @@ func renderItem(th theme.Theme, c Command, width int, active bool) string {
 	}
 	// Inactive: shortcut rendered muted.
 	return line + th.Muted.Render(shortcut)
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	if n < 0 {
+		return "-" + itoa(-n)
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
