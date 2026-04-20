@@ -262,3 +262,38 @@ schema:
 		t.Fatalf("expected project override tool output, got %q", result.Content)
 	}
 }
+
+func TestRuntimeToolTemplateExposesToolDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".luc", "tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(home, ".luc", "tools", "echo.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\nprintf tool-dir-ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `name: tool_dir_echo
+description: Echo through a bundled script.
+command: "{{ .tool_dir }}/echo.sh"
+schema:
+  type: object
+  properties: {}
+`
+	if err := os.WriteFile(filepath.Join(home, ".luc", "tools", "echo.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.Run(context.Background(), Request{Name: "tool_dir_echo", Arguments: `{}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Content) != "tool-dir-ok" {
+		t.Fatalf("expected tool_dir script output, got %q", result.Content)
+	}
+}

@@ -484,7 +484,7 @@ func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	command, err := renderTemplate(t.def.Command, templateData(args, req))
+	command, err := renderTemplate(t.def.Command, t.templateData(args, req))
 	if err != nil {
 		return Result{}, err
 	}
@@ -516,7 +516,7 @@ func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
 		DefaultCollapsed: t.def.UI.DefaultCollapsed,
 	}
 	if strings.TrimSpace(t.def.UI.CollapsedSummary) != "" {
-		summary, err := renderTemplate(t.def.UI.CollapsedSummary, templateDataWithOutput(args, req, command, string(output), timedOut))
+		summary, err := renderTemplate(t.def.UI.CollapsedSummary, t.templateDataWithOutput(args, req, command, string(output), timedOut))
 		if err != nil {
 			return Result{}, err
 		}
@@ -780,6 +780,20 @@ func decodeArgsMap(raw string) (map[string]any, error) {
 	return out, nil
 }
 
+func (t *runtimeTool) templateData(args map[string]any, req Request) map[string]any {
+	data := templateData(args, req)
+	data["tool_dir"] = filepath.Dir(t.def.SourcePath)
+	return data
+}
+
+func (t *runtimeTool) templateDataWithOutput(args map[string]any, req Request, command, output string, timedOut bool) map[string]any {
+	data := t.templateData(args, req)
+	data["command"] = command
+	data["output"] = output
+	data["timed_out"] = timedOut
+	return data
+}
+
 func templateData(args map[string]any, req Request) map[string]any {
 	data := map[string]any{
 		"args":       args,
@@ -790,14 +804,6 @@ func templateData(args map[string]any, req Request) map[string]any {
 	for key, value := range args {
 		data[key] = value
 	}
-	return data
-}
-
-func templateDataWithOutput(args map[string]any, req Request, command, output string, timedOut bool) map[string]any {
-	data := templateData(args, req)
-	data["command"] = command
-	data["output"] = output
-	data["timed_out"] = timedOut
 	return data
 }
 
