@@ -39,6 +39,10 @@ type Result struct {
 	CollapsedSummary string
 }
 
+func (r Result) RenderContent() string {
+	return r.Content
+}
+
 const (
 	MetadataUIDefaultCollapsed = "ui_default_collapsed"
 	MetadataUICollapsedSummary = "ui_collapsed_summary"

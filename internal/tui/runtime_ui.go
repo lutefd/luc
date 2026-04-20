@@ -2,9 +2,7 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -12,8 +10,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/lutefd/luc/internal/kernel"
 	luruntime "github.com/lutefd/luc/internal/runtime"
-	"github.com/lutefd/luc/internal/theme"
-	"github.com/lutefd/luc/internal/tools"
+	"github.com/lutefd/luc/internal/runtime/viewrender"
 	"github.com/lutefd/luc/internal/tui/commands"
 )
 
@@ -41,8 +38,6 @@ type runtimeViewLoadedMsg struct {
 	Rendered  string
 	Err       error
 }
-
-const runtimeMarkdownWrapWidth = 80
 
 type runtimePageState struct {
 	open    bool
@@ -107,7 +102,7 @@ func runtimeViewCmd(controller *kernel.Controller, viewID string) tea.Cmd {
 		return runtimeViewLoadedMsg{
 			ViewID:    view.ID,
 			Placement: view.Placement,
-			Rendered:  renderRuntimeView(controller, view, result),
+			Rendered:  viewrender.Render(controller.Config().UI.Theme, controller.Workspace().Root, view, result),
 		}
 	}
 }
@@ -408,106 +403,4 @@ func (m Model) renderRuntimePage() string {
 	)
 	box := m.theme.PaletteFrame.Width(panelWidth).Height(panelHeight).Render(m.theme.PaletteSurface.Width(panelWidth - 6).Render(content))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
-}
-
-func renderRuntimeView(controller *kernel.Controller, view luruntime.RuntimeView, result tools.Result) string {
-	content := strings.TrimSpace(result.Content)
-	switch strings.TrimSpace(view.Render) {
-	case "markdown":
-		_, variant, err := theme.Load(controller.Config().UI.Theme, controller.Workspace().Root)
-		if err != nil {
-			return content
-		}
-		renderer, err := theme.NewMarkdownRenderer(runtimeMarkdownWrapWidth, variant)
-		if err != nil {
-			return content
-		}
-		rendered, err := renderer.Render(content)
-		if err != nil {
-			return content
-		}
-		return strings.TrimSpace(rendered)
-	case "json":
-		var decoded any
-		if err := json.Unmarshal([]byte(content), &decoded); err != nil {
-			return content
-		}
-		data, _ := json.MarshalIndent(decoded, "", "  ")
-		return string(data)
-	case "kv":
-		var decoded map[string]any
-		if err := json.Unmarshal([]byte(content), &decoded); err != nil {
-			return content
-		}
-		keys := make([]string, 0, len(decoded))
-		for key := range decoded {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		lines := make([]string, 0, len(keys))
-		for _, key := range keys {
-			lines = append(lines, fmt.Sprintf("%s: %v", key, decoded[key]))
-		}
-		return strings.Join(lines, "\n")
-	case "table":
-		return renderRuntimeTable(content)
-	default:
-		return content
-	}
-}
-
-func renderRuntimeTable(content string) string {
-	var rows []map[string]any
-	if err := json.Unmarshal([]byte(content), &rows); err != nil {
-		return content
-	}
-	if len(rows) == 0 {
-		return ""
-	}
-	columnSet := map[string]struct{}{}
-	for _, row := range rows {
-		for key := range row {
-			columnSet[key] = struct{}{}
-		}
-	}
-	columns := make([]string, 0, len(columnSet))
-	for key := range columnSet {
-		columns = append(columns, key)
-	}
-	sort.Strings(columns)
-
-	widths := make(map[string]int, len(columns))
-	for _, column := range columns {
-		widths[column] = len(column)
-	}
-	for _, row := range rows {
-		for _, column := range columns {
-			widths[column] = max(widths[column], len(fmt.Sprintf("%v", row[column])))
-		}
-	}
-
-	var lines []string
-	lines = append(lines, formatTableRow(columns, widths, func(column string) string { return column }))
-	lines = append(lines, formatTableRow(columns, widths, func(column string) string { return strings.Repeat("-", widths[column]) }))
-	for _, row := range rows {
-		lines = append(lines, formatTableRow(columns, widths, func(column string) string {
-			return fmt.Sprintf("%v", row[column])
-		}))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func formatTableRow(columns []string, widths map[string]int, value func(string) string) string {
-	parts := make([]string, 0, len(columns))
-	for _, column := range columns {
-		parts = append(parts, padRight(value(column), widths[column]))
-	}
-	return strings.Join(parts, " | ")
-}
-
-func padRight(value string, width int) string {
-	if len(value) >= width {
-		return value
-	}
-	return value + strings.Repeat(" ", width-len(value))
 }
