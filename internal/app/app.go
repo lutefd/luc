@@ -27,6 +27,7 @@ func Run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		defer controller.Close()
 		p := tea.NewProgram(tui.New(controller))
 		_, err = p.Run()
 		if controller.SessionSaved() {
@@ -41,6 +42,7 @@ func Run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		defer controller.Close()
 		p := tea.NewProgram(tui.New(controller))
 		_, err = p.Run()
 		if controller.SessionSaved() {
@@ -52,6 +54,7 @@ func Run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		defer controller.Close()
 		fmt.Printf("workspace: %s\nproject_id: %s\nprovider: %s\nmodel: %s\nsession: %s\n", controller.Workspace().Root, controller.Workspace().ProjectID, controller.Config().Provider.Kind, controller.Config().Provider.Model, controller.Session().SessionID)
 		return nil
 	case "reload":
@@ -59,6 +62,7 @@ func Run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		defer controller.Close()
 		return controller.Reload(ctx)
 	default:
 		return fmt.Errorf("unknown command %q", command)

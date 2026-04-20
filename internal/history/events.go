@@ -1,6 +1,9 @@
 package history
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type EventEnvelope struct {
 	Seq        uint64    `json:"seq"`
@@ -10,6 +13,29 @@ type EventEnvelope struct {
 	ParentTask string    `json:"parent_task,omitempty"`
 	Kind       string    `json:"kind"`
 	Payload    any       `json:"payload"`
+}
+
+func (e *EventEnvelope) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Seq        uint64          `json:"seq"`
+		At         time.Time       `json:"at"`
+		SessionID  string          `json:"session_id"`
+		AgentID    string          `json:"agent_id"`
+		ParentTask string          `json:"parent_task,omitempty"`
+		Kind       string          `json:"kind"`
+		Payload    json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	e.Seq = raw.Seq
+	e.At = raw.At
+	e.SessionID = raw.SessionID
+	e.AgentID = raw.AgentID
+	e.ParentTask = raw.ParentTask
+	e.Kind = raw.Kind
+	e.Payload = raw.Payload
+	return nil
 }
 
 type SessionMeta struct {
@@ -95,4 +121,29 @@ type HookPayload struct {
 	EventKind  string `json:"event_kind,omitempty"`
 	SourcePath string `json:"source_path,omitempty"`
 	Error      string `json:"error,omitempty"`
+}
+
+func DecodePayload[T any](payload any) T {
+	var out T
+	if payload == nil {
+		return out
+	}
+	if typed, ok := payload.(T); ok {
+		return typed
+	}
+	switch raw := payload.(type) {
+	case json.RawMessage:
+		_ = json.Unmarshal(raw, &out)
+		return out
+	case []byte:
+		_ = json.Unmarshal(raw, &out)
+		return out
+	case string:
+		_ = json.Unmarshal([]byte(raw), &out)
+		return out
+	default:
+		data, _ := json.Marshal(payload)
+		_ = json.Unmarshal(data, &out)
+		return out
+	}
 }

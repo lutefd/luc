@@ -75,11 +75,13 @@ type Controller struct {
 	initial  []history.EventEnvelope
 	eventLog []history.EventEnvelope
 
-	seq     atomic.Uint64
-	version atomic.Uint64
+	seq        atomic.Uint64
+	version    atomic.Uint64
+	turnActive atomic.Bool
 
 	mu           sync.Mutex
 	turnMu       sync.Mutex
+	turnCancel   context.CancelFunc
 	sessionSaved bool
 	conversation []provider.Message
 	systemPrompt string
@@ -213,6 +215,29 @@ func (c *Controller) Session() history.SessionMeta {
 
 func (c *Controller) SessionSaved() bool {
 	return c.sessionSaved
+}
+
+func (c *Controller) TurnActive() bool {
+	return c.turnActive.Load()
+}
+
+func (c *Controller) CancelTurn() bool {
+	c.mu.Lock()
+	cancel := c.turnCancel
+	active := c.turnActive.Load()
+	c.mu.Unlock()
+	if !active || cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (c *Controller) Close() error {
+	if c.store == nil {
+		return nil
+	}
+	return c.store.Close()
 }
 
 func (c *Controller) Sessions() ([]history.SessionMeta, error) {
@@ -571,6 +596,10 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 		c.updateTitle(text)
 	}
 
+	turnCtx, cancel := context.WithCancel(ctx)
+	c.beginTurn(cancel)
+	defer c.endTurn()
+
 	systemPrompt, err := c.composeSystemPrompt(text)
 	if err != nil {
 		c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
@@ -579,7 +608,7 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 
 toolLoop:
 	for range 8 {
-		stream, err := c.provider.Start(ctx, provider.Request{
+		stream, err := c.provider.Start(turnCtx, provider.Request{
 			Model:       c.config.Provider.Model,
 			System:      systemPrompt,
 			Messages:    c.snapshotConversation(),
@@ -588,6 +617,9 @@ toolLoop:
 			MaxTokens:   c.config.Provider.MaxTokens,
 		})
 		if err != nil {
+			if turnCtx.Err() != nil {
+				return c.handleTurnCanceled()
+			}
 			c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
 			return err
 		}
@@ -598,25 +630,33 @@ toolLoop:
 
 		for {
 			ev, err := stream.Recv()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if turnCtx.Err() != nil {
+				_ = stream.Close()
+				return c.handleTurnCanceled()
+			}
+			if errors.Is(err, context.Canceled) {
+				_ = stream.Close()
+				return c.handleTurnCanceled()
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
 				_ = stream.Close()
 				return err
 			}
 			if errors.Is(err, os.ErrClosed) || errors.Is(err, context.Canceled) {
 				_ = stream.Close()
-				return err
+				return c.handleTurnCanceled()
 			}
 			if err != nil {
 				if errors.Is(err, os.ErrClosed) || errors.Is(err, context.Canceled) {
 					_ = stream.Close()
-					return err
+					return c.handleTurnCanceled()
 				}
 				if errors.Is(err, io.EOF) {
 					break
 				}
 				_ = stream.Close()
 				if errors.Is(err, context.Canceled) {
-					return err
+					return c.handleTurnCanceled()
 				}
 				if shouldAutoContinueToolLimit(err) {
 					c.appendSyntheticUserMessage(autoContinueText)
@@ -663,7 +703,10 @@ toolLoop:
 					Name:      call.Name,
 					Arguments: call.Arguments,
 				})
-				result, err := c.runToolCall(ctx, call)
+				result, err := c.runToolCall(turnCtx, call)
+				if turnCtx.Err() != nil || errors.Is(err, context.Canceled) {
+					return c.handleTurnCanceled()
+				}
 				payload := history.ToolResultPayload{
 					ID:       call.ID,
 					Name:     call.Name,
@@ -704,6 +747,28 @@ toolLoop:
 	}
 
 	return errors.New("exceeded tool loop limit")
+}
+
+func (c *Controller) beginTurn(cancel context.CancelFunc) {
+	c.mu.Lock()
+	c.turnCancel = cancel
+	c.mu.Unlock()
+	c.turnActive.Store(true)
+}
+
+func (c *Controller) endTurn() {
+	c.turnActive.Store(false)
+	c.mu.Lock()
+	c.turnCancel = nil
+	c.mu.Unlock()
+}
+
+func (c *Controller) handleTurnCanceled() error {
+	c.emit("system.note", history.MessagePayload{
+		ID:      nextID("stop"),
+		Content: "Stopped current turn.",
+	})
+	return nil
 }
 
 func shouldAutoContinueToolLimit(err error) bool {
@@ -764,7 +829,9 @@ func (c *Controller) emit(kind string, payload any) {
 	if c.sessionSaved {
 		_ = c.store.Append(ev)
 		c.session.UpdatedAt = ev.At
-		c.saveSessionMeta()
+		if shouldSaveMetaForEvent(kind) {
+			c.saveSessionMeta()
+		}
 	}
 	c.mu.Lock()
 	c.eventLog = append(c.eventLog, ev)
@@ -872,6 +939,9 @@ func (c *Controller) applySession(meta history.SessionMeta, events []history.Eve
 		return err
 	}
 
+	if prev := strings.TrimSpace(c.session.SessionID); prev != "" && prev != meta.SessionID {
+		_ = c.store.CloseSession(prev)
+	}
 	c.session = meta
 	c.sessionSaved = len(events) > 0
 	c.seq.Store(0)
@@ -1481,15 +1551,21 @@ func toolResponseContent(result history.ToolResultPayload) string {
 	return fmt.Sprintf("%s\nerror: %s", result.Content, result.Error)
 }
 
+func shouldSaveMetaForEvent(kind string) bool {
+	switch kind {
+	case "message.assistant.delta", "status.thinking":
+		return false
+	default:
+		return true
+	}
+}
+
 func nextID(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
 }
 
 func decode[T any](payload any) T {
-	var out T
-	data, _ := jsonMarshal(payload)
-	_ = jsonUnmarshal(data, &out)
-	return out
+	return history.DecodePayload[T](payload)
 }
 
 func jsonMarshal(v any) ([]byte, error) {

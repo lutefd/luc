@@ -12,29 +12,43 @@ import (
 )
 
 type Store struct {
-	root string
-	mu   sync.Mutex
+	root      string
+	mu        sync.Mutex
+	appenders map[string]*sessionAppender
+}
+
+type sessionAppender struct {
+	file    *os.File
+	encoder *json.Encoder
 }
 
 func NewStore(stateDir string) *Store {
 	root := filepath.Join(stateDir, "history")
 	_ = os.MkdirAll(filepath.Join(root, "sessions"), 0o755)
-	return &Store{root: root}
+	return &Store{
+		root:      root,
+		appenders: make(map[string]*sessionAppender),
+	}
 }
 
 func (s *Store) Append(ev EventEnvelope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	path := s.sessionPath(ev.SessionID)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
+	appender, ok := s.appenders[ev.SessionID]
+	if !ok {
+		path := s.sessionPath(ev.SessionID)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		appender = &sessionAppender{
+			file:    f,
+			encoder: json.NewEncoder(f),
+		}
+		s.appenders[ev.SessionID] = appender
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	return enc.Encode(ev)
+	return appender.encoder.Encode(ev)
 }
 
 func (s *Store) Load(sessionID string) ([]EventEnvelope, error) {
@@ -143,4 +157,30 @@ func (s *Store) sessionPath(sessionID string) string {
 
 func (s *Store) metaPath(sessionID string) string {
 	return filepath.Join(s.root, "sessions", sessionID+".meta.json")
+}
+
+func (s *Store) CloseSession(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	appender, ok := s.appenders[sessionID]
+	if !ok {
+		return nil
+	}
+	delete(s.appenders, sessionID)
+	return appender.file.Close()
+}
+
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var errs []error
+	for sessionID, appender := range s.appenders {
+		if err := appender.file.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		delete(s.appenders, sessionID)
+	}
+	return errors.Join(errs...)
 }

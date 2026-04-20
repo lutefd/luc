@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/history"
@@ -101,6 +102,38 @@ func (s *errorStream) Recv() (provider.Event, error) {
 }
 
 func (s *errorStream) Close() error { return nil }
+
+type cancelAwareProvider struct {
+	started chan struct{}
+}
+
+func (p *cancelAwareProvider) Name() string { return "cancel-aware" }
+
+func (p *cancelAwareProvider) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
+	_ = req
+	select {
+	case <-p.started:
+	default:
+		close(p.started)
+	}
+	return &cancelAwareStream{ctx: ctx}, nil
+}
+
+type cancelAwareStream struct {
+	ctx  context.Context
+	done bool
+}
+
+func (s *cancelAwareStream) Recv() (provider.Event, error) {
+	if s.done {
+		return provider.Event{}, io.EOF
+	}
+	<-s.ctx.Done()
+	s.done = true
+	return provider.Event{}, s.ctx.Err()
+}
+
+func (s *cancelAwareStream) Close() error { return nil }
 
 func TestControllerEmitMirrorsFailuresToLogs(t *testing.T) {
 	controller := &Controller{
@@ -414,6 +447,79 @@ func TestControllerSubmitMessageAutoContinuesExceededToolLimits(t *testing.T) {
 	}
 	if !sawSyntheticContinue || !sawFinal {
 		t.Fatalf("expected synthetic continue + final assistant response, got %#v", stored)
+	}
+}
+
+func TestControllerCancelTurnStopsActiveSubmit(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &cancelAwareProvider{started: make(chan struct{})}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Submit(context.Background(), "cancel this")
+	}()
+
+	select {
+	case <-providerStub.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider start")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !controller.TurnActive() {
+		if time.Now().After(deadline) {
+			t.Fatal("turn never became active")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !controller.CancelTurn() {
+		t.Fatal("expected active turn cancellation to succeed")
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected canceled submit to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled submit")
+	}
+
+	if controller.TurnActive() {
+		t.Fatal("expected turn to be inactive after cancellation")
+	}
+
+	events := controller.SessionEvents()
+	var sawStopNote bool
+	for _, ev := range events {
+		if ev.Kind != "system.note" {
+			continue
+		}
+		payload := decode[history.MessagePayload](ev.Payload)
+		if payload.Content == "Stopped current turn." {
+			sawStopNote = true
+			break
+		}
+	}
+	if !sawStopNote {
+		t.Fatalf("expected stop note in session events, got %#v", events)
 	}
 }
 
