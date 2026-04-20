@@ -228,6 +228,104 @@ func TestModelCopyKeyDispatchesCopyMessage(t *testing.T) {
 	}
 }
 
+func TestModelSelectAllComposerAndCopy(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originalWriteClipboardText := writeClipboardText
+	defer func() { writeClipboardText = originalWriteClipboardText }()
+
+	var copied string
+	writeClipboardText = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	model := New(controller)
+	model.input.SetValue("alpha beta")
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModSuper})
+	m := updated.(Model)
+	if got := m.selectedComposerText(); got != "alpha beta" {
+		t.Fatalf("expected full composer selection, got %q", got)
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModSuper})
+	if cmd == nil {
+		t.Fatal("expected copy command for composer selection")
+	}
+	updated, _ = updated.(Model).Update(cmd())
+	m = updated.(Model)
+
+	if copied != "alpha beta" {
+		t.Fatalf("expected copied composer text, got %q", copied)
+	}
+	if m.status != "Copied selection" {
+		t.Fatalf("expected copied status, got %q", m.status)
+	}
+}
+
+func TestModelShiftArrowSelectsComposerText(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	model.input.SetValue("hello")
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModShift, Text: "shift+left"})
+	m := updated.(Model)
+	if got := m.selectedComposerText(); got != "o" {
+		t.Fatalf("expected single-character selection, got %q", got)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft, Mod: tea.ModShift, Text: "shift+left"})
+	m = updated.(Model)
+	if got := m.selectedComposerText(); got != "lo" {
+		t.Fatalf("expected expanded selection, got %q", got)
+	}
+}
+
+func TestModelTypingReplacesComposerSelection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	model.input.SetValue("replace me")
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: 'a', Mod: tea.ModSuper})
+	m := updated.(Model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	m = updated.(Model)
+
+	if got := m.input.Value(); got != "x" {
+		t.Fatalf("expected typed text to replace selection, got %q", got)
+	}
+	if m.hasComposerSelection() {
+		t.Fatal("expected composer selection to clear after typing")
+	}
+}
+
 func TestModelEnterSendsPendingImageWithoutText(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {

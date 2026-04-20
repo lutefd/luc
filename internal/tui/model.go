@@ -42,6 +42,8 @@ type clearComposerMsg struct{}
 type stopTurnMsg struct{}
 type stopTurnDoneMsg struct{ stopped bool }
 
+var writeClipboardText = clipboard.WriteAll
+
 type keyMap struct {
 	Send        key.Binding
 	Newline     key.Binding
@@ -98,6 +100,8 @@ type Model struct {
 	runtimePage    runtimePageState
 	runtimeDialog  runtimeDialogState
 	chrome         *chromeCache
+	composerAnchor int
+	composerActive int
 }
 
 type chromeCache struct {
@@ -135,18 +139,20 @@ func New(controller *kernel.Controller) Model {
 
 	registry := commands.NewRegistry()
 	model := Model{
-		controller:    controller,
-		transcript:    transcript.New(th, variant),
-		inspector:     inspector.New(controller.Workspace(), controller.Session(), th),
-		input:         input,
-		palette:       commands.New(registry, th),
-		modelPicker:   modelspicker.New(controller.Registry(), th),
-		sessionPicker: sessionpicker.New(th),
-		themePicker:   themepicker.New(th),
-		registry:      registry,
-		theme:         th,
-		inspectorOpen: controller.Config().UI.InspectorOpen,
-		chrome:        &chromeCache{headerDirty: true, footerDirty: true, bodyDirty: true},
+		controller:     controller,
+		transcript:     transcript.New(th, variant),
+		inspector:      inspector.New(controller.Workspace(), controller.Session(), th),
+		input:          input,
+		palette:        commands.New(registry, th),
+		modelPicker:    modelspicker.New(controller.Registry(), th),
+		sessionPicker:  sessionpicker.New(th),
+		themePicker:    themepicker.New(th),
+		registry:       registry,
+		theme:          th,
+		inspectorOpen:  controller.Config().UI.InspectorOpen,
+		composerAnchor: -1,
+		composerActive: -1,
+		chrome:         &chromeCache{headerDirty: true, footerDirty: true, bodyDirty: true},
 		keys: keyMap{
 			Send:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 			Newline:     key.NewBinding(key.WithKeys("shift+enter", "alt+enter"), key.WithHelp("shift+enter", "newline")),
@@ -409,6 +415,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.submitInFlight = !strings.HasPrefix(value, "/")
 			m.input.Reset()
 			m.input.SetValue("")
+			m.clearComposerSelection()
 			m.pendingImages = nil
 			m.input.Focus()
 			m.invalidateFooter()
@@ -449,6 +456,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Reload):
 			m.setStatus("Reloading...")
 			return m, reloadCmd(m.controller)
+		}
+		if handled, cmd := m.handleComposerKey(msg); handled {
+			return m, cmd
 		}
 	case appEventsMsg:
 		events := []history.EventEnvelope(msg)
@@ -513,12 +523,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setStatus("New session: " + m.controller.Session().SessionID)
 		return m, nil
 	case copySelectionMsg:
-		text := m.transcript.SelectedText()
+		text := m.selectedComposerText()
+		if strings.TrimSpace(text) == "" {
+			text = m.transcript.SelectedText()
+		}
 		if strings.TrimSpace(text) == "" {
 			m.setStatus("Nothing selected")
 			return m, nil
 		}
-		if err := clipboard.WriteAll(text); err != nil {
+		if err := writeClipboardText(text); err != nil {
 			m.setStatus("Copy failed: " + err.Error())
 		} else {
 			m.setStatus("Copied selection")
@@ -587,8 +600,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.attached.ID == "" {
 			if msg.text != "" {
+				m.replaceComposerSelection("")
 				m.input.InsertString(msg.text)
 				m.invalidateFooter()
+				m.resize()
 			}
 			return m, nil
 		}
@@ -619,7 +634,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	if pasteMsg, ok := msg.(tea.PasteMsg); ok && strings.TrimSpace(pasteMsg.Content) != "" {
+		m.replaceComposerSelection("")
+	}
 	m.input, cmd = m.input.Update(msg)
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
+		m.handleComposerSelectionCollapse(keyMsg)
+	}
 	m.invalidateFooter()
 	return m, cmd
 }
@@ -631,10 +652,163 @@ func (m *Model) clearComposer() bool {
 	m.input.Reset()
 	m.input.SetValue("")
 	m.pendingImages = nil
+	m.clearComposerSelection()
 	m.input.Focus()
 	m.invalidateFooter()
 	m.resize()
 	return true
+}
+
+func (m *Model) handleComposerKey(msg tea.KeyPressMsg) (bool, tea.Cmd) {
+	switch {
+	case msg.Code == 'a' && msg.Mod == tea.ModSuper:
+		if !m.selectAllComposer() {
+			m.setStatus("Nothing to select")
+			return true, nil
+		}
+		m.setStatus("Selected all input")
+		return true, nil
+	case msg.Code == tea.KeyLeft && msg.Mod == tea.ModShift:
+		if m.extendComposerSelection(-1) {
+			return true, nil
+		}
+	case msg.Code == tea.KeyRight && msg.Mod == tea.ModShift:
+		if m.extendComposerSelection(1) {
+			return true, nil
+		}
+	}
+
+	if !m.hasComposerSelection() {
+		return false, nil
+	}
+
+	switch {
+	case isPrintableComposerKey(msg), isComposerDeleteKey(m.input, msg), key.Matches(msg, m.keys.Newline):
+		m.replaceComposerSelection("")
+		return false, nil
+	case isComposerMoveLeftKey(m.input, msg):
+		m.collapseComposerSelection(false)
+		return true, nil
+	case isComposerMoveRightKey(m.input, msg):
+		m.collapseComposerSelection(true)
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func (m *Model) handleComposerSelectionCollapse(msg tea.KeyPressMsg) {
+	if !m.hasComposerSelection() {
+		return
+	}
+	if isPrintableComposerKey(msg) || isComposerDeleteKey(m.input, msg) || key.Matches(msg, m.keys.Newline) {
+		return
+	}
+	if isComposerMoveLeftKey(m.input, msg) || isComposerMoveRightKey(m.input, msg) {
+		return
+	}
+	m.clearComposerSelection()
+}
+
+func (m *Model) selectAllComposer() bool {
+	length := composerTextLen(m.input.Value())
+	if length == 0 {
+		return false
+	}
+	m.composerAnchor = 0
+	m.composerActive = length
+	m.setComposerCursor(length)
+	return true
+}
+
+func (m *Model) extendComposerSelection(delta int) bool {
+	if composerTextLen(m.input.Value()) == 0 || delta == 0 {
+		return false
+	}
+	anchor := m.composerCursorOffset()
+	if m.hasComposerSelection() {
+		anchor = m.composerAnchor
+	}
+	active := clamp(m.composerCursorOffset()+delta, 0, composerTextLen(m.input.Value()))
+	if anchor == active {
+		m.clearComposerSelection()
+		m.setComposerCursor(active)
+		return true
+	}
+	m.composerAnchor = anchor
+	m.composerActive = active
+	m.setComposerCursor(active)
+	return true
+}
+
+func (m *Model) collapseComposerSelection(toEnd bool) {
+	start, end, ok := m.composerSelectionRange()
+	if !ok {
+		return
+	}
+	if toEnd {
+		m.setComposerCursor(end)
+	} else {
+		m.setComposerCursor(start)
+	}
+	m.clearComposerSelection()
+}
+
+func (m *Model) replaceComposerSelection(replacement string) bool {
+	start, end, ok := m.composerSelectionRange()
+	if !ok {
+		return false
+	}
+	runes := []rune(m.input.Value())
+	updated := string(append(append([]rune(nil), runes[:start]...), append([]rune(replacement), runes[end:]...)...))
+	m.input.SetValue(updated)
+	m.clearComposerSelection()
+	m.setComposerCursor(start + len([]rune(replacement)))
+	return true
+}
+
+func (m *Model) selectedComposerText() string {
+	start, end, ok := m.composerSelectionRange()
+	if !ok {
+		return ""
+	}
+	runes := []rune(m.input.Value())
+	return string(runes[start:end])
+}
+
+func (m Model) composerSelectionRange() (int, int, bool) {
+	if !m.hasComposerSelection() {
+		return 0, 0, false
+	}
+	if m.composerAnchor < m.composerActive {
+		return m.composerAnchor, m.composerActive, true
+	}
+	return m.composerActive, m.composerAnchor, true
+}
+
+func (m Model) hasComposerSelection() bool {
+	return m.composerAnchor >= 0 && m.composerActive >= 0 && m.composerAnchor != m.composerActive
+}
+
+func (m *Model) clearComposerSelection() {
+	m.composerAnchor = -1
+	m.composerActive = -1
+}
+
+func (m Model) composerCursorOffset() int {
+	return composerLineColToOffset(m.input.Value(), m.input.Line(), m.input.Column())
+}
+
+func (m *Model) setComposerCursor(offset int) {
+	line, col := composerOffsetToLineCol(m.input.Value(), offset)
+	m.input.MoveToBegin()
+	for m.input.Line() < line {
+		m.input.CursorDown()
+	}
+	for m.input.Line() > line {
+		m.input.CursorUp()
+	}
+	m.input.SetCursorColumn(col)
 }
 
 func (m Model) turnInFlight() bool {
@@ -1010,6 +1184,8 @@ func (m Model) renderFooterHints() string {
 	bindings := []string{
 		"enter send",
 		"shift+enter newline",
+		"cmd+a select all",
+		"shift+←/→ select",
 		"esc clear",
 		"ctrl/cmd+v paste",
 	}
@@ -1169,6 +1345,7 @@ func (m *Model) resetSessionViews() {
 	m.modelPicker = modelspicker.New(m.controller.Registry(), m.theme)
 	m.sessionPicker = sessionpicker.New(m.theme)
 	m.pendingImages = nil
+	m.clearComposerSelection()
 	applyInputTheme(&m.input, m.theme, variant)
 	m.runtimeDialog = runtimeDialogState{}
 	m.runtimePage = runtimePageState{}
@@ -1266,6 +1443,88 @@ func applyInputTheme(input *textarea.Model, th theme.Theme, variant string) {
 	styles.Focused = state
 	styles.Blurred = state
 	input.SetStyles(styles)
+}
+
+func isPrintableComposerKey(msg tea.KeyPressMsg) bool {
+	return msg.Text != "" && (msg.Mod == 0 || msg.Mod == tea.ModShift)
+}
+
+func isComposerDeleteKey(input textarea.Model, msg tea.KeyPressMsg) bool {
+	return key.Matches(msg, input.KeyMap.DeleteCharacterBackward) ||
+		key.Matches(msg, input.KeyMap.DeleteCharacterForward) ||
+		key.Matches(msg, input.KeyMap.DeleteWordBackward) ||
+		key.Matches(msg, input.KeyMap.DeleteWordForward) ||
+		key.Matches(msg, input.KeyMap.DeleteBeforeCursor) ||
+		key.Matches(msg, input.KeyMap.DeleteAfterCursor)
+}
+
+func isComposerMoveLeftKey(input textarea.Model, msg tea.KeyPressMsg) bool {
+	return key.Matches(msg, input.KeyMap.CharacterBackward) ||
+		key.Matches(msg, input.KeyMap.WordBackward) ||
+		key.Matches(msg, input.KeyMap.LineStart) ||
+		key.Matches(msg, input.KeyMap.InputBegin) ||
+		key.Matches(msg, input.KeyMap.LinePrevious) ||
+		key.Matches(msg, input.KeyMap.PageUp)
+}
+
+func isComposerMoveRightKey(input textarea.Model, msg tea.KeyPressMsg) bool {
+	return key.Matches(msg, input.KeyMap.CharacterForward) ||
+		key.Matches(msg, input.KeyMap.WordForward) ||
+		key.Matches(msg, input.KeyMap.LineEnd) ||
+		key.Matches(msg, input.KeyMap.InputEnd) ||
+		key.Matches(msg, input.KeyMap.LineNext) ||
+		key.Matches(msg, input.KeyMap.PageDown)
+}
+
+func composerTextLen(value string) int {
+	return len([]rune(value))
+}
+
+func composerLineColToOffset(value string, line, col int) int {
+	lines := strings.Split(value, "\n")
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	line = clamp(line, 0, len(lines)-1)
+	offset := 0
+	for i := 0; i < line; i++ {
+		offset += len([]rune(lines[i])) + 1
+	}
+	col = clamp(col, 0, len([]rune(lines[line])))
+	return offset + col
+}
+
+func composerOffsetToLineCol(value string, offset int) (line, col int) {
+	lines := strings.Split(value, "\n")
+	if len(lines) == 0 {
+		return 0, 0
+	}
+	offset = clamp(offset, 0, composerTextLen(value))
+	for line = 0; line < len(lines); line++ {
+		lineLen := len([]rune(lines[line]))
+		if offset <= lineLen {
+			return line, offset
+		}
+		offset -= lineLen
+		if line < len(lines)-1 {
+			if offset == 0 {
+				return line, lineLen
+			}
+			offset--
+		}
+	}
+	last := len(lines) - 1
+	return last, len([]rune(lines[last]))
+}
+
+func clamp(value, lo, hi int) int {
+	if value < lo {
+		return lo
+	}
+	if value > hi {
+		return hi
+	}
+	return value
 }
 
 func decode[T any](payload any) T {
