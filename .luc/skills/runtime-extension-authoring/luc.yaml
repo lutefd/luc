@@ -1,3 +1,25 @@
 interface:
   display_name: "Runtime Extension Authoring"
-  short_description: "Create or update luc runtime tools, providers, skills, themes, and prompt overrides."
+  short_description: "Use when asked to create or modify luc extensions, runtime capabilities, plugins, UI tabs/pages, hooks, tools, providers, themes, prompts, or other host features without editing core code first."
+triggers:
+  - extension
+  - runtime extension
+  - plugin
+  - capability
+  - runtime capability
+  - ui manifest
+  - view
+  - runtime view
+  - inspector view
+  - inspector tab
+  - tab
+  - panel
+  - page view
+  - hook
+  - provider
+  - tool
+  - theme
+  - prompt override
+  - prompt extension
+  - prompt tuning
+  - overview tab

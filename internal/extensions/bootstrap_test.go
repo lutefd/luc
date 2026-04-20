@@ -40,6 +40,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(root, "skills", "runtime-extension-authoring", "luc.yaml"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "SKILL.md"),
+		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "extension-model.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "capability-tools.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "provider-ui-composition.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "runtime-ui-views.md"),
@@ -66,7 +67,10 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if string(runtimeAuthoring) == "" ||
 		!containsAll(string(runtimeAuthoring),
 			"`schema: luc.tool/v1`",
+			"`schema: luc.tool/v2`",
+			"`luc.extension/v1`",
 			"`schema: luc.prompt/v1`",
+			"`references/extension-model.md`",
 			"`references/capability-tools.md`",
 			"`references/provider-ui-composition.md`",
 			"`references/runtime-ui-views.md`",
@@ -90,8 +94,16 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(capabilityTools), "schema: luc.tool/v1", "structured_io", "client_actions", "`modal.open`", "`command.run`", "`client_action` uses `action`") {
+	if !containsAll(string(capabilityTools), "schema: luc.tool/v1", "schema: luc.tool/v2", "structured_io", "client_actions", "tool_invoke", "tool_result", "`modal.open`", "`command.run`", "`client_action` uses `action`") {
 		t.Fatalf("expected capability tool reference to cover structured exec tools, got %q", string(capabilityTools))
+	}
+
+	extensionModel, err := os.ReadFile(filepath.Join(root, "skills", "runtime-extension-authoring", "references", "extension-model.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAll(string(extensionModel), "Which Surface To Use", "`luc.tool/v1`", "`luc.tool/v2`", "`luc.extension/v1`", "`luc.hook/v1`", "`luc.ui/v1`", "`luc.prompt/v1`") {
+		t.Fatalf("expected extension model reference to include surface-selection guidance, got %q", string(extensionModel))
 	}
 
 	runtimeViews, err := os.ReadFile(filepath.Join(root, "skills", "runtime-extension-authoring", "references", "runtime-ui-views.md"))
@@ -106,7 +118,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(runtimeActions), "modal.open", "confirm.request", "view.open", "view.refresh", "command.run", "Tools, providers, and hooks with `client_actions`", "command palette", "built-in dialog surface") {
+	if !containsAll(string(runtimeActions), "modal.open", "confirm.request", "view.open", "view.refresh", "command.run", "Tools, providers, hooks, and extension hosts", "command palette", "built-in dialog surface") {
 		t.Fatalf("expected runtime UI actions reference to include host-owned action guidance, got %q", string(runtimeActions))
 	}
 
@@ -114,7 +126,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(hookPatterns), "message.assistant.final", "tool.finished", "\"workspace\": {\"root\":", "`message` as a compatibility alias", "`done: true`", "`client_action`", "`view.refresh`", "`client_result`", "`modal.open`", "`command.run`") {
+	if !containsAll(string(hookPatterns), "message.assistant.final", "tool.finished", "\"root\": \"/abs/workspace\"", "`message` as a compatibility alias", "`done: true`", "`client_action`", "`view.refresh`", "`client_result`", "`modal.open`", "`command.run`", "`input.transform`", "`tool.preflight`") {
 		t.Fatalf("expected hook patterns reference to include concrete hook protocol guidance, got %q", string(hookPatterns))
 	}
 }
