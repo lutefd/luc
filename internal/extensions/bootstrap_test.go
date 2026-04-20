@@ -66,6 +66,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if string(runtimeAuthoring) == "" ||
 		!containsAll(string(runtimeAuthoring),
 			"`schema: luc.tool/v1`",
+			"`schema: luc.prompt/v1`",
 			"`references/capability-tools.md`",
 			"`references/provider-ui-composition.md`",
 			"`references/runtime-ui-views.md`",
@@ -81,7 +82,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(runtimeAuthoringManifest), "triggers:", "runtime extension", "overview tab", "inspector view", "panel") {
+	if !containsAll(string(runtimeAuthoringManifest), "triggers:", "runtime extension", "overview tab", "inspector view", "panel", "prompt extension", "prompt tuning") {
 		t.Fatalf("expected runtime-extension-authoring manifest to include trigger hints, got %q", string(runtimeAuthoringManifest))
 	}
 

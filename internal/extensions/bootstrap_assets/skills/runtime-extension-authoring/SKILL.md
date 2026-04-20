@@ -8,7 +8,8 @@ proposing core code changes.
 Use this lookup order:
 
 1. Global base layer in `~/.luc/...`
-2. Project-local override in `<workspace>/.luc/...`
+2. Installed package layer in `<workspace>/.luc/packages/*/...`
+3. Project-local override in `<workspace>/.luc/...`
 
 Supported runtime extension types:
 
@@ -19,6 +20,7 @@ Supported runtime extension types:
 - Skills in `~/.luc/skills`, `<workspace>/.luc/skills`, `~/.agents/skills`, and `<workspace>/.agents/skills`
 - Themes in `~/.luc/themes` and `<workspace>/.luc/themes`
 - System prompt overrides in `~/.luc/prompts/system.md` and `<workspace>/.luc/prompts/system.md`
+- Prompt extension manifests in `~/.luc/prompts`, `<workspace>/.luc/packages/*/prompts`, and `<workspace>/.luc/prompts`
 
 Authoring workflow:
 
@@ -53,6 +55,8 @@ Rules:
 - Use `skill-name/luc.yaml` only for metadata such as `interface.display_name` and `interface.short_description`.
 - If a skill needs bundled references or scripts, keep them in the same skill directory and assume they will be read through `read_skill_resource`.
 - If creating a runtime theme, inherit from `light` or `dark` and override only the necessary colors.
+- If creating prompt tuning without replacing the whole base prompt, use `schema: luc.prompt/v1` with a short `prompt` block and optional `match.providers`, `match.models`, or `match.model_prefixes`.
+- Prompt extensions are appended after the base system prompt, so keep them compact and targeted to the provider/model behavior you want to change.
 
 Read bundled references when you need exact manifest shapes or end-to-end composition:
 

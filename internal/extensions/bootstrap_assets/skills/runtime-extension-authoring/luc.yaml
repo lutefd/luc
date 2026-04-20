@@ -20,4 +20,6 @@ triggers:
   - tool
   - theme
   - prompt override
+  - prompt extension
+  - prompt tuning
   - overview tab

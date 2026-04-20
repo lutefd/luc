@@ -397,6 +397,55 @@ Base prompt override files:
 
 Project prompt overrides the global prompt when both exist.
 
+Prompt extension manifests live in:
+
+- `~/.luc/prompts`
+- `<workspace>/.luc/packages/*/prompts`
+- `<workspace>/.luc/prompts`
+
+Supported manifest formats:
+
+- `.yaml`
+- `.yml`
+- `.json`
+
+Use prompt extensions when you want to append a small tuning block for only
+some providers or model families instead of replacing the entire system prompt.
+Later layers override earlier ones when they share the same `id`; distinct
+extensions are composed together in stable `id` order.
+
+Example:
+
+```yaml
+schema: luc.prompt/v1
+id: gpt5-tight-loop
+description: Keep GPT-5-family turns compact and execution-first.
+match:
+  providers: [openai, openai-compatible]
+  model_prefixes: [gpt-5]
+prompt: |
+  Keep preambles to one short sentence.
+  Prefer doing the work over describing the plan.
+  Use tool calls deliberately and avoid redundant retries.
+```
+
+Prompt extension fields:
+
+- `schema`: must be `luc.prompt/v1`
+- `id`: optional; defaults to the filename when omitted
+- `description`: optional metadata
+- `match.providers`: optional exact provider IDs
+- `match.models`: optional exact model IDs
+- `match.model_prefixes`: optional model family prefixes
+- `prompt`: required instruction text appended after the base system prompt
+
+Matching behavior:
+
+- Empty `match` applies globally.
+- Provider `openai` and `openai-compatible` are treated as aliases.
+- Within the model matcher, `models` and `model_prefixes` are additive: either
+  one can match.
+
 ## Config
 
 ```yaml
