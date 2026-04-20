@@ -103,6 +103,60 @@ func TestRunRPCRejectsInvalidSelectionFlags(t *testing.T) {
 	}
 }
 
+func TestRunPkgCommands(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := t.TempDir()
+	pkgRoot := filepath.Join(t.TempDir(), "luc-sunrise")
+	if err := os.MkdirAll(filepath.Join(pkgRoot, "themes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgRoot, "luc.pkg.yaml"), []byte(`schema: luc.pkg/v1
+module: github.com/acme/luc-sunrise
+version: v1.0.0
+luc_version: ">=0.1.0"
+name: luc-sunrise
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgRoot, "themes", "sunrise.yaml"), []byte("name: sunrise\ninherits: light\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runWithEOF(t, root, []string{"pkg", "install", "--scope", "project", pkgRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "installed github.com/acme/luc-sunrise@v1.0.0") {
+		t.Fatalf("expected install output, got %q", out)
+	}
+
+	out, err = runWithEOF(t, root, []string{"pkg", "list", "--scope", "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "github.com/acme/luc-sunrise") {
+		t.Fatalf("expected list output, got %q", out)
+	}
+
+	out, err = runWithEOF(t, root, []string{"pkg", "inspect", "--scope", "project", "github.com/acme/luc-sunrise"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "categories: themes") {
+		t.Fatalf("expected inspect categories, got %q", out)
+	}
+
+	out, err = runWithEOF(t, root, []string{"pkg", "remove", "--scope", "project", "github.com/acme/luc-sunrise"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed github.com/acme/luc-sunrise@v1.0.0") {
+		t.Fatalf("expected remove output, got %q", out)
+	}
+}
+
 func prepareSessionMeta(t *testing.T, root string) string {
 	t.Helper()
 
