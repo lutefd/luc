@@ -2,8 +2,9 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,10 +38,15 @@ type openThemePickerMsg struct{}
 type resetThemeMsg struct{}
 type newSessionMsg struct{}
 type copySelectionMsg struct{}
+type clearComposerMsg struct{}
+type stopTurnMsg struct{}
+type stopTurnDoneMsg struct{ stopped bool }
 
 type keyMap struct {
 	Send        key.Binding
 	Newline     key.Binding
+	ClearInput  key.Binding
+	Stop        key.Binding
 	TogglePane  key.Binding
 	NextTab     key.Binding
 	PrevTab     key.Binding
@@ -65,29 +71,54 @@ func (k keyMap) FullHelp() [][]key.Binding {
 }
 
 type Model struct {
-	controller    *kernel.Controller
-	transcript    transcript.Model
-	inspector     inspector.Model
-	input         textarea.Model
-	palette       commands.Model
-	modelPicker   modelspicker.Model
-	sessionPicker sessionpicker.Model
-	themePicker   themepicker.Model
-	pendingImages []media.Attachment
-	registry      *commands.Registry
-	keys          keyMap
-	theme         theme.Theme
-	width         int
-	height        int
-	inspectorOpen bool
-	status        string
-	lastClickAt   time.Time
-	lastClickID   string
-	logsDirty     bool
-	runtimeBroker *teaUIBroker
-	runtimePage   runtimePageState
-	runtimeDialog runtimeDialogState
+	controller     *kernel.Controller
+	transcript     transcript.Model
+	inspector      inspector.Model
+	input          textarea.Model
+	palette        commands.Model
+	modelPicker    modelspicker.Model
+	sessionPicker  sessionpicker.Model
+	themePicker    themepicker.Model
+	pendingImages  []media.Attachment
+	registry       *commands.Registry
+	keys           keyMap
+	theme          theme.Theme
+	width          int
+	height         int
+	inspectorOpen  bool
+	status         string
+	lastClickAt    time.Time
+	lastClickID    string
+	logsDirty      bool
+	wheelQueued    bool
+	wheelBody      int
+	wheelSidebar   int
+	submitInFlight bool
+	runtimeBroker  *teaUIBroker
+	runtimePage    runtimePageState
+	runtimeDialog  runtimeDialogState
+	chrome         *chromeCache
 }
+
+type chromeCache struct {
+	headerDirty      bool
+	header           string
+	headerHeight     int
+	footerDirty      bool
+	footer           string
+	footerHeight     int
+	footerHintsKey   string
+	footerHints      string
+	footerPendingKey string
+	footerPending    string
+	bodyDirty        bool
+	bodyKey          string
+	body             string
+}
+
+type flushWheelMsg struct{}
+
+const wheelBatchDelay = 8 * time.Millisecond
 
 func New(controller *kernel.Controller) Model {
 	th, variant, _ := theme.Load(controller.Config().UI.Theme, controller.Workspace().Root)
@@ -115,9 +146,12 @@ func New(controller *kernel.Controller) Model {
 		registry:      registry,
 		theme:         th,
 		inspectorOpen: controller.Config().UI.InspectorOpen,
+		chrome:        &chromeCache{headerDirty: true, footerDirty: true, bodyDirty: true},
 		keys: keyMap{
 			Send:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 			Newline:     key.NewBinding(key.WithKeys("shift+enter", "alt+enter"), key.WithHelp("shift+enter", "newline")),
+			ClearInput:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
+			Stop:        key.NewBinding(key.WithKeys("ctrl+."), key.WithHelp("ctrl+.", "stop")),
 			TogglePane:  key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "details")),
 			NextTab:     key.NewBinding(key.WithKeys("ctrl+]"), key.WithHelp("ctrl+]", "next tab")),
 			PrevTab:     key.NewBinding(key.WithKeys("ctrl+\\"), key.WithHelp("ctrl+\\", "prev tab")),
@@ -129,7 +163,7 @@ func New(controller *kernel.Controller) Model {
 			SessionPick: key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "sessions")),
 			Paste:       key.NewBinding(key.WithKeys("ctrl+v", "super+v"), key.WithHelp("ctrl/cmd+v", "paste")),
 			RemoveImage: key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "drop image")),
-			Copy:        key.NewBinding(key.WithKeys("ctrl+y"), key.WithHelp("ctrl+y", "copy")),
+			Copy:        key.NewBinding(key.WithKeys("ctrl+y", "super+c"), key.WithHelp("ctrl+y/cmd+c", "copy")),
 			Quit:        key.NewBinding(key.WithKeys("ctrl+c", "ctrl+q"), key.WithHelp("ctrl+c", "quit")),
 		},
 	}
@@ -148,11 +182,89 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(textarea.Blink, waitForEvent(m.controller.Events()), waitForUIBroker(m.runtimeBroker.actions))
 }
 
+func (m *Model) ensureChrome() *chromeCache {
+	if m.chrome == nil {
+		m.chrome = &chromeCache{headerDirty: true, footerDirty: true, bodyDirty: true}
+	}
+	return m.chrome
+}
+
+func (m *Model) invalidateHeader() {
+	m.ensureChrome().headerDirty = true
+}
+
+func (m *Model) invalidateFooter() {
+	m.ensureChrome().footerDirty = true
+}
+
+func (m *Model) invalidateChrome() {
+	chrome := m.ensureChrome()
+	chrome.headerDirty = true
+	chrome.footerDirty = true
+	chrome.bodyDirty = true
+}
+
+func (m *Model) invalidateBody() {
+	m.ensureChrome().bodyDirty = true
+}
+
+func (m *Model) queueWheel(msg tea.MouseWheelMsg) tea.Cmd {
+	delta := 0
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		delta = -1
+	case tea.MouseWheelDown:
+		delta = 1
+	default:
+		return nil
+	}
+
+	if m.inspectorOpen && m.hasSidebar() && msg.X >= m.transcriptWidth()+1 {
+		m.wheelSidebar += delta
+	} else {
+		m.wheelBody += delta
+	}
+	if m.wheelQueued {
+		return nil
+	}
+	m.wheelQueued = true
+	return tea.Tick(wheelBatchDelay, func(time.Time) tea.Msg {
+		return flushWheelMsg{}
+	})
+}
+
+func (m *Model) flushQueuedWheel() tea.Cmd {
+	m.wheelQueued = false
+	bodyDelta := m.wheelBody
+	sidebarDelta := m.wheelSidebar
+	m.wheelBody = 0
+	m.wheelSidebar = 0
+
+	var cmds []tea.Cmd
+	if bodyDelta != 0 {
+		cmds = append(cmds, m.transcript.ScrollDeltaCmd(bodyDelta))
+	}
+	if sidebarDelta != 0 {
+		cmds = append(cmds, m.inspector.ScrollDeltaCmd(sidebarDelta))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	handledTranscript, transcriptCmd := m.transcript.HandleMsg(msg)
+	handledInspector, inspectorCmd := m.inspector.HandleMsg(msg)
+	if handledTranscript || handledInspector || transcriptCmd != nil || inspectorCmd != nil {
+		return m, tea.Batch(transcriptCmd, inspectorCmd)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.invalidateChrome()
 		m.resize()
 		return m, nil
 	case tea.MouseWheelMsg:
@@ -162,12 +274,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.wheelInBody(msg) {
 			return m, nil
 		}
-		if m.inspectorOpen && m.hasSidebar() && msg.X >= m.transcriptWidth()+1 {
-			m.inspector.HandleWheel(msg)
-		} else {
-			m.transcript.HandleWheel(msg)
-		}
-		return m, nil
+		return m, m.queueWheel(msg)
+	case flushWheelMsg:
+		return m, m.flushQueuedWheel()
 	case tea.MouseClickMsg:
 		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
@@ -199,10 +308,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
 		}
-		if msg.Button == tea.MouseLeft || m.transcript.IsSelecting() {
-			if row, ok := m.transcriptMouseRow(msg.X, msg.Y); ok {
-				m.transcript.ExtendSelection(row)
-			}
+		if msg.Button != tea.MouseLeft && !m.transcript.IsSelecting() {
+			return m, nil
+		}
+		if row, ok := m.transcriptMouseRow(msg.X, msg.Y); ok {
+			m.transcript.ExtendSelection(row)
 		}
 		return m, nil
 	case tea.MouseReleaseMsg:
@@ -219,6 +329,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		} else if ok {
 			m.pendingImages = append(m.pendingImages, attachment)
+			m.invalidateFooter()
 			m.resize()
 			m.setStatus("Attached image: " + attachment.Name)
 			return m, nil
@@ -281,6 +392,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, copySelectionCmd()
 		case key.Matches(msg, m.keys.Paste):
 			return m, readClipboardCmd(false)
+		case key.Matches(msg, m.keys.ClearInput):
+			if m.clearComposer() {
+				m.setStatus("Input cleared")
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.Stop):
+			return m, m.handleStopTurn()
 		case key.Matches(msg, m.keys.Send):
 			value := strings.TrimSpace(m.input.Value())
 			if value == "" && len(m.pendingImages) == 0 {
@@ -288,10 +406,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			attachments := append([]media.Attachment(nil), m.pendingImages...)
 			m.setStatus("Sending...")
+			m.submitInFlight = !strings.HasPrefix(value, "/")
 			m.input.Reset()
 			m.input.SetValue("")
 			m.pendingImages = nil
 			m.input.Focus()
+			m.invalidateFooter()
 			m.resize()
 			return m, submitCmd(m.controller, value, attachments)
 		case key.Matches(msg, m.keys.RemoveImage):
@@ -301,11 +421,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			removed := m.pendingImages[len(m.pendingImages)-1]
 			m.pendingImages = m.pendingImages[:len(m.pendingImages)-1]
+			m.invalidateFooter()
 			m.resize()
 			m.setStatus("Removed image: " + removed.Name)
 			return m, nil
 		case key.Matches(msg, m.keys.TogglePane):
 			m.inspectorOpen = !m.inspectorOpen
+			m.invalidateFooter()
 			m.resize()
 			return m, nil
 		case key.Matches(msg, m.keys.NextTab):
@@ -321,11 +443,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.maybeRefreshActiveRuntimeView()
 		case key.Matches(msg, m.keys.ScrollUp):
-			m.transcript.UpdateViewport(msg)
-			return m, nil
+			return m, m.transcript.UpdateViewportCmd(msg)
 		case key.Matches(msg, m.keys.ScrollDown):
-			m.transcript.UpdateViewport(msg)
-			return m, nil
+			return m, m.transcript.UpdateViewportCmd(msg)
 		case key.Matches(msg, m.keys.Reload):
 			m.setStatus("Reloading...")
 			return m, reloadCmd(m.controller)
@@ -404,11 +524,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Copied selection")
 		}
 		return m, nil
+	case clearComposerMsg:
+		if m.clearComposer() {
+			m.setStatus("Input cleared")
+		}
+		return m, nil
+	case stopTurnMsg:
+		return m, m.handleStopTurn()
+	case stopTurnDoneMsg:
+		if !msg.stopped && !m.turnInFlight() {
+			m.setStatus("No active turn")
+		}
+		return m, nil
 	case modelspicker.Selected:
 		if err := m.controller.SwitchModel(msg.ModelID); err != nil {
 			m.setStatus("Error: " + err.Error())
 		} else {
 			m.inspector.SetSessionMeta(m.controller.Session())
+			m.invalidateHeader()
 			m.setStatus("Model: " + msg.ModelID)
 		}
 		return m, nil
@@ -428,9 +561,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.resetSessionViews()
+		m.invalidateHeader()
 		m.setStatus("Session: " + msg.SessionID)
 		return m, nil
 	case submitDoneMsg:
+		m.submitInFlight = false
+		m.invalidateFooter()
 		if msg.err != nil {
 			m.setStatus(msg.err.Error())
 		} else {
@@ -452,10 +588,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.attached.ID == "" {
 			if msg.text != "" {
 				m.input.InsertString(msg.text)
+				m.invalidateFooter()
 			}
 			return m, nil
 		}
 		m.pendingImages = append(m.pendingImages, msg.attached)
+		m.invalidateFooter()
 		m.resize()
 		m.setStatus("Attached image: " + msg.attached.Name)
 		return m, nil
@@ -482,7 +620,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.invalidateFooter()
 	return m, cmd
+}
+
+func (m *Model) clearComposer() bool {
+	if m.input.Value() == "" && len(m.pendingImages) == 0 {
+		return false
+	}
+	m.input.Reset()
+	m.input.SetValue("")
+	m.pendingImages = nil
+	m.input.Focus()
+	m.invalidateFooter()
+	m.resize()
+	return true
+}
+
+func (m Model) turnInFlight() bool {
+	return m.submitInFlight || m.controller.TurnActive()
+}
+
+func (m *Model) handleStopTurn() tea.Cmd {
+	if !m.turnInFlight() {
+		m.setStatus("No active turn")
+		return nil
+	}
+	m.setStatus("Stopping...")
+	m.invalidateFooter()
+	return stopTurnCmd(m.controller)
 }
 
 func (m Model) View() tea.View {
@@ -567,6 +733,7 @@ func (m *Model) resize() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
+	m.invalidateChrome()
 	transcriptHeight := m.bodyHeight()
 	m.transcript.SetSize(m.transcriptWidth(), transcriptHeight)
 	m.inspector.SetSize(m.inspectorWidth(), m.inspectorHeight())
@@ -612,8 +779,17 @@ func (m Model) bodyHeight() int {
 }
 
 func (m Model) layoutHeights() (headerH, footerH, bodyH int) {
-	headerH = lipgloss.Height(m.renderHeader())
-	footerH = lipgloss.Height(m.renderFooter())
+	chrome := m.chrome
+	if chrome == nil || chrome.headerDirty {
+		m.renderHeader()
+		chrome = m.chrome
+	}
+	if chrome == nil || chrome.footerDirty {
+		m.renderFooter()
+		chrome = m.chrome
+	}
+	headerH = chrome.headerHeight
+	footerH = chrome.footerHeight
 	bodyH = max(1, m.height-headerH-footerH)
 	return headerH, footerH, bodyH
 }
@@ -639,12 +815,98 @@ func (m Model) hasSidebar() bool {
 }
 
 func (m Model) renderHeader() string {
+	chrome := m.chrome
+	if chrome != nil && !chrome.headerDirty {
+		return chrome.header
+	}
 	usable := max(0, m.width-2)
-	ruleWidth := max(4, usable-36)
 	brand := m.theme.HeaderBrand.Render("luc")
+	meta := m.theme.HeaderMeta.Render(compactHeaderPath(m.controller.Workspace().Root, max(16, usable/2)))
+	ruleWidth := max(4, usable-lipgloss.Width(brand)-lipgloss.Width(meta)-2)
 	rule := m.theme.HeaderRule.Render(strings.Repeat("─", ruleWidth))
-	meta := m.theme.HeaderMeta.Render(fmt.Sprintf("%s • %s", m.controller.Workspace().Root, m.controller.Config().Provider.Model))
-	return lipgloss.JoinHorizontal(lipgloss.Center, brand, " ", rule, " ", meta)
+	header := lipgloss.JoinHorizontal(lipgloss.Center, brand, " ", rule, " ", meta)
+	if chrome != nil {
+		chrome.header = header
+		chrome.headerHeight = lipgloss.Height(header)
+		chrome.headerDirty = false
+	}
+	return header
+}
+
+func compactHeaderPath(root string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+
+	path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(root)))
+	if path == "." || path == "" {
+		return root
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		home = filepath.ToSlash(filepath.Clean(home))
+		switch {
+		case path == home:
+			path = "~"
+		case strings.HasPrefix(path, home+"/"):
+			path = "~/" + strings.TrimPrefix(path, home+"/")
+		}
+	}
+
+	if lipgloss.Width(path) <= maxWidth {
+		return path
+	}
+
+	prefix := ""
+	remainder := path
+	switch {
+	case strings.HasPrefix(path, "~/"):
+		prefix = "~/"
+		remainder = strings.TrimPrefix(path, "~/")
+	case strings.HasPrefix(path, "/"):
+		prefix = "/"
+		remainder = strings.TrimPrefix(path, "/")
+	}
+
+	parts := strings.Split(strings.Trim(remainder, "/"), "/")
+	if len(parts) == 0 {
+		return truncateLeft(path, maxWidth)
+	}
+
+	best := parts[len(parts)-1]
+	for i := len(parts) - 2; i >= 0; i-- {
+		candidate := "…/" + parts[i] + "/" + best
+		if lipgloss.Width(prefix+candidate) > maxWidth {
+			break
+		}
+		best = parts[i] + "/" + best
+	}
+
+	if len(parts) > 1 && lipgloss.Width(prefix+"…/"+best) <= maxWidth {
+		return prefix + "…/" + best
+	}
+	if lipgloss.Width(prefix+best) <= maxWidth {
+		return prefix + best
+	}
+	return truncateLeft(prefix+best, maxWidth)
+}
+
+func truncateLeft(value string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if lipgloss.Width(value) <= maxWidth {
+		return value
+	}
+	if maxWidth == 1 {
+		return "…"
+	}
+	runes := []rune(value)
+	keep := maxWidth - 1
+	if keep > len(runes) {
+		keep = len(runes)
+	}
+	return "…" + string(runes[len(runes)-keep:])
 }
 
 func (m Model) renderBody() string {
@@ -652,12 +914,22 @@ func (m Model) renderBody() string {
 }
 
 func (m Model) renderBodyWithHeight(bodyH int) string {
+	chrome := m.chrome
+	if chrome != nil {
+		key := m.bodyRenderKey(bodyH)
+		if !chrome.bodyDirty && chrome.bodyKey == key {
+			return chrome.body
+		}
+		chrome.bodyKey = key
+	}
+
 	transcriptView := m.theme.Body.Width(m.transcriptWidth()).Height(bodyH).MaxHeight(bodyH).Render(m.transcript.View())
 
+	var body string
 	switch {
 	case m.width < 120 && m.inspectorOpen:
 		detail := m.inspector.DetailView()
-		return lipgloss.JoinVertical(
+		body = lipgloss.JoinVertical(
 			lipgloss.Left,
 			transcriptView,
 			lipgloss.NewStyle().Height(m.inspectorHeight()).Render(detail),
@@ -668,27 +940,89 @@ func (m Model) renderBodyWithHeight(bodyH int) string {
 			sidebar = m.inspector.DetailView()
 		}
 		sep := m.theme.Subtle.Render(strings.Repeat("│\n", max(1, bodyH)))
-		return lipgloss.JoinHorizontal(lipgloss.Top, transcriptView, sep, sidebar)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, transcriptView, sep, sidebar)
 	default:
-		return transcriptView
+		body = transcriptView
+	}
+
+	if chrome != nil {
+		chrome.body = body
+		chrome.bodyDirty = false
+	}
+	return body
+}
+
+func (m Model) bodyRenderKey(bodyH int) string {
+	key := fmt.Sprintf(
+		"%d:%d:%d:%d:%t:%t:%s",
+		m.width,
+		bodyH,
+		m.transcriptWidth(),
+		m.inspectorWidth(),
+		m.inspectorOpen,
+		m.hasSidebar(),
+		m.transcript.RenderKey(),
+	)
+	switch {
+	case m.width < 120 && m.inspectorOpen:
+		return key + ":detail:" + m.inspector.DetailRenderKey()
+	case m.hasSidebar():
+		if m.inspectorOpen {
+			return key + ":detail:" + m.inspector.DetailRenderKey()
+		}
+		return key + ":summary:" + m.inspector.SummaryRenderKey()
+	default:
+		return key
 	}
 }
 
 func (m Model) renderFooter() string {
+	chrome := m.chrome
+	if chrome != nil && !chrome.footerDirty {
+		return chrome.footer
+	}
 	frame := m.theme.InputFrame.Width(max(24, m.transcriptWidth())).Render(m.input.View())
+	hints := m.renderFooterHints()
+	pending := m.renderFooterPendingImages()
 
-	// Build hints dynamically: pick the shortest set that fits the width so
-	// the hint line never wraps (which would silently clip the footer).
+	var footer string
+	if pending == "" {
+		footer = lipgloss.JoinVertical(lipgloss.Left, frame, hints)
+	} else {
+		footer = lipgloss.JoinVertical(lipgloss.Left, frame, pending, hints)
+	}
+	if chrome != nil {
+		chrome.footer = footer
+		chrome.footerHeight = lipgloss.Height(footer)
+		chrome.footerDirty = false
+	}
+	return footer
+}
+
+func (m Model) renderFooterHints() string {
+	chrome := m.chrome
+	turnActive := m.turnInFlight()
+	key := fmt.Sprintf("%d:%t:%t:%t", m.width, m.inspectorOpen, len(m.pendingImages) > 0, turnActive)
+	if chrome != nil && chrome.footerHintsKey == key {
+		return chrome.footerHints
+	}
+
 	bindings := []string{
 		"enter send",
 		"shift+enter newline",
+		"esc clear",
 		"ctrl/cmd+v paste",
+	}
+	if turnActive {
+		bindings = append(bindings, "ctrl+. stop")
+	}
+	bindings = append(bindings,
 		"ctrl+p commands",
 		"ctrl+m model",
 		"ctrl+l sessions",
-		"ctrl+y copy",
+		"ctrl+y/cmd+c copy",
 		"ctrl+o details",
-	}
+	)
 	if len(m.pendingImages) > 0 {
 		bindings = append(bindings, "ctrl+d drop image")
 	}
@@ -700,15 +1034,36 @@ func (m Model) renderFooter() string {
 	sep := "  •  "
 	hintStr := strings.Join(bindings, sep)
 	if lipgloss.Width(hintStr) > m.width {
-		// Fallback to essentials when the terminal is narrow.
-		essentials := []string{"enter send", "ctrl+p cmds", "ctrl+c quit"}
-		hintStr = strings.Join(essentials, sep)
+		compact := []string{"enter send", "esc clear", "ctrl+p cmds"}
+		if turnActive {
+			compact = append(compact, "ctrl+. stop")
+		}
+		compact = append(compact, "ctrl+c quit")
+		hintStr = strings.Join(compact, sep)
 	}
 	hints := m.theme.Footer.Render(hintStr)
-	if len(m.pendingImages) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, frame, hints)
+	if chrome != nil {
+		chrome.footerHintsKey = key
+		chrome.footerHints = hints
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, frame, m.renderPendingImages(), hints)
+	return hints
+}
+
+func (m Model) renderFooterPendingImages() string {
+	if len(m.pendingImages) == 0 {
+		return ""
+	}
+	chrome := m.chrome
+	key := pendingImagesCacheKey(m.pendingImages, m.transcriptWidth())
+	if chrome != nil && chrome.footerPendingKey == key {
+		return chrome.footerPending
+	}
+	pending := m.renderPendingImages()
+	if chrome != nil {
+		chrome.footerPendingKey = key
+		chrome.footerPending = pending
+	}
+	return pending
 }
 
 func waitForEvent(ch <-chan history.EventEnvelope) tea.Cmd {
@@ -779,6 +1134,12 @@ func submitCmd(controller *kernel.Controller, value string, attachments []media.
 	}
 }
 
+func stopTurnCmd(controller *kernel.Controller) tea.Cmd {
+	return func() tea.Msg {
+		return stopTurnDoneMsg{stopped: controller.CancelTurn()}
+	}
+}
+
 func reloadCmd(controller *kernel.Controller) tea.Cmd {
 	return func() tea.Msg {
 		return reloadDoneMsg{err: controller.Reload(context.Background())}
@@ -818,6 +1179,7 @@ func (m *Model) resetSessionViews() {
 	m.syncInspectorLogs(true)
 	m.inspector.SetStatus(m.status)
 	m.syncRuntimeUI()
+	m.invalidateChrome()
 	m.resize()
 }
 
@@ -872,6 +1234,7 @@ func (m *Model) applyTheme(name string) {
 	m.logsDirty = true
 	m.syncInspectorLogs(true)
 	m.inspector.SetStatus(m.status)
+	m.invalidateChrome()
 	m.resize()
 
 	if name == "" {
@@ -906,8 +1269,5 @@ func applyInputTheme(input *textarea.Model, th theme.Theme, variant string) {
 }
 
 func decode[T any](payload any) T {
-	var out T
-	data, _ := json.Marshal(payload)
-	_ = json.Unmarshal(data, &out)
-	return out
+	return history.DecodePayload[T](payload)
 }

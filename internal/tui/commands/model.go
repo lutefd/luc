@@ -180,7 +180,7 @@ func (m Model) View() string {
 	if v := m.input.Value(); v == "" {
 		inputLine = prompt + m.theme.InputPlaceholder.Render("search commands...")
 	} else {
-		inputLine = prompt + v
+		inputLine = prompt + m.theme.InputText.Render(v)
 	}
 
 	filtered := m.filtered()

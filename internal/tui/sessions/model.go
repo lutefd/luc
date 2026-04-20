@@ -136,7 +136,7 @@ func (m Model) View() string {
 	prompt := m.theme.InputPrompt.Render("> ")
 	inputLine := prompt + m.theme.InputPlaceholder.Render("search sessions...")
 	if v := m.input.Value(); v != "" {
-		inputLine = prompt + v
+		inputLine = prompt + m.theme.InputText.Render(v)
 	}
 
 	filtered := m.filtered()

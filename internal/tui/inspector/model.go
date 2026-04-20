@@ -14,6 +14,7 @@ import (
 	"github.com/lutefd/luc/internal/logging"
 	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/theme"
+	"github.com/lutefd/luc/internal/tui/scrollbar"
 	"github.com/lutefd/luc/internal/workspace"
 )
 
@@ -30,6 +31,9 @@ var tabNames = [builtInTabCount]string{"Overview", "Tool", "Logs", "Context"}
 type Model struct {
 	width          int
 	height         int
+	contentLines   int
+	stateVer       uint64
+	contentVer     uint64
 	session        history.SessionMeta
 	tool           history.ToolResultPayload
 	lastCall       history.ToolCallPayload
@@ -48,12 +52,17 @@ type Model struct {
 	viewport       viewport.Model
 	runtimeViews   []luruntime.RuntimeView
 	runtimeContent map[string]string
+	scrollbar      scrollbar.State
+	summaryKey     string
+	summaryCache   string
+	detailKey      string
+	detailCache    string
 }
 
 func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
 	vp := viewport.New()
 	vp.MouseWheelEnabled = false
-	vp.SoftWrap = true
+	vp.SoftWrap = false
 	return Model{
 		workspace:      ws,
 		session:        session,
@@ -68,13 +77,14 @@ func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
 func (m *Model) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	m.viewport.SetWidth(max(1, width-4))
+	m.viewport.SetWidth(max(1, width-4-scrollbar.GutterWidth))
 	m.viewport.SetHeight(max(1, height-4))
 	m.refreshContent()
 }
 
 func (m *Model) SetLogs(entries []logging.Entry) {
 	m.logs = entries
+	m.stateVer++
 	if m.activeTab == TabLogs {
 		m.refreshContent()
 	}
@@ -85,6 +95,7 @@ func (m *Model) SetSessionMeta(meta history.SessionMeta) {
 		return
 	}
 	m.session = meta
+	m.stateVer++
 	if m.activeTab == tabOverview || m.activeTab == TabContext {
 		m.refreshContent()
 	}
@@ -99,6 +110,7 @@ func (m *Model) SetStatus(status string) {
 		return
 	}
 	m.status = status
+	m.stateVer++
 	if m.activeTab == tabOverview || m.activeTab == TabContext {
 		m.refreshContent()
 	}
@@ -118,6 +130,7 @@ func (m *Model) SetRuntimeViews(views []luruntime.RuntimeView) {
 	if m.activeTab >= m.totalTabs() {
 		m.activeTab = tabOverview
 	}
+	m.stateVer++
 	m.refreshContent()
 }
 
@@ -126,6 +139,7 @@ func (m *Model) SetRuntimeViewContent(viewID, content string) {
 		m.runtimeContent = map[string]string{}
 	}
 	m.runtimeContent[viewID] = content
+	m.stateVer++
 	if active, ok := m.activeRuntimeView(); ok && active.ID == viewID {
 		m.refreshContent()
 	}
@@ -135,6 +149,7 @@ func (m *Model) ActivateRuntimeView(viewID string) bool {
 	for i, view := range m.runtimeViews {
 		if view.ID == viewID {
 			m.activeTab = builtInTabCount + i
+			m.stateVer++
 			m.refreshContent()
 			return true
 		}
@@ -154,6 +169,7 @@ func (m *Model) Apply(ev history.EventEnvelope) {
 	if !m.applyEvent(ev) {
 		return
 	}
+	m.stateVer++
 	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
 		m.refreshContent()
 	}
@@ -166,7 +182,11 @@ func (m *Model) ApplyBatch(events []history.EventEnvelope) {
 			changed = true
 		}
 	}
-	if changed && (m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount) {
+	if !changed {
+		return
+	}
+	m.stateVer++
+	if m.activeTab == tabOverview || m.activeTab == TabTool || m.activeTab == TabContext || m.activeTab >= builtInTabCount {
 		m.refreshContent()
 	}
 }
@@ -254,11 +274,13 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 
 func (m *Model) NextTab() {
 	m.activeTab = (m.activeTab + 1) % m.totalTabs()
+	m.stateVer++
 	m.refreshContent()
 }
 
 func (m *Model) PrevTab() {
 	m.activeTab = (m.activeTab - 1 + m.totalTabs()) % m.totalTabs()
+	m.stateVer++
 	m.refreshContent()
 }
 
@@ -271,30 +293,89 @@ func (m *Model) UpdateViewport(msg tea.Msg) {
 }
 
 func (m *Model) HandleWheel(msg tea.MouseWheelMsg) {
+	_ = m.HandleWheelCmd(msg)
+}
+
+func (m *Model) HandleWheelCmd(msg tea.MouseWheelMsg) tea.Cmd {
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		m.viewport.ScrollUp(1)
+		return m.ScrollDeltaCmd(-1)
 	case tea.MouseWheelDown:
-		m.viewport.ScrollDown(1)
+		return m.ScrollDeltaCmd(1)
+	default:
+		return nil
 	}
 }
 
-func (m Model) SummaryView() string {
+func (m *Model) HandleMsg(msg tea.Msg) (bool, tea.Cmd) {
+	return m.scrollbar.Update(msg)
+}
+
+func (m *Model) ScrollDeltaCmd(delta int) tea.Cmd {
+	if delta == 0 {
+		return nil
+	}
+	if delta < 0 {
+		m.viewport.ScrollUp(-delta)
+	} else {
+		m.viewport.ScrollDown(delta)
+	}
+	return m.scrollbar.Activate()
+}
+
+func (m Model) SummaryRenderKey() string {
+	return fmt.Sprintf("%d:%d:%d", m.stateVer, m.width, m.height)
+}
+
+func (m Model) DetailRenderKey() string {
+	return fmt.Sprintf(
+		"%d:%d:%d:%d:%d:%t",
+		m.contentVer,
+		m.stateVer,
+		m.width,
+		m.height,
+		m.viewport.YOffset(),
+		m.scrollbar.Visible(),
+	)
+}
+
+func (m *Model) SummaryView() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
+	}
+	key := m.SummaryRenderKey()
+	if m.summaryKey == key {
+		return m.summaryCache
 	}
 	content := m.overviewView()
-	return m.theme.Sidebar.Width(max(24, m.width)).Height(max(1, m.height)).Render(content)
+	m.summaryKey = key
+	m.summaryCache = m.theme.Sidebar.Width(max(24, m.width)).Height(max(1, m.height)).Render(content)
+	return m.summaryCache
 }
 
-func (m Model) DetailView() string {
+func (m *Model) DetailView() string {
 	if m.width <= 0 || m.height <= 0 {
 		return ""
 	}
+	key := m.DetailRenderKey()
+	if m.detailKey == key {
+		return m.detailCache
+	}
 	tabBar := m.renderTabBar()
-	body := m.viewport.View()
+	body := scrollbar.Render(
+		m.theme,
+		m.viewport.View(),
+		max(1, m.width-4),
+		m.viewport.Height(),
+		m.contentLines,
+		m.visibleLineCount(),
+		m.viewport.YOffset(),
+		m.scrollbar.Visible(),
+	)
 	inner := lipgloss.JoinVertical(lipgloss.Left, tabBar, "", body)
-	return m.theme.Sidebar.Width(max(24, m.width)).Height(max(1, m.height)).Render(inner)
+	m.detailKey = key
+	m.detailCache = m.theme.Sidebar.Width(max(24, m.width)).Height(max(1, m.height)).Render(inner)
+	return m.detailCache
 }
 
 func (m *Model) refreshContent() {
@@ -314,7 +395,24 @@ func (m *Model) refreshContent() {
 	default:
 		content = m.runtimeView()
 	}
-	m.viewport.SetContent(content)
+	lines := strings.Split(content, "\n")
+	if len(lines) == 1 && strings.TrimSpace(lines[0]) == "" {
+		lines = []string{""}
+	}
+	m.contentLines = len(lines)
+	m.contentVer++
+	m.viewport.SetContentLines(lines)
+}
+
+func (m Model) visibleLineCount() int {
+	if m.contentLines <= 0 {
+		return 0
+	}
+	remaining := m.contentLines - m.viewport.YOffset()
+	if remaining <= 0 {
+		return 0
+	}
+	return min(m.viewport.Height(), remaining)
 }
 
 func (m Model) renderTabBar() string {
@@ -558,10 +656,7 @@ func clampString(s string, limit int) string {
 }
 
 func decode[T any](payload any) T {
-	var out T
-	data, _ := json.Marshal(payload)
-	_ = json.Unmarshal(data, &out)
-	return out
+	return history.DecodePayload[T](payload)
 }
 
 func (m Model) lastToolSummary() string {

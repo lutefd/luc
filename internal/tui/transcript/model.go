@@ -1,7 +1,6 @@
 package transcript
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode"
@@ -14,6 +13,7 @@ import (
 	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/tools"
+	"github.com/lutefd/luc/internal/tui/scrollbar"
 )
 
 type Block struct {
@@ -32,24 +32,38 @@ type blockSpan struct {
 }
 
 const (
-	diffCollapseLineThreshold = 160
-	diffCollapseByteThreshold = 12000
+	diffCollapseLineThreshold      = 160
+	diffCollapseByteThreshold      = 12000
+	writeDiffCollapseLineThreshold = 60
+	writeDiffCollapseByteThreshold = 6000
+	transcriptWindowSize           = 48
+	transcriptWindowChunk          = 24
+	transcriptLoadThreshold        = 4
+	transcriptLoadRevealRows       = 4
 )
 
 type Model struct {
-	viewport   viewport.Model
-	width      int
-	height     int
-	blocks     []Block
-	spans      []blockSpan
-	cache      map[string]string
-	expanded   map[string]bool
-	autoFollow bool
-	selAnchor  int
-	selFocus   int
-	selecting  bool
-	theme      theme.Theme
-	renderer   RenderFunc
+	viewport     viewport.Model
+	width        int
+	height       int
+	blocks       []Block
+	spans        []blockSpan
+	contentLines int
+	contentVer   uint64
+	cache        map[string]string
+	expanded     map[string]bool
+	autoFollow   bool
+	selAnchor    int
+	selFocus     int
+	selecting    bool
+	theme        theme.Theme
+	renderer     RenderFunc
+	windowStart  int
+	windowSize   int
+	windowChunk  int
+	scrollbar    scrollbar.State
+	viewKey      string
+	viewCache    string
 }
 
 type RenderFunc func(width int, text string) (string, error)
@@ -57,15 +71,17 @@ type RenderFunc func(width int, text string) (string, error)
 func New(th theme.Theme, variant string) Model {
 	vp := viewport.New()
 	vp.MouseWheelEnabled = false
-	vp.SoftWrap = true
+	vp.SoftWrap = false
 	return Model{
-		viewport:   vp,
-		cache:      make(map[string]string),
-		expanded:   make(map[string]bool),
-		autoFollow: true,
-		selAnchor:  -1,
-		selFocus:   -1,
-		theme:      th,
+		viewport:    vp,
+		cache:       make(map[string]string),
+		expanded:    make(map[string]bool),
+		autoFollow:  true,
+		selAnchor:   -1,
+		selFocus:    -1,
+		theme:       th,
+		windowSize:  transcriptWindowSize,
+		windowChunk: transcriptWindowChunk,
 		renderer: func(width int, text string) (string, error) {
 			renderer, err := theme.NewMarkdownRenderer(width, variant)
 			if err != nil {
@@ -79,30 +95,68 @@ func New(th theme.Theme, variant string) Model {
 func (m *Model) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	m.viewport.SetWidth(width)
+	m.viewport.SetWidth(m.contentWidth())
 	m.viewport.SetHeight(height)
 	m.render()
 }
 
 func (m *Model) UpdateViewport(msg any) {
+	_ = m.UpdateViewportCmd(msg)
+}
+
+func (m *Model) UpdateViewportCmd(msg any) tea.Cmd {
 	m.updateAutoFollow(msg)
 	m.viewport, _ = m.viewport.Update(msg)
+	if isScrollUpMessage(msg) {
+		m.maybeLoadOlder()
+	}
 	if m.viewport.AtBottom() {
 		m.autoFollow = true
+		if m.windowStart != m.tailStart() {
+			m.render()
+		}
 	}
+	return m.scrollbar.Activate()
 }
 
 func (m *Model) HandleWheel(msg tea.MouseWheelMsg) {
-	m.updateAutoFollow(msg)
+	_ = m.HandleWheelCmd(msg)
+}
+
+func (m *Model) HandleWheelCmd(msg tea.MouseWheelMsg) tea.Cmd {
 	switch msg.Button {
 	case tea.MouseWheelUp:
-		m.viewport.ScrollUp(1)
+		return m.ScrollDeltaCmd(-1)
 	case tea.MouseWheelDown:
-		m.viewport.ScrollDown(1)
+		return m.ScrollDeltaCmd(1)
+	default:
+		return nil
+	}
+}
+
+func (m *Model) HandleMsg(msg tea.Msg) (bool, tea.Cmd) {
+	return m.scrollbar.Update(msg)
+}
+
+func (m *Model) ScrollDeltaCmd(delta int) tea.Cmd {
+	if delta == 0 {
+		return nil
+	}
+	if delta < 0 {
+		m.updateAutoFollow(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+		m.viewport.ScrollUp(-delta)
+		m.maybeLoadOlder()
+	} else {
+		m.updateAutoFollow(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+		m.viewport.ScrollDown(delta)
 	}
 	if m.viewport.AtBottom() {
 		m.autoFollow = true
+		if m.windowStart != m.tailStart() {
+			m.render()
+		}
 	}
+	return m.scrollbar.Activate()
 }
 
 func (m *Model) BeginSelection(row int) {
@@ -330,8 +384,35 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	return false
 }
 
-func (m Model) View() string {
-	return m.viewport.View()
+func (m Model) RenderKey() string {
+	return fmt.Sprintf(
+		"%d:%d:%d:%d:%d:%t",
+		m.contentVer,
+		m.width,
+		m.height,
+		m.contentLines,
+		m.viewport.YOffset(),
+		m.scrollbar.Visible(),
+	)
+}
+
+func (m *Model) View() string {
+	key := m.RenderKey()
+	if m.viewKey == key {
+		return m.viewCache
+	}
+	m.viewKey = key
+	m.viewCache = scrollbar.Render(
+		m.theme,
+		m.viewport.View(),
+		m.width,
+		m.viewport.Height(),
+		m.contentLines,
+		m.visibleLineCount(),
+		m.viewport.YOffset(),
+		m.scrollbar.Visible(),
+	)
+	return m.viewCache
 }
 
 func (m *Model) findOrAdd(id, kind string) *Block {
@@ -348,50 +429,44 @@ func (m *Model) render() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-
-	var views []string
-	m.spans = m.spans[:0]
-	line := 0
-	for i, block := range m.blocks {
-		key := fmt.Sprintf(
-			"%s:%s:%s:%s:%s:%t:%d",
-			block.Kind,
-			block.State,
-			block.Content,
-			block.Diff,
-			attachmentsCacheKey(block.Attachments),
-			m.isExpanded(block.ID),
-			m.width,
-		)
-		if block.State == "done" {
-			if cached, ok := m.cache[key]; ok {
-				rendered := cached
-				if m.isSelectedBlock(i) {
-					rendered = m.decorateSelected(rendered)
-				}
-				views = append(views, rendered)
-				height := m.renderedHeight(rendered)
-				m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
-				line += height + 1
-				continue
-			}
-		}
-
-		rendered := m.safeRenderBlock(block)
-		baseRendered := rendered
-		if m.isSelectedBlock(i) {
-			rendered = m.decorateSelected(rendered)
-		}
-		if block.State == "done" {
-			m.cache[key] = baseRendered
-		}
-		views = append(views, rendered)
-		height := m.renderedHeight(rendered)
-		m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
-		line += height + 1
+	if m.autoFollow {
+		m.windowStart = m.tailStart()
+	} else if m.windowStart > len(m.blocks) {
+		m.windowStart = len(m.blocks)
 	}
 
-	m.viewport.SetContent(strings.Join(views, "\n\n"))
+	var content []string
+	m.spans = m.spans[:0]
+	line := 0
+	if m.windowStart > 0 {
+		hint := m.theme.Muted.Render(fmt.Sprintf("… %d earlier entries. Scroll up to load more.", m.windowStart))
+		content = append(content, splitRenderedLines(hint)...)
+		line += m.renderedHeight(hint)
+	}
+	for i, block := range m.blocks[m.windowStart:] {
+		absIdx := m.windowStart + i
+		baseRendered := m.baseRenderedBlock(block)
+		rendered := baseRendered
+		if m.isSelectedBlock(absIdx) {
+			rendered = m.decorateSelected(rendered)
+		}
+		if len(content) > 0 {
+			content = append(content, "")
+			line++
+		}
+		lines := splitRenderedLines(rendered)
+		content = append(content, lines...)
+		height := m.renderedHeight(rendered)
+		m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
+		line += height
+	}
+
+	if len(content) == 0 {
+		content = []string{""}
+	}
+	m.contentLines = len(content)
+	m.contentVer++
+	m.viewport.SetContentLines(content)
 	if m.autoFollow {
 		m.viewport.GotoBottom()
 	}
@@ -427,12 +502,35 @@ func (m Model) safeRenderBlock(block Block) (rendered string) {
 	return m.renderBlock(block)
 }
 
+func (m *Model) baseRenderedBlock(block Block) string {
+	key := fmt.Sprintf(
+		"%s:%s:%s:%s:%s:%t:%d",
+		block.Kind,
+		block.State,
+		block.Content,
+		block.Diff,
+		attachmentsCacheKey(block.Attachments),
+		m.isExpanded(block.ID),
+		m.contentWidth(),
+	)
+	if block.State == "done" {
+		if cached, ok := m.cache[key]; ok {
+			return cached
+		}
+	}
+	rendered := m.safeRenderBlock(block)
+	if block.State == "done" {
+		m.cache[key] = rendered
+	}
+	return rendered
+}
+
 func (m Model) decorateSelected(rendered string) string {
 	return lipgloss.NewStyle().Reverse(true).Render(rendered)
 }
 
 func (m Model) renderBlock(block Block) string {
-	width := max(20, m.width-4)
+	width := max(20, m.contentWidth()-4)
 	switch block.Kind {
 	case "user":
 		// Crush-style: per-line left prefix (cyan bar) + content, label above.
@@ -746,31 +844,24 @@ func (m Model) shouldCollapseDiff(block Block) bool {
 	if strings.TrimSpace(block.Diff) == "" {
 		return false
 	}
-	return strings.Count(block.Diff, "\n")+1 > diffCollapseLineThreshold || len(block.Diff) > diffCollapseByteThreshold
+	lineThreshold := diffCollapseLineThreshold
+	byteThreshold := diffCollapseByteThreshold
+	if strings.EqualFold(strings.TrimSpace(block.Meta["name"]), "write") {
+		lineThreshold = writeDiffCollapseLineThreshold
+		byteThreshold = writeDiffCollapseByteThreshold
+	}
+	return strings.Count(block.Diff, "\n")+1 > lineThreshold || len(block.Diff) > byteThreshold
 }
 
 func decode[T any](payload any) T {
-	var out T
-	data, _ := json.Marshal(payload)
-	_ = json.Unmarshal(data, &out)
-	return out
+	return history.DecodePayload[T](payload)
 }
 
 func (m Model) renderedHeight(rendered string) int {
 	if rendered == "" {
 		return 1
 	}
-	width := max(1, m.width)
-	height := 0
-	for _, line := range strings.Split(rendered, "\n") {
-		lineWidth := ansi.StringWidth(line)
-		if lineWidth <= width {
-			height++
-			continue
-		}
-		height += (lineWidth + width - 1) / width
-	}
-	return max(1, height)
+	return len(splitRenderedLines(rendered))
 }
 
 func (m Model) blockIndexAtRow(row int) (int, bool) {
@@ -780,10 +871,88 @@ func (m Model) blockIndexAtRow(row int) (int, bool) {
 	absRow := m.viewport.YOffset() + row
 	for i, span := range m.spans {
 		if absRow >= span.start && absRow <= span.end {
-			return i, true
+			return m.windowStart + i, true
 		}
 	}
 	return 0, false
+}
+
+func (m *Model) maybeLoadOlder() {
+	if m.windowStart == 0 || m.viewport.YOffset() > transcriptLoadThreshold {
+		return
+	}
+	prevStart := m.windowStart
+	nextStart := max(0, prevStart-m.windowChunk)
+	if nextStart == prevStart {
+		return
+	}
+	oldOffset := m.viewport.YOffset()
+	addedRows := m.windowRows(nextStart, prevStart) + m.leadingRows(nextStart) - m.leadingRows(prevStart)
+	m.windowStart = nextStart
+	m.render()
+	newOffset := oldOffset + addedRows - min(transcriptLoadRevealRows, addedRows)
+	if newOffset < 0 {
+		newOffset = 0
+	}
+	m.viewport.SetYOffset(newOffset)
+}
+
+func (m Model) tailStart() int {
+	if len(m.blocks) <= m.windowSize {
+		return 0
+	}
+	return len(m.blocks) - m.windowSize
+}
+
+func (m Model) leadingRows(start int) int {
+	if start <= 0 {
+		return 0
+	}
+	hint := m.theme.Muted.Render(fmt.Sprintf("… %d earlier entries. Scroll up to load more.", start))
+	return m.renderedHeight(hint) + 1
+}
+
+func (m *Model) windowRows(start, end int) int {
+	rows := 0
+	for i := start; i < end && i < len(m.blocks); i++ {
+		rows += m.renderedHeight(m.baseRenderedBlock(m.blocks[i])) + 1
+	}
+	return rows
+}
+
+func (m Model) contentWidth() int {
+	return max(1, m.width-scrollbar.GutterWidth)
+}
+
+func (m Model) visibleLineCount() int {
+	if m.contentLines <= 0 {
+		return 0
+	}
+	remaining := m.contentLines - m.viewport.YOffset()
+	if remaining <= 0 {
+		return 0
+	}
+	return min(m.viewport.Height(), remaining)
+}
+
+func splitRenderedLines(rendered string) []string {
+	if rendered == "" {
+		return []string{""}
+	}
+	return strings.Split(rendered, "\n")
+}
+
+func isScrollUpMessage(msg any) bool {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch msg.Code {
+		case tea.KeyPgUp, tea.KeyUp, tea.KeyHome:
+			return true
+		}
+	case tea.MouseWheelMsg:
+		return msg.Button == tea.MouseWheelUp
+	}
+	return false
 }
 
 func (m Model) selectionRange() (int, int, bool) {

@@ -152,8 +152,20 @@ func (m *Model) rebuildCommandRegistry() {
 
 func (m *Model) registerBuiltInCommands(registry *commands.Registry) {
 	registry.Register(commands.Command{
+		ID: "input.clear", Name: "Clear input", Shortcut: "esc",
+		Run: func() tea.Cmd { return func() tea.Msg { return clearComposerMsg{} } },
+	})
+	registry.Register(commands.Command{
+		ID: "turn.stop", Name: "Stop current turn", Shortcut: "ctrl+.",
+		Run: func() tea.Cmd { return func() tea.Msg { return stopTurnMsg{} } },
+	})
+	registry.Register(commands.Command{
 		ID: "reload", Name: "Reload runtime", Shortcut: "ctrl+r",
 		Run: func() tea.Cmd { return reloadCmd(m.controller) },
+	})
+	registry.Register(commands.Command{
+		ID: "selection.copy", Name: "Copy selection", Shortcut: "ctrl+y/cmd+c",
+		Run: func() tea.Cmd { return func() tea.Msg { return copySelectionMsg{} } },
 	})
 	registry.Register(commands.Command{
 		ID: "toggle.inspector", Name: "Toggle inspector details", Shortcut: "ctrl+o",
@@ -174,10 +186,6 @@ func (m *Model) registerBuiltInCommands(registry *commands.Registry) {
 	registry.Register(commands.Command{
 		ID: "session.switch", Name: "Switch session…", Shortcut: "ctrl+l",
 		Run: func() tea.Cmd { return func() tea.Msg { return openSessionPickerMsg{} } },
-	})
-	registry.Register(commands.Command{
-		ID: "selection.copy", Name: "Copy selection", Shortcut: "ctrl+y",
-		Run: func() tea.Cmd { return func() tea.Msg { return copySelectionMsg{} } },
 	})
 	registry.Register(commands.Command{
 		ID: "theme.switch", Name: "Switch theme…",

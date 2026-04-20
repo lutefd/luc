@@ -162,7 +162,7 @@ func (m Model) View() string {
 	if v := m.input.Value(); v == "" {
 		inputLine = prompt + m.theme.InputPlaceholder.Render("filter themes...")
 	} else {
-		inputLine = prompt + v
+		inputLine = prompt + m.theme.InputText.Render(v)
 	}
 
 	rows := m.filtered()

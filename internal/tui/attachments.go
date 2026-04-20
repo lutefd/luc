@@ -133,3 +133,19 @@ func renderAttachmentCardBody(m Model, attachment media.Attachment) string {
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
+
+func pendingImagesCacheKey(attachments []media.Attachment, width int) string {
+	parts := make([]string, 0, len(attachments)+1)
+	parts = append(parts, fmt.Sprintf("w:%d", width))
+	for _, attachment := range attachments {
+		parts = append(parts, fmt.Sprintf(
+			"%s:%s:%s:%d:%d",
+			attachment.ID,
+			attachment.Name,
+			attachment.MediaType,
+			attachment.Width,
+			attachment.Height,
+		))
+	}
+	return strings.Join(parts, "|")
+}

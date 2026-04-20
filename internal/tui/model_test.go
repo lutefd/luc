@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -69,6 +70,34 @@ func TestModelHandlesResizeToggleAndEvents(t *testing.T) {
 	}
 }
 
+func TestCompactHeaderPathPrefersHomeRelativeTail(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("home directory unavailable")
+	}
+
+	got := compactHeaderPath(filepath.Join(home, "dev", "p", "luc"), 18)
+	if strings.Contains(got, filepath.ToSlash(home)) {
+		t.Fatalf("expected home prefix to be hidden, got %q", got)
+	}
+	if !strings.HasPrefix(got, "~/") {
+		t.Fatalf("expected home-relative path, got %q", got)
+	}
+	if !strings.Contains(got, "luc") {
+		t.Fatalf("expected project tail to remain visible, got %q", got)
+	}
+}
+
+func TestCompactHeaderPathKeepsUsefulTailWhenTrimmed(t *testing.T) {
+	got := compactHeaderPath("/Users/lfdourado/dev/fury_mshops/fury_mshops-frontend-wrapper-go", 22)
+	if !strings.Contains(got, "frontend-wrapper-go") {
+		t.Fatalf("expected useful tail to remain, got %q", got)
+	}
+	if strings.Contains(got, "/Users/lfdourado") {
+		t.Fatalf("expected leading path to be collapsed, got %q", got)
+	}
+}
+
 func TestModelEnterSendsAndClearsInput(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -89,6 +118,39 @@ func TestModelEnterSendsAndClearsInput(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected submit command")
+	}
+}
+
+func TestModelEscapeClearsComposerAndPendingImages(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attachment, ok, err := attachmentFromPasteContent(testImageDataURL)
+	if err != nil || !ok {
+		t.Fatalf("expected test image attachment, ok=%v err=%v", ok, err)
+	}
+
+	model := New(controller)
+	model.input.SetValue("draft")
+	model.pendingImages = []media.Attachment{attachment}
+
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m := updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected escape clear to avoid extra command dispatch")
+	}
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("expected cleared input, got %q", got)
+	}
+	if len(m.pendingImages) != 0 {
+		t.Fatalf("expected pending images cleared, got %d", len(m.pendingImages))
 	}
 }
 
@@ -150,14 +212,19 @@ func TestModelCopyKeyDispatchesCopyMessage(t *testing.T) {
 	}
 
 	model := New(controller)
-	updated, cmd := model.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
-	_ = updated.(Model)
-	if cmd == nil {
-		t.Fatal("expected copy command")
-	}
-	msg := cmd()
-	if _, ok := msg.(copySelectionMsg); !ok {
-		t.Fatalf("expected copySelectionMsg, got %T", msg)
+	for _, keyMsg := range []tea.KeyPressMsg{
+		{Code: 'y', Mod: tea.ModCtrl},
+		{Code: 'c', Mod: tea.ModSuper},
+	} {
+		updated, cmd := model.Update(keyMsg)
+		_ = updated.(Model)
+		if cmd == nil {
+			t.Fatalf("expected copy command for %#v", keyMsg)
+		}
+		msg := cmd()
+		if _, ok := msg.(copySelectionMsg); !ok {
+			t.Fatalf("expected copySelectionMsg for %#v, got %T", keyMsg, msg)
+		}
 	}
 }
 
@@ -186,6 +253,120 @@ func TestModelEnterSendsPendingImageWithoutText(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected submit command for attachment-only message")
+	}
+}
+
+func TestModelEscapeClearsComposerWithoutCancelingActiveTurn(t *testing.T) {
+	t.Setenv("LUC_STATE_DIR", t.TempDir())
+
+	root := newExecProviderWorkspace(t, `#!/bin/sh
+cat >/dev/null
+sleep 30
+printf '%s\n' '{"type":"done","completed":true}'
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attachment, ok, err := attachmentFromPasteContent(testImageDataURL)
+	if err != nil || !ok {
+		t.Fatalf("expected test image attachment, ok=%v err=%v", ok, err)
+	}
+
+	model := New(controller)
+	model.input.SetValue("draft")
+	model.pendingImages = []media.Attachment{attachment}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Submit(context.Background(), "long running")
+	}()
+	waitForTurnState(t, controller, true)
+
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m := updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected escape clear to avoid stop command")
+	}
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("expected cleared input, got %q", got)
+	}
+	if len(m.pendingImages) != 0 {
+		t.Fatalf("expected pending images cleared, got %d", len(m.pendingImages))
+	}
+	if !controller.TurnActive() {
+		t.Fatal("expected active turn to remain active after escape clear")
+	}
+
+	if !controller.CancelTurn() {
+		t.Fatal("expected cleanup cancellation to succeed")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected canceled submit to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled submit")
+	}
+}
+
+func TestModelStopKeyCancelsActiveTurnWithoutClearingDraft(t *testing.T) {
+	t.Setenv("LUC_STATE_DIR", t.TempDir())
+
+	root := newExecProviderWorkspace(t, `#!/bin/sh
+cat >/dev/null
+sleep 30
+printf '%s\n' '{"type":"done","completed":true}'
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attachment, ok, err := attachmentFromPasteContent(testImageDataURL)
+	if err != nil || !ok {
+		t.Fatalf("expected test image attachment, ok=%v err=%v", ok, err)
+	}
+
+	model := New(controller)
+	model.input.SetValue("draft stays")
+	model.pendingImages = []media.Attachment{attachment}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Submit(context.Background(), "long running")
+	}()
+	waitForTurnState(t, controller, true)
+
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: '.', Mod: tea.ModCtrl})
+	m := updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected stop command")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected canceled submit to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled submit")
+	}
+
+	if controller.TurnActive() {
+		t.Fatal("expected turn to be inactive after stop key")
+	}
+	if got := m.input.Value(); got != "draft stays" {
+		t.Fatalf("expected draft input to remain, got %q", got)
+	}
+	if len(m.pendingImages) != 1 || m.pendingImages[0].ID != attachment.ID {
+		t.Fatalf("expected pending image to remain after stop, got %#v", m.pendingImages)
 	}
 }
 
@@ -428,6 +609,63 @@ printf '%s\n' '{"type":"done","completed":true}'
 	}
 }
 
+func TestModelFooterHintsOnlyShowStopWhileTurnActive(t *testing.T) {
+	t.Setenv("LUC_STATE_DIR", t.TempDir())
+
+	root := newExecProviderWorkspace(t, `#!/bin/sh
+cat >/dev/null
+sleep 30
+printf '%s\n' '{"type":"done","completed":true}'
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m := updated.(Model)
+
+	if hints := ansi.Strip(m.renderFooterHints()); !strings.Contains(hints, "esc clear") {
+		t.Fatalf("expected clear hint, got %q", hints)
+	} else if !strings.Contains(hints, "ctrl+p") {
+		t.Fatalf("expected command palette hint, got %q", hints)
+	} else if strings.Contains(hints, "ctrl+. stop") {
+		t.Fatalf("expected stop hint to stay hidden while idle, got %q", hints)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- controller.Submit(context.Background(), "long running")
+	}()
+	waitForTurnState(t, controller, true)
+
+	m.invalidateFooter()
+	if hints := ansi.Strip(m.renderFooterHints()); !strings.Contains(hints, "ctrl+. stop") {
+		t.Fatalf("expected stop hint while active, got %q", hints)
+	} else if !strings.Contains(hints, "ctrl+p") {
+		t.Fatalf("expected command palette hint while active, got %q", hints)
+	}
+
+	if !controller.CancelTurn() {
+		t.Fatal("expected cancellation to succeed")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected canceled submit to return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled submit")
+	}
+
+	m.invalidateFooter()
+	if hints := ansi.Strip(m.renderFooterHints()); strings.Contains(hints, "ctrl+. stop") {
+		t.Fatalf("expected stop hint to hide after cancellation, got %q", hints)
+	}
+}
+
 func newExecProviderWorkspace(t *testing.T, script string) string {
 	t.Helper()
 
@@ -469,5 +707,17 @@ func drainControllerEvents(ch <-chan history.EventEnvelope) []history.EventEnvel
 		default:
 			return events
 		}
+	}
+}
+
+func waitForTurnState(t *testing.T, controller *kernel.Controller, active bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for controller.TurnActive() != active {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for turn active=%t", active)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

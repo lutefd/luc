@@ -131,6 +131,48 @@ func TestTranscriptStopsAutoFollowAfterManualScroll(t *testing.T) {
 	}
 }
 
+func TestTranscriptLoadsOlderBlocksOnDemand(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(48, 6)
+
+	for i := 0; i < 70; i++ {
+		model.Apply(history.EventEnvelope{
+			Kind:    "system.note",
+			Payload: history.MessagePayload{ID: fmt.Sprintf("n%d", i), Content: fmt.Sprintf("note %d", i)},
+		})
+	}
+
+	if model.windowStart == 0 {
+		t.Fatal("expected long transcript to start in a tail window")
+	}
+	initialStart := model.windowStart
+	initialLines := model.viewport.TotalLineCount()
+
+	content := ansi.Strip(model.viewport.GetContent())
+	if strings.Contains(content, "note 0") {
+		t.Fatalf("expected oldest entry to stay out of the initial tail window:\n%s", content)
+	}
+	if !strings.Contains(content, "earlier entries") {
+		t.Fatalf("expected hidden-history hint in mounted transcript content:\n%s", content)
+	}
+
+	model.viewport.GotoTop()
+	model.UpdateViewport(tea.KeyPressMsg{Code: tea.KeyPgUp})
+
+	if model.windowStart >= initialStart {
+		t.Fatalf("expected upward scroll to load older blocks, start stayed at %d", model.windowStart)
+	}
+	if model.viewport.TotalLineCount() <= initialLines {
+		t.Fatalf("expected viewport line count to grow after loading older blocks, got %d <= %d", model.viewport.TotalLineCount(), initialLines)
+	}
+
+	model.viewport.GotoTop()
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "note 0") {
+		t.Fatalf("expected oldest entry after loading older blocks:\n%s", view)
+	}
+}
+
 func TestTranscriptSelectionCopiesPlainTextAcrossBlocks(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(60, 12)
@@ -461,5 +503,49 @@ func TestTranscriptShowsSmallDiffInlineAndCollapsesLargeDiff(t *testing.T) {
 	view = ansi.Strip(model.View())
 	if !strings.Contains(view, "Collapsed diff:") || !strings.Contains(view, "Double-click to expand.") {
 		t.Fatalf("expected large diff to collapse in transcript view:\n%s", view)
+	}
+}
+
+func TestTranscriptCollapsesLargeWriteDiffEarlierThanGenericDiffs(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(100, 30)
+
+	lines := make([]string, 0, writeDiffCollapseLineThreshold+15)
+	lines = append(lines, "@@ -1,1 +1,1 @@")
+	for i := 0; i < writeDiffCollapseLineThreshold+14; i++ {
+		lines = append(lines, fmt.Sprintf("+line %d", i))
+	}
+	diff := strings.Join(lines, "\n")
+
+	model.Apply(history.EventEnvelope{
+		Kind: "tool.finished",
+		Payload: history.ToolResultPayload{
+			ID:      "edit-medium",
+			Name:    "edit",
+			Content: "applied medium edit",
+			Metadata: map[string]any{
+				"diff": diff,
+			},
+		},
+	})
+	view := ansi.Strip(model.View())
+	if strings.Contains(view, "Collapsed diff:") {
+		t.Fatalf("expected generic diff below default threshold to stay inline:\n%s", view)
+	}
+
+	model.Apply(history.EventEnvelope{
+		Kind: "tool.finished",
+		Payload: history.ToolResultPayload{
+			ID:      "write-medium",
+			Name:    "write",
+			Content: "wrote medium file",
+			Metadata: map[string]any{
+				"diff": diff,
+			},
+		},
+	})
+	view = ansi.Strip(model.View())
+	if !strings.Contains(view, "Collapsed diff:") || !strings.Contains(view, "Double-click to expand.") {
+		t.Fatalf("expected large write diff to collapse earlier:\n%s", view)
 	}
 }
