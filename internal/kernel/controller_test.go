@@ -903,6 +903,84 @@ func TestControllerCommandsAndReload(t *testing.T) {
 	}
 }
 
+func TestControllerAppliesMatchingPromptExtensions(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "first"},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "second"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc", "prompts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "prompts", "openai.yaml"), []byte(`schema: luc.prompt/v1
+id: openai-gpt5
+match:
+  providers: [openai]
+  model_prefixes: [gpt-5]
+prompt: |
+  Keep GPT-5 tool loops tight.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "prompts", "claude.yaml"), []byte(`schema: luc.prompt/v1
+id: claude-meli
+match:
+  providers: [meli]
+  models: [claude-opus-4-7]
+prompt: |
+  Give Claude more explicit execution structure.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	first := providerStub.requests[0]
+	if !strings.Contains(first.System, "Keep GPT-5 tool loops tight.") {
+		t.Fatalf("expected openai extension in prompt, got %q", first.System)
+	}
+	if strings.Contains(first.System, "Give Claude more explicit execution structure.") {
+		t.Fatalf("did not expect claude extension in first prompt, got %q", first.System)
+	}
+
+	controller.config.Provider.Kind = "meli"
+	controller.config.Provider.Model = "claude-opus-4-7"
+	if err := controller.Submit(context.Background(), "hello again"); err != nil {
+		t.Fatal(err)
+	}
+	second := providerStub.requests[1]
+	if !strings.Contains(second.System, "Give Claude more explicit execution structure.") {
+		t.Fatalf("expected claude extension in prompt, got %q", second.System)
+	}
+	if strings.Contains(second.System, "Keep GPT-5 tool loops tight.") {
+		t.Fatalf("did not expect openai extension in second prompt, got %q", second.System)
+	}
+}
+
 func TestControllerAdvertisesSkillsAndLoadsBodyOnToolCall(t *testing.T) {
 	oldFactory := newProvider
 	defer func() { newProvider = oldFactory }()
@@ -1125,6 +1203,48 @@ func TestControllerSkillCatalogIncludesBuiltins(t *testing.T) {
 	}
 	if !strings.Contains(providerStub.lastRequest.System, "theme-creator (Theme Creator): Create or update luc themes that can be inserted at runtime.") {
 		t.Fatalf("expected builtin theme skill in catalog, got %q", providerStub.lastRequest.System)
+	}
+}
+
+func TestControllerDefaultSystemPromptIsToolFirstAndConcise(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "ok"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "inspect the repo and fix the failing test"); err != nil {
+		t.Fatal(err)
+	}
+
+	system := providerStub.lastRequest.System
+	for _, want := range []string{
+		"You are luc, the local coding agent running inside luc for this workspace.",
+		"Use luc tools to inspect files, edit code, and run commands instead of guessing.",
+		"Be concise, prefer the smallest correct change, and verify important changes with targeted tool calls.",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("expected default system prompt to contain %q, got %q", want, system)
+		}
 	}
 }
 
@@ -1643,5 +1763,134 @@ func TestControllerOnlyPersistsAfterFirstUserMessage(t *testing.T) {
 		t.Fatal(err)
 	} else if !ok {
 		t.Fatal("expected meta file after first user message")
+	}
+}
+
+func TestControllerCompactionKeepsRawHistoryVisibleButCompactsReplay(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{
+			{
+				{Type: "text_delta", Text: "first answer"},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: strings.TrimSpace(`## Goal
+[Handle the first request]
+
+## Constraints & Preferences
+- (none)
+
+## Progress
+### Done
+- [x] Captured the first user request
+
+### In Progress
+- [ ] Waiting for the next turn
+
+### Blocked
+- (none)
+
+## Key Decisions
+- **Compact old user input**: Keep only the latest assistant message in replay
+
+## Next Steps
+1. Continue with the next user message
+
+## Critical Context
+- first request`)},
+				{Type: "done", Completed: true},
+			},
+			{
+				{Type: "text_delta", Text: "follow up answer"},
+				{Type: "done", Completed: true},
+			},
+		},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".luc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "config.yaml"), []byte(`compaction:
+  keep_recent_tokens: 1
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "first request"); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "/compact"); err != nil {
+		t.Fatal(err)
+	}
+
+	eventsAfterCompact := controller.SessionEvents()
+	foundOriginalUser := false
+	foundCompaction := false
+	for _, ev := range eventsAfterCompact {
+		switch ev.Kind {
+		case "message.user":
+			payload := decode[history.MessagePayload](ev.Payload)
+			if payload.Content == "first request" {
+				foundOriginalUser = true
+			}
+		case "session.compaction":
+			foundCompaction = true
+		}
+	}
+	if !foundOriginalUser {
+		t.Fatalf("expected raw session history to keep the original user message, got %#v", eventsAfterCompact)
+	}
+	if !foundCompaction {
+		t.Fatalf("expected session.compaction event in raw history, got %#v", eventsAfterCompact)
+	}
+
+	if err := controller.Submit(context.Background(), "second request"); err != nil {
+		t.Fatal(err)
+	}
+	if len(providerStub.requests) != 3 {
+		t.Fatalf("expected 3 provider requests, got %d", len(providerStub.requests))
+	}
+	if !strings.Contains(providerStub.requests[2].System, "Session summary from earlier compacted context") {
+		t.Fatalf("expected compacted summary in system prompt, got %q", providerStub.requests[2].System)
+	}
+	if !strings.Contains(providerStub.requests[2].System, "first request") {
+		t.Fatalf("expected compacted summary to preserve first request, got %q", providerStub.requests[2].System)
+	}
+
+	reopened, err := Open(context.Background(), root, controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := reopened.snapshotConversation()
+	for _, msg := range replayed {
+		if msg.Role == "user" && msg.Content == "first request" {
+			t.Fatalf("expected original user request to be compacted out of replay, got %#v", replayed)
+		}
+	}
+	foundKeptAssistant := false
+	for _, msg := range replayed {
+		if msg.Role == "assistant" && msg.Content == "first answer" {
+			foundKeptAssistant = true
+			break
+		}
+	}
+	if !foundKeptAssistant {
+		t.Fatalf("expected kept replay tail after compaction, got %#v", replayed)
 	}
 }

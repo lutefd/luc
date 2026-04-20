@@ -83,15 +83,18 @@ type Controller struct {
 	version    atomic.Uint64
 	turnActive atomic.Bool
 
-	mu           sync.Mutex
-	turnMu       sync.Mutex
-	turnCancel   context.CancelFunc
-	sessionSaved bool
-	conversation []provider.Message
-	systemPrompt string
-	skills       []extensions.Skill
-	loadedSkills map[string]struct{}
-	hookSeen     map[string]struct{}
+	mu                sync.Mutex
+	turnMu            sync.Mutex
+	turnCancel        context.CancelFunc
+	sessionSaved      bool
+	rawEvents         []history.EventEnvelope
+	conversation      []provider.Message
+	compactionSummary string
+	systemPrompt      string
+	skills            []extensions.Skill
+	promptExts        []extensions.PromptExtension
+	loadedSkills      map[string]struct{}
+	hookSeen          map[string]struct{}
 }
 
 func New(ctx context.Context, cwd string) (*Controller, error) {
@@ -174,6 +177,10 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	promptExts, err := extensions.LoadPromptExtensions(ws.Root)
+	if err != nil {
+		return nil, err
+	}
 	runtimeSet, err := extensions.LoadRuntimeContributions(ws.Root, luruntime.DefaultHostCapabilities())
 	if err != nil {
 		return nil, err
@@ -189,6 +196,7 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		tools:        toolManager,
 		events:       make(chan history.EventEnvelope, 256),
 		skills:       skills,
+		promptExts:   promptExts,
 		loadedSkills: make(map[string]struct{}),
 		hostCaps:     luruntime.DefaultHostCapabilities(),
 		runtime:      runtimeSet,
@@ -487,6 +495,11 @@ func (c *Controller) Reload(ctx context.Context) error {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
 		return err
 	}
+	promptExts, err := extensions.LoadPromptExtensions(c.workspace.Root)
+	if err != nil {
+		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
+		return err
+	}
 	toolManager, err := tools.NewManager(c.workspace.Root)
 	if err != nil {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
@@ -529,6 +542,7 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.config = cfg
 	c.systemPrompt = systemPrompt
 	c.skills = skills
+	c.promptExts = promptExts
 	c.tools = toolManager
 	c.registry = registry
 	c.provider = client
@@ -749,6 +763,12 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 			}
 			c.emit("message.assistant.final", history.MessagePayload{ID: assistantID, Content: final})
 			c.appendMessage(provider.Message{Role: "assistant", Content: final})
+			if err := c.maybeAutoCompact(turnCtx); err != nil {
+				c.emit("system.error", history.MessagePayload{
+					ID:      nextID("error"),
+					Content: "auto-compaction failed: " + err.Error(),
+				})
+			}
 			return nil
 		}
 
@@ -810,15 +830,27 @@ func (c *Controller) appendSyntheticUserMessage(text string) {
 }
 
 func (c *Controller) handleCommand(ctx context.Context, text string) error {
-	switch strings.TrimSpace(text) {
-	case "/reload":
+	trimmed := strings.TrimSpace(text)
+	switch {
+	case trimmed == "/reload":
 		c.emit("reload.started", history.ReloadPayload{Version: c.version.Load()})
 		return c.Reload(ctx)
-	case "/help":
+	case trimmed == "/help":
 		c.emit("system.note", history.MessagePayload{
 			ID:      nextID("help"),
-			Content: "Commands: /reload, /help",
+			Content: "Commands: /reload, /help, /compact [instructions]",
 		})
+		return nil
+	case strings.HasPrefix(trimmed, "/compact"):
+		instructions := strings.TrimSpace(strings.TrimPrefix(trimmed, "/compact"))
+		_, err := c.runCompaction(ctx, instructions, "manual", estimateRequestTokens(c.mustComposeSystemPrompt(), c.snapshotConversation()))
+		if err != nil {
+			c.emit("system.error", history.MessagePayload{
+				ID:      nextID("error"),
+				Content: "compaction failed: " + err.Error(),
+			})
+			return err
+		}
 		return nil
 	default:
 		c.emit("system.error", history.MessagePayload{
@@ -847,6 +879,7 @@ func (c *Controller) emit(kind string, payload any) {
 		}
 	}
 	c.mu.Lock()
+	c.rawEvents = append(c.rawEvents, ev)
 	c.eventLog = append(c.eventLog, ev)
 	c.mu.Unlock()
 	c.mirrorEventToLogs(kind, payload)
@@ -959,17 +992,16 @@ func (c *Controller) applySession(meta history.SessionMeta, events []history.Eve
 	c.sessionSaved = len(events) > 0
 	c.seq.Store(0)
 	c.initial = append([]history.EventEnvelope(nil), events...)
-	c.loadedSkills = make(map[string]struct{})
 	c.mu.Lock()
-	c.conversation = nil
+	c.rawEvents = append([]history.EventEnvelope(nil), events...)
 	c.eventLog = append([]history.EventEnvelope(nil), events...)
 	c.mu.Unlock()
 	for _, ev := range events {
 		if ev.Seq > c.seq.Load() {
 			c.seq.Store(ev.Seq)
 		}
-		c.replay(ev)
 	}
+	c.rebuildReplayState()
 
 	return nil
 }
@@ -1127,7 +1159,7 @@ func isNoResponsePlaceholder(text string) bool {
 }
 
 func (c *Controller) loadSystemPrompt() string {
-	base := "You are luc, a local coding agent. Work inside the workspace, explain actions clearly, and prefer the smallest correct change."
+	base := "You are luc, the local coding agent running inside luc for this workspace. Use luc tools to inspect files, edit code, and run commands instead of guessing. Be concise, prefer the smallest correct change, and verify important changes with targeted tool calls."
 	paths := []string{}
 	if home, err := os.UserHomeDir(); err == nil {
 		paths = append(paths, filepath.Join(home, ".luc", "prompts", "system.md"))
@@ -1150,6 +1182,18 @@ func (c *Controller) loadSystemPrompt() string {
 func (c *Controller) composeSystemPrompt(input string) (string, error) {
 	var builder strings.Builder
 	builder.WriteString(c.systemPrompt)
+	if summary := strings.TrimSpace(c.compactionSummary); summary != "" {
+		builder.WriteString("\n\nSession summary from earlier compacted context:\n")
+		builder.WriteString(summary)
+	}
+	if loaded := strings.TrimSpace(c.loadedSkillPromptBlock()); loaded != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(loaded)
+	}
+	for _, ext := range c.matchingPromptExtensions() {
+		builder.WriteString("\n\n")
+		builder.WriteString(ext.Prompt)
+	}
 	if relevant := c.relevantSkills(input); len(relevant) > 0 {
 		builder.WriteString("\n\nLikely relevant skills for this request:\n")
 		builder.WriteString("Before editing luc core code or this repo for luc itself, load the most relevant skill first when the task is about extending luc or adding a runtime capability.\n")
@@ -1180,6 +1224,20 @@ func (c *Controller) composeSystemPrompt(input string) (string, error) {
 		builder.WriteString(catalog)
 	}
 	return strings.TrimSpace(builder.String()), nil
+}
+
+func (c *Controller) matchingPromptExtensions() []extensions.PromptExtension {
+	if len(c.promptExts) == 0 {
+		return nil
+	}
+
+	out := make([]extensions.PromptExtension, 0, len(c.promptExts))
+	for _, ext := range c.promptExts {
+		if ext.Matches(c.config.Provider.Kind, c.config.Provider.Model) {
+			out = append(out, ext)
+		}
+	}
+	return out
 }
 
 func (c *Controller) hasRelevantSkill(skills []extensions.Skill, name string) bool {
