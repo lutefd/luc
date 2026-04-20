@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/lutefd/luc/internal/auth"
 	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/kernel"
 	"github.com/lutefd/luc/internal/rpc"
@@ -81,6 +82,8 @@ func Run(ctx context.Context, args []string) error {
 			return err
 		}
 		return runPkg(info.Root, args[1:])
+	case "auth":
+		return runAuth(args[1:])
 	case "rpc":
 		return runRPC(ctx, cwd, args[1:])
 	default:
@@ -253,6 +256,48 @@ func runPkg(workspaceRoot string, args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown pkg command %q", args[0])
+	}
+}
+
+func runAuth(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: luc auth <set|unset|list> ...")
+	}
+	switch args[0] {
+	case "set":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: luc auth set <provider-id> <key>")
+		}
+		if err := auth.Set(args[1], args[2]); err != nil {
+			return fmt.Errorf("failed to store credential: %w", err)
+		}
+		fmt.Printf("credential stored for %q\n", args[1])
+		return nil
+	case "unset":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: luc auth unset <provider-id>")
+		}
+		if err := auth.Delete(args[1]); err != nil {
+			if err == auth.ErrNotFound {
+				return fmt.Errorf("no credential found for %q", args[1])
+			}
+			return fmt.Errorf("failed to remove credential: %w", err)
+		}
+		fmt.Printf("credential removed for %q\n", args[1])
+		return nil
+	case "list":
+		known := []string{"openai", "openai-compatible", "anthropic", "meli"}
+		found := auth.List(known)
+		if len(found) == 0 {
+			fmt.Println("no credentials stored")
+			return nil
+		}
+		for _, id := range found {
+			fmt.Println(id)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown auth command %q (expected set, unset, or list)", args[0])
 	}
 }
 

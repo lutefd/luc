@@ -32,6 +32,18 @@ export OPENAI_API_KEY=sk-...
 
 Any OpenAI-compatible endpoint works — set `base_url` and `api_key_env` to point at it.
 
+## Credentials
+
+Instead of exporting an environment variable, you can store your API key in the OS keychain (macOS Keychain, Windows Credential Manager, Linux libsecret):
+
+```
+luc auth set openai-compatible sk-...
+luc auth list
+luc auth unset openai-compatible
+```
+
+The lookup priority is: environment variable → keychain → error.
+
 ## Usage
 
 ```
@@ -80,6 +92,41 @@ Supported surfaces:
 - `prompts/` — prompt extensions and system prompt overrides
 - `skills/` — named instruction sets the model can load on demand
 - `themes/` — color themes
+
+### Custom providers
+
+You can wire any OpenAI-compatible or exec-based LLM as a runtime provider — no recompiling needed.
+
+**OpenAI-compatible** (e.g. local Ollama, Groq, Together):
+
+```yaml
+# ~/.luc/providers/ollama.yaml
+schema: luc.provider/v1
+type: openai-compatible
+id: ollama
+name: Ollama
+base_url: http://localhost:11434/v1
+api_key_env: ""
+models:
+  - id: llama3.2
+    name: Llama 3.2
+```
+
+**Exec provider** (custom adapter process):
+
+```yaml
+# ~/.luc/providers/my-provider.yaml
+schema: luc.provider/v1
+type: exec
+id: my-provider
+name: My Provider
+command: ./adapter.py
+models:
+  - id: my-model
+    name: My Model
+```
+
+The exec adapter receives a JSON request on stdin and writes JSONL provider events to stdout. See `docs/runtime-extensions.md` for the full protocol, or browse the bundled reference at `~/.luc/docs/` after first launch.
 
 See `docs/runtime-extensions.md` for the full reference.
 

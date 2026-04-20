@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/lutefd/luc/internal/auth"
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/provider"
 )
@@ -27,9 +28,14 @@ func New(cfg config.ProviderConfig) (*Client, error) {
 	key := ""
 	if env := strings.TrimSpace(cfg.APIKeyEnv); env != "" {
 		key = os.Getenv(env)
-		if key == "" {
-			return nil, fmt.Errorf("%s is not set", env)
+	}
+	if key == "" {
+		if stored, err := auth.Get(cfg.Kind); err == nil {
+			key = stored
 		}
+	}
+	if key == "" && strings.TrimSpace(cfg.APIKeyEnv) != "" {
+		return nil, fmt.Errorf("no API key found: set %s or run `luc auth set %s <key>`", cfg.APIKeyEnv, cfg.Kind)
 	}
 
 	return &Client{
