@@ -25,6 +25,7 @@ type Model struct {
 	theme    theme.Theme
 	input    textinput.Model
 	active   int
+	scroll   int
 	width    int
 	height   int
 	open     bool
@@ -68,6 +69,7 @@ func (m *Model) Open(currentModelID string) {
 	m.input.Reset()
 	m.input.Focus()
 	m.active = 0
+	m.scroll = 0
 }
 
 func (m *Model) Close() {
@@ -133,6 +135,45 @@ func selectableCount(rows []row) int {
 	return n
 }
 
+func (m *Model) listMaxRows() int {
+	// Reserve lines for: header, blank, input, blank, blank, hint = 6
+	available := m.height - 6
+	if available < 4 {
+		available = 4
+	}
+	if available > 20 {
+		available = 20
+	}
+	return available
+}
+
+func (m *Model) ensureVisible(rows []row) {
+	max := m.listMaxRows()
+	// Map active (selectable index) to rendered row index.
+	renderIdx := 0
+	selIdx := 0
+	for _, r := range rows {
+		if r.isHeader {
+			renderIdx++
+			if renderIdx > 0 {
+				renderIdx++ // blank line before header
+			}
+			continue
+		}
+		if selIdx == m.active {
+			break
+		}
+		selIdx++
+		renderIdx++
+	}
+	if renderIdx < m.scroll {
+		m.scroll = renderIdx
+	}
+	if renderIdx >= m.scroll+max {
+		m.scroll = renderIdx - max + 1
+	}
+}
+
 // Update handles key events while the modal is open. Returns (selectedMsg, closed, handled).
 func (m *Model) Update(msg tea.KeyPressMsg) (tea.Cmd, bool, bool) {
 	if !m.open {
@@ -146,12 +187,14 @@ func (m *Model) Update(msg tea.KeyPressMsg) (tea.Cmd, bool, bool) {
 		if m.active > 0 {
 			m.active--
 		}
+		m.ensureVisible(m.filtered())
 		return nil, false, true
 	case key.Matches(msg, m.keys.Down):
 		rows := m.filtered()
 		if m.active < selectableCount(rows)-1 {
 			m.active++
 		}
+		m.ensureVisible(rows)
 		return nil, false, true
 	case key.Matches(msg, m.keys.Select):
 		rows := m.filtered()
@@ -211,6 +254,31 @@ func (m Model) View() string {
 		rendered = append(rendered, m.theme.Muted.Render("  no matches"))
 	}
 
+	// Apply scroll window.
+	maxRows := m.listMaxRows()
+	scroll := m.scroll
+	if scroll < 0 {
+		scroll = 0
+	}
+	aboveCount := scroll
+	visible := rendered
+	if scroll < len(rendered) {
+		visible = rendered[scroll:]
+	} else {
+		visible = nil
+	}
+	belowCount := 0
+	if len(visible) > maxRows {
+		belowCount = len(visible) - maxRows
+		visible = visible[:maxRows]
+	}
+	if aboveCount > 0 {
+		visible = append([]string{m.theme.Muted.Render("  ↑ " + itoa(aboveCount) + " more")}, visible...)
+	}
+	if belowCount > 0 {
+		visible = append(visible, m.theme.Muted.Render("  ↓ "+itoa(belowCount)+" more"))
+	}
+
 	hint := m.theme.Footer.Render("↑↓ choose  •  enter select  •  esc cancel")
 	body := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -218,7 +286,7 @@ func (m Model) View() string {
 		"",
 		inputLine,
 		"",
-		strings.Join(rendered, "\n"),
+		strings.Join(visible, "\n"),
 		"",
 		hint,
 	)
