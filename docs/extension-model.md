@@ -45,6 +45,7 @@ Use `luc.extension/v1` when:
 - you need observe events such as `message.assistant.final`
 - you need session/workspace storage
 - you need hosted tool handlers
+- you want to implement the host directly in Python, Go, or another language
 
 Use `luc.hook/v1` when:
 
@@ -124,6 +125,11 @@ Typical combinations:
   - provider protocol adapter plus runtime UI
 - `luc.hook/v1` + `luc.ui/v1`
   - async side effect plus host view refresh or command trigger
+
+For direct protocol implementation details, see `docs/extension-host-protocol.md`.
+
+For a complete declarative plus programmable package example, see
+`examples/packages/hybrid-audit`.
 
 ## Minimal Shapes
 

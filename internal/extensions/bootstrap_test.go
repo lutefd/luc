@@ -41,6 +41,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 		filepath.Join(root, "skills", "runtime-extension-authoring", "luc.yaml"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "SKILL.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "extension-model.md"),
+		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "extension-host-protocol.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "capability-tools.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "provider-ui-composition.md"),
 		filepath.Join(root, "skills", "runtime-extension-authoring", "references", "runtime-ui-views.md"),
@@ -71,6 +72,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 			"`luc.extension/v1`",
 			"`schema: luc.prompt/v1`",
 			"`references/extension-model.md`",
+			"`references/extension-host-protocol.md`",
 			"`references/capability-tools.md`",
 			"`references/provider-ui-composition.md`",
 			"`references/runtime-ui-views.md`",
@@ -104,6 +106,14 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	}
 	if !containsAll(string(extensionModel), "Which Surface To Use", "`luc.tool/v1`", "`luc.tool/v2`", "`luc.extension/v1`", "`luc.hook/v1`", "`luc.ui/v1`", "`luc.prompt/v1`") {
 		t.Fatalf("expected extension model reference to include surface-selection guidance, got %q", string(extensionModel))
+	}
+
+	extensionProtocol, err := os.ReadFile(filepath.Join(root, "skills", "runtime-extension-authoring", "references", "extension-host-protocol.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAll(string(extensionProtocol), "Startup Sequence", "Minimal Python Host", "Minimal Go Host", "`storage_snapshot`", "`tool_invoke`", "Hybrid Package Layout", "disabled for that session") {
+		t.Fatalf("expected extension host protocol reference to include direct protocol guidance, got %q", string(extensionProtocol))
 	}
 
 	runtimeViews, err := os.ReadFile(filepath.Join(root, "skills", "runtime-extension-authoring", "references", "runtime-ui-views.md"))

@@ -4,6 +4,8 @@
 
 For a single surface-selection guide, see [extension-model.md](/Users/lfdourado/dev/p/luc/docs/extension-model.md).
 
+For direct Python/Go extension-host implementations, see [extension-host-protocol.md](/Users/lfdourado/dev/p/luc/docs/extension-host-protocol.md).
+
 On a clean install, first launch bootstraps the global `~/.luc` tree and seeds
 the bundled helper skills `runtime-extension-authoring`, `skill-usage`, and
 `theme-creator` there if they are missing. Existing user files are left
@@ -358,8 +360,13 @@ Extension host notes:
 - Sync requests are sent as `event` envelopes with a `request_id`; the extension answers with `decision` carrying the same `request_id`.
 - Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
 - `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
-- Extension hosts are trusted local processes in this phase. Failures are logged and surfaced through `extension.failed` history events, but the session continues.
+- Extension hosts are trusted local processes in this phase.
+- Host crashes, hangs, and malformed protocol output mark the host unhealthy, surface runtime diagnostics, and trigger bounded automatic restart with exponential backoff.
+- Current restart defaults are 250 ms base delay, 2 s max delay, and 4 retry attempts per session before the host is disabled for the rest of that session.
+- Broken-host diagnostics are exposed through runtime diagnostics and inspector logs, and they clear automatically after the host becomes healthy again.
+- `extension.failed` history events are still emitted when a running host fails, but the session continues.
 - Hosted tools are supported through declarative `luc.tool/v2` manifests backed by `luc.extension/v1` hosts.
+- For a complete hybrid package example, see `examples/packages/hybrid-audit`.
 
 ### Skills
 

@@ -57,6 +57,7 @@ Rules:
 - For `type: exec` providers, assume the adapter receives one JSON request on stdin and emits JSONL provider events on stdout. The adapter translates upstream API semantics into luc provider events; luc still executes the actual tools and renders the UI cards.
 - If creating hooks, use `luc.hook/v1` with `runtime.kind: exec` and optional `runtime.capabilities`; hooks are async side effects over stdio, not turn-loop mutations.
 - If creating an extension host, use `luc.extension/v1` with `runtime.kind: exec`, `protocol_version: 1`, and explicit `subscriptions`. Extension hosts speak JSONL over stdin/stdout and can also own hosted tool handlers declared separately by `luc.tool/v2` manifests.
+- If the user wants a non-JS extension host, point them to `references/extension-host-protocol.md` for direct Python/Go protocol examples and the startup/message contract.
 - If creating a runtime skill, treat `skill-name/SKILL.md` as the canonical instruction body.
 - Use `skill-name/luc.yaml` only for metadata such as `interface.display_name` and `interface.short_description`.
 - If a skill needs bundled references or scripts, keep them in the same skill directory and assume they will be read through `read_skill_resource`.
@@ -68,6 +69,7 @@ Rules:
 Read bundled references when you need exact manifest shapes or end-to-end composition:
 
 - `references/extension-model.md` for deciding which runtime surface to use and how the pieces fit together.
+- `references/extension-host-protocol.md` for direct `luc.extension/v1` protocol implementations in Python and Go, restart semantics, and hybrid package layout.
 - `references/capability-tools.md` for `luc.tool/v1`, `luc.tool/v2`, `structured_io`, `client_actions`, hosted tools, and tool request envelopes.
 - `references/provider-ui-composition.md` for `type: exec` providers, host capabilities, and matching `luc.ui/v1` manifests.
 - `references/runtime-ui-views.md` for new runtime `inspector_tab` and `page` views with concrete generic examples.
