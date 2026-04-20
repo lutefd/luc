@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -19,6 +18,7 @@ import (
 	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/provider"
 	luruntime "github.com/lutefd/luc/internal/runtime"
+	"github.com/lutefd/luc/internal/shell"
 )
 
 type Request struct {
@@ -408,7 +408,7 @@ func (t *bashTool) Run(ctx context.Context, req Request) (Result, error) {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "zsh", "-lc", args.Command)
+	cmd := shell.Command(execCtx, args.Command)
 	cmd.Dir = t.workspace
 	output, err := cmd.CombinedOutput()
 
@@ -497,7 +497,7 @@ func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "zsh", "-lc", command)
+	cmd := shell.Command(execCtx, command)
 	cmd.Dir = t.workspace
 	output, runErr := cmd.CombinedOutput()
 	timedOut := execCtx.Err() == context.DeadlineExceeded
@@ -541,7 +541,7 @@ func (t *runtimeTool) runStructured(ctx context.Context, req Request) (Result, e
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "zsh", "-lc", t.def.Command)
+	cmd := shell.Command(execCtx, t.def.Command)
 	cmd.Dir = t.workspace
 
 	stdin, err := cmd.StdinPipe()

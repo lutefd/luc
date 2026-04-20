@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/lutefd/luc/internal/history"
 	luruntime "github.com/lutefd/luc/internal/runtime"
+	"github.com/lutefd/luc/internal/shell"
 )
 
 type recordingBroker struct {
@@ -192,7 +192,7 @@ func (c *Controller) runHook(ev history.EventEnvelope, hook luruntime.HookSubscr
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "zsh", "-lc", hook.Runtime.Command)
+	cmd := shell.Command(ctx, hook.Runtime.Command)
 	cmd.Dir = filepath.Dir(hook.SourcePath)
 
 	stdin, err := cmd.StdinPipe()
