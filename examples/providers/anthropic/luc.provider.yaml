@@ -3,8 +3,7 @@ type: exec
 id: anthropic
 name: Anthropic
 command: ./adapter.py
-env:
-  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+api_key_env: ANTHROPIC_API_KEY
 models:
   - id: claude-opus-4-7
     name: Claude Opus 4.7

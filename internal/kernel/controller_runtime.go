@@ -3,9 +3,11 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/lutefd/luc/internal/auth"
 	"github.com/lutefd/luc/internal/config"
 	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/history"
@@ -392,11 +394,19 @@ func runtimeProviderDef(def extensions.ProviderDef) provider.ProviderDef {
 		Factory: func(cfg config.ProviderConfig) (provider.Provider, error) {
 			switch runtimeDef.Type {
 			case "exec":
+				env := cloneStringMap(runtimeDef.Env)
+				if keyEnv := strings.TrimSpace(runtimeDef.APIKeyEnv); keyEnv != "" {
+					if os.Getenv(keyEnv) == "" {
+						if stored, err := auth.Get(runtimeDef.ID); err == nil {
+							env[keyEnv] = stored
+						}
+					}
+				}
 				return execprovider.New(cfg, execprovider.Spec{
 					Name:         runtimeDef.Name,
 					Command:      runtimeDef.Command,
 					Args:         runtimeDef.Args,
-					Env:          runtimeDef.Env,
+					Env:          env,
 					Dir:          filepath.Dir(runtimeDef.SourcePath),
 					Capabilities: runtimeDef.Capabilities,
 				})
@@ -410,4 +420,12 @@ func runtimeProviderDef(def extensions.ProviderDef) provider.ProviderDef {
 		},
 		Models: models,
 	}
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
