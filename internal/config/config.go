@@ -12,6 +12,7 @@ type Config struct {
 	Provider   ProviderConfig   `yaml:"provider"`
 	UI         UIConfig         `yaml:"ui"`
 	Extensions ExtensionsConfig `yaml:"extensions"`
+	Compaction CompactionConfig `yaml:"compaction"`
 }
 
 type ProviderConfig struct {
@@ -34,10 +35,17 @@ type ExtensionsConfig struct {
 	HooksEnabled bool `yaml:"hooks_enabled"`
 }
 
+type CompactionConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	ReserveTokens    int  `yaml:"reserve_tokens"`
+	KeepRecentTokens int  `yaml:"keep_recent_tokens"`
+}
+
 type partialConfig struct {
 	Provider   partialProviderConfig   `yaml:"provider"`
 	UI         partialUIConfig         `yaml:"ui"`
 	Extensions partialExtensionsConfig `yaml:"extensions"`
+	Compaction partialCompactionConfig `yaml:"compaction"`
 }
 
 type partialProviderConfig struct {
@@ -60,6 +68,12 @@ type partialExtensionsConfig struct {
 	HooksEnabled *bool `yaml:"hooks_enabled"`
 }
 
+type partialCompactionConfig struct {
+	Enabled          *bool `yaml:"enabled"`
+	ReserveTokens    *int  `yaml:"reserve_tokens"`
+	KeepRecentTokens *int  `yaml:"keep_recent_tokens"`
+}
+
 func Default() Config {
 	return Config{
 		Provider: ProviderConfig{
@@ -77,6 +91,11 @@ func Default() Config {
 		},
 		Extensions: ExtensionsConfig{
 			HooksEnabled: true,
+		},
+		Compaction: CompactionConfig{
+			Enabled:          true,
+			ReserveTokens:    16384,
+			KeepRecentTokens: 20000,
 		},
 	}
 }
@@ -149,6 +168,15 @@ func mergeFile(path string, cfg *Config) error {
 	}
 	if partial.Extensions.HooksEnabled != nil {
 		cfg.Extensions.HooksEnabled = *partial.Extensions.HooksEnabled
+	}
+	if partial.Compaction.Enabled != nil {
+		cfg.Compaction.Enabled = *partial.Compaction.Enabled
+	}
+	if partial.Compaction.ReserveTokens != nil {
+		cfg.Compaction.ReserveTokens = *partial.Compaction.ReserveTokens
+	}
+	if partial.Compaction.KeepRecentTokens != nil {
+		cfg.Compaction.KeepRecentTokens = *partial.Compaction.KeepRecentTokens
 	}
 
 	return nil
