@@ -60,7 +60,7 @@ func TestPromptExtensionMatchesProviderAliasesAndModelFamilies(t *testing.T) {
 	if !ext.Matches("openai-compatible", "gpt-5.4") {
 		t.Fatalf("expected openai alias + gpt-5 family to match")
 	}
-	if ext.Matches("meli", "gpt-5.4") {
+	if ext.Matches("acme", "gpt-5.4") {
 		t.Fatalf("did not expect provider mismatch to match")
 	}
 	if ext.Matches("openai-compatible", "claude-opus-4-7") {
@@ -70,7 +70,7 @@ func TestPromptExtensionMatchesProviderAliasesAndModelFamilies(t *testing.T) {
 	exact := PromptExtension{
 		Models: []string{"claude-opus-4-7"},
 	}
-	if !exact.Matches("meli", "claude-opus-4-7") {
+	if !exact.Matches("acme", "claude-opus-4-7") {
 		t.Fatalf("expected exact model match")
 	}
 }

@@ -251,8 +251,8 @@ func TestLoadProviderDefsSupportsExecProviders(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".luc", "providers"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "meli.yaml"), []byte(`id: meli
-name: Meli Gateway
+	if err := os.WriteFile(filepath.Join(root, ".luc", "providers", "acme.yaml"), []byte(`id: acme
+name: Acme Gateway
 type: exec
 command: ./adapter.sh
 args:

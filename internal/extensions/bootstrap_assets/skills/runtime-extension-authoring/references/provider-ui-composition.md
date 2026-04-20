@@ -5,8 +5,8 @@ Use this pattern when a capability spans an exec provider plus host-owned runtim
 Example exec provider:
 
 ~~~yaml
-id: meli
-name: Meli Gateway
+id: acme
+name: Acme Gateway
 type: exec
 command: ./adapter.sh
 args: [--stream]

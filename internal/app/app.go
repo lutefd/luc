@@ -286,7 +286,7 @@ func runAuth(args []string) error {
 		fmt.Printf("credential removed for %q\n", args[1])
 		return nil
 	case "list":
-		known := []string{"openai", "openai-compatible", "anthropic", "meli"}
+		known := []string{"openai", "openai-compatible", "anthropic"}
 		found := auth.List(known)
 		if len(found) == 0 {
 			fmt.Println("no credentials stored")

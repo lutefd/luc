@@ -44,9 +44,9 @@ timeout_seconds: 30
 }
 
 func TestParseProviderDefSupportsCapabilities(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "meli.yaml")
-	content := `id: meli
-name: Meli Gateway
+	path := filepath.Join(t.TempDir(), "acme.yaml")
+	content := `id: acme
+name: Acme Gateway
 type: exec
 command: ./adapter.py
 capabilities:

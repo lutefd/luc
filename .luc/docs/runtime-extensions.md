@@ -189,8 +189,8 @@ Notes:
 `exec` provider example:
 
 ```yaml
-id: meli
-name: Meli Gateway
+id: acme
+name: Acme Gateway
 type: exec
 command: ./adapter.sh
 args: [--stream]

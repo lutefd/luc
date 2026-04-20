@@ -23,7 +23,7 @@ const testImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 // TestMain isolates the user-preference state file (~/.luc/state.yaml) from
 // every test in this package. Without this, controller tests read the real
 // user's persisted theme/provider/model and wedge on values the test didn't
-// anticipate — e.g. "unexpected provider kind 'meli'" when the developer
+// anticipate — e.g. "unexpected provider kind 'acme'" when the developer
 // has a custom provider selected.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "luc-kernel-state-*")
@@ -942,9 +942,9 @@ prompt: |
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".luc", "prompts", "claude.yaml"), []byte(`schema: luc.prompt/v1
-id: claude-meli
+id: claude-acme
 match:
-  providers: [meli]
+  providers: [acme]
   models: [claude-opus-4-7]
 prompt: |
   Give Claude more explicit execution structure.
@@ -967,7 +967,7 @@ prompt: |
 		t.Fatalf("did not expect claude extension in first prompt, got %q", first.System)
 	}
 
-	controller.config.Provider.Kind = "meli"
+	controller.config.Provider.Kind = "acme"
 	controller.config.Provider.Model = "claude-opus-4-7"
 	if err := controller.Submit(context.Background(), "hello again"); err != nil {
 		t.Fatal(err)
@@ -1604,13 +1604,13 @@ fi
 `), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(providerDir, "meli.yaml"), []byte(`id: meli
-name: Meli Gateway
+	if err := os.WriteFile(filepath.Join(providerDir, "acme.yaml"), []byte(`id: acme
+name: Acme Gateway
 type: exec
 command: ./adapter.sh
 models:
-  - id: meli-model
-    name: Meli Model
+  - id: acme-model
+    name: Acme Model
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1622,7 +1622,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := controller.SwitchModel("meli-model"); err != nil {
+	if err := controller.SwitchModel("acme-model"); err != nil {
 		t.Fatal(err)
 	}
 	if err := controller.Submit(context.Background(), "run the adapter"); err != nil {

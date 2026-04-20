@@ -115,15 +115,25 @@ models:
 **Exec provider** (custom adapter process):
 
 ```yaml
-# ~/.luc/providers/my-provider.yaml
+# ~/.luc/providers/anthropic/luc.provider.yaml
 schema: luc.provider/v1
 type: exec
-id: my-provider
-name: My Provider
+id: anthropic
+name: Anthropic
 command: ./adapter.py
 models:
-  - id: my-model
-    name: My Model
+  - id: claude-opus-4-7
+    name: Claude Opus 4.7
+  - id: claude-sonnet-4-6
+    name: Claude Sonnet 4.6
+  - id: claude-haiku-4-5
+    name: Claude Haiku 4.5
+```
+
+A complete Anthropic adapter with streaming and extended thinking support is included in `examples/providers/anthropic/`. Copy it to `~/.luc/providers/anthropic/`, install the `anthropic` Python package, and set your key:
+
+```
+luc auth set anthropic sk-ant-...
 ```
 
 The exec adapter receives a JSON request on stdin and writes JSONL provider events to stdout. See `docs/runtime-extensions.md` for the full protocol, or browse the bundled reference at `~/.luc/docs/` after first launch.

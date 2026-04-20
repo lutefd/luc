@@ -30,7 +30,7 @@ EOF
 	}
 
 	client, err := New(config.ProviderConfig{}, Spec{
-		Name:    "Meli Gateway",
+		Name:    "Acme Gateway",
 		Command: "./adapter.sh",
 		Args:    []string{requestPath},
 		Dir:     dir,

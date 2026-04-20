@@ -208,11 +208,19 @@ def main() -> None:
             # Track tool_use blocks being accumulated across deltas.
             current_tool: dict[str, Any] | None = None
             input_parts: list[str] = []
+            # input_tokens come from message_start, output_tokens from message_delta.
+            usage: dict[str, Any] = {}
 
             for event in stream:
                 etype = event.type
 
-                if etype == "content_block_start":
+                if etype == "message_start":
+                    if hasattr(event, "message") and event.message:
+                        u = getattr(event.message, "usage", None)
+                        if u and getattr(u, "input_tokens", None):
+                            usage["input_tokens"] = u.input_tokens
+
+                elif etype == "content_block_start":
                     block = event.content_block
                     if block.type == "tool_use":
                         current_tool = {"id": block.id, "name": block.name}
@@ -241,14 +249,9 @@ def main() -> None:
                         input_parts = []
 
                 elif etype == "message_delta":
-                    usage = {}
-                    if hasattr(event, "usage") and event.usage:
-                        u = event.usage
-                        if hasattr(u, "input_tokens") and u.input_tokens:
-                            usage["input_tokens"] = u.input_tokens
-                        if hasattr(u, "output_tokens") and u.output_tokens:
-                            usage["output_tokens"] = u.output_tokens
-
+                    u = getattr(event, "usage", None)
+                    if u and getattr(u, "output_tokens", None):
+                        usage["output_tokens"] = u.output_tokens
                     emit({"type": "done", "completed": True, "usage": usage or None})
 
     except anthropic.APIStatusError as exc:
