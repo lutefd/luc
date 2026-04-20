@@ -32,6 +32,13 @@ type ClientResultEnvelope struct {
 	Result UIResult `json:"result"`
 }
 
+type HostedToolInvokeEnvelope struct {
+	Type      string              `json:"type"`
+	RequestID string              `json:"request_id,omitempty"`
+	Handler   string              `json:"handler"`
+	Tool      ToolRequestEnvelope `json:"tool"`
+}
+
 type HookRequestEnvelope struct {
 	Event            any            `json:"event"`
 	Workspace        map[string]any `json:"workspace,omitempty"`

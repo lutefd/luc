@@ -20,6 +20,10 @@ const (
 	ExtensionEventToolFinished    = "tool.finished"
 	ExtensionEventToolError       = "tool.error"
 	ExtensionEventCompactionDone  = "compaction.completed"
+	ExtensionEventInputTransform  = "input.transform"
+	ExtensionEventPromptContext   = "prompt.context"
+	ExtensionEventToolPreflight   = "tool.preflight"
+	ExtensionEventToolResult      = "tool.result"
 )
 
 type ExtensionRuntime struct {
@@ -48,23 +52,35 @@ type ExtensionHost struct {
 type ExtensionRegistry struct {
 	hosts          []ExtensionHost
 	observeByEvent map[string][]ExtensionHost
+	syncByEvent    map[string][]ExtensionBinding
+}
+
+type ExtensionBinding struct {
+	Host         ExtensionHost
+	Subscription ExtensionSubscription
 }
 
 func NewExtensionRegistry(hosts []ExtensionHost) ExtensionRegistry {
 	reg := ExtensionRegistry{
 		hosts:          append([]ExtensionHost(nil), hosts...),
 		observeByEvent: map[string][]ExtensionHost{},
+		syncByEvent:    map[string][]ExtensionBinding{},
 	}
 	for _, host := range reg.hosts {
 		for _, subscription := range host.Subscriptions {
-			if !strings.EqualFold(strings.TrimSpace(subscription.Mode), ExtensionModeObserve) {
-				continue
-			}
 			event := strings.TrimSpace(subscription.Event)
 			if event == "" {
 				continue
 			}
-			reg.observeByEvent[event] = append(reg.observeByEvent[event], host)
+			switch strings.TrimSpace(subscription.Mode) {
+			case ExtensionModeObserve:
+				reg.observeByEvent[event] = append(reg.observeByEvent[event], host)
+			case ExtensionModeSync:
+				reg.syncByEvent[event] = append(reg.syncByEvent[event], ExtensionBinding{
+					Host:         host,
+					Subscription: subscription,
+				})
+			}
 		}
 	}
 	return reg
@@ -80,6 +96,10 @@ func (r ExtensionRegistry) ObserveSubscribers(event string) []ExtensionHost {
 	return append([]ExtensionHost(nil), r.observeByEvent[strings.TrimSpace(event)]...)
 }
 
+func (r ExtensionRegistry) SyncSubscribers(event string) []ExtensionBinding {
+	return append([]ExtensionBinding(nil), r.syncByEvent[strings.TrimSpace(event)]...)
+}
+
 func SupportsObserveEvent(event string) bool {
 	switch strings.TrimSpace(event) {
 	case ExtensionEventSessionStart,
@@ -89,6 +109,18 @@ func SupportsObserveEvent(event string) bool {
 		ExtensionEventToolFinished,
 		ExtensionEventToolError,
 		ExtensionEventCompactionDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func SupportsSyncEvent(event string) bool {
+	switch strings.TrimSpace(event) {
+	case ExtensionEventInputTransform,
+		ExtensionEventPromptContext,
+		ExtensionEventToolPreflight,
+		ExtensionEventToolResult:
 		return true
 	default:
 		return false
@@ -127,6 +159,7 @@ type ExtensionStorageSnapshotEnvelope struct {
 type ExtensionEventEnvelope struct {
 	Type      string         `json:"type"`
 	Event     string         `json:"event"`
+	RequestID string         `json:"request_id,omitempty"`
 	Sequence  uint64         `json:"sequence,omitempty"`
 	At        string         `json:"at,omitempty"`
 	Payload   any            `json:"payload,omitempty"`
@@ -134,16 +167,57 @@ type ExtensionEventEnvelope struct {
 	Workspace map[string]any `json:"workspace,omitempty"`
 }
 
+type ExtensionDecisionEnvelope struct {
+	Type                string         `json:"type"`
+	RequestID           string         `json:"request_id,omitempty"`
+	Decision            string         `json:"decision,omitempty"`
+	Message             string         `json:"message,omitempty"`
+	Text                string         `json:"text,omitempty"`
+	SystemAppend        []string       `json:"system_append,omitempty"`
+	HiddenContext       []string       `json:"hidden_context,omitempty"`
+	Arguments           map[string]any `json:"arguments,omitempty"`
+	Content             string         `json:"content,omitempty"`
+	Metadata            map[string]any `json:"metadata,omitempty"`
+	Error               string         `json:"error,omitempty"`
+	CollapsedSummary    string         `json:"collapsed_summary,omitempty"`
+	ErrorClassification string         `json:"error_classification,omitempty"`
+}
+
 type ExtensionHostEvent struct {
-	Type            string         `json:"type"`
-	Text            string         `json:"text,omitempty"`
-	Message         string         `json:"message,omitempty"`
-	Progress        string         `json:"progress,omitempty"`
-	Action          *UIAction      `json:"action,omitempty"`
-	Error           string         `json:"error,omitempty"`
-	Scope           string         `json:"scope,omitempty"`
-	Value           any            `json:"value,omitempty"`
-	Data            map[string]any `json:"data,omitempty"`
-	ProtocolVersion int            `json:"protocol_version,omitempty"`
-	Done            bool           `json:"done,omitempty"`
+	Type                string              `json:"type"`
+	RequestID           string              `json:"request_id,omitempty"`
+	Text                string              `json:"text,omitempty"`
+	Message             string              `json:"message,omitempty"`
+	Progress            string              `json:"progress,omitempty"`
+	Action              *UIAction           `json:"action,omitempty"`
+	Decision            string              `json:"decision,omitempty"`
+	SystemAppend        []string            `json:"system_append,omitempty"`
+	HiddenContext       []string            `json:"hidden_context,omitempty"`
+	Arguments           map[string]any      `json:"arguments,omitempty"`
+	Content             string              `json:"content,omitempty"`
+	Metadata            map[string]any      `json:"metadata,omitempty"`
+	Result              *ToolResultEnvelope `json:"result,omitempty"`
+	Error               string              `json:"error,omitempty"`
+	CollapsedSummary    string              `json:"collapsed_summary,omitempty"`
+	ErrorClassification string              `json:"error_classification,omitempty"`
+	Scope               string              `json:"scope,omitempty"`
+	Value               any                 `json:"value,omitempty"`
+	Data                map[string]any      `json:"data,omitempty"`
+	ProtocolVersion     int                 `json:"protocol_version,omitempty"`
+	Done                bool                `json:"done,omitempty"`
+}
+
+func DefaultSyncTimeoutMS(event string) int {
+	switch strings.TrimSpace(event) {
+	case ExtensionEventInputTransform:
+		return 300
+	case ExtensionEventPromptContext:
+		return 500
+	case ExtensionEventToolPreflight:
+		return 500
+	case ExtensionEventToolResult:
+		return 750
+	default:
+		return 500
+	}
 }
