@@ -29,5 +29,5 @@ What it does:
 To install it as a runtime package, copy the directory into:
 
 ```text
-<workspace>/.luc/packages/hybrid-audit@0.1.0/
+<workspace>/.luc/packages/github.com_lutefd_luc-hybrid-audit@v0.1.0/
 ```

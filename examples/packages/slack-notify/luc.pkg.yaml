@@ -1,0 +1,6 @@
+schema: luc.pkg/v1
+module: github.com/lutefd/luc-slack-notify
+version: v0.1.0
+luc_version: ">=0.1.0"
+name: luc-slack-notify
+description: Slack-style notification hook bundle for luc.

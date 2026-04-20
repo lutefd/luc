@@ -1,0 +1,6 @@
+schema: luc.pkg/v1
+module: github.com/lutefd/luc-hybrid-audit
+version: v0.1.0
+luc_version: ">=0.1.0"
+name: luc-hybrid-audit
+description: Hybrid audit runtime bundle for luc.

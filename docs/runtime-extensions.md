@@ -14,8 +14,9 @@ untouched.
 Lookup order:
 
 1. Global user layer: `~/.luc/...`
-2. Installed package assets: `<workspace>/.luc/packages/*/...`
-3. Project override layer: `<workspace>/.luc/...`
+2. User installed package assets: `~/.luc/packages/*/...`
+3. Project installed package assets: `<workspace>/.luc/packages/*/...`
+4. Project override layer: `<workspace>/.luc/...`
 
 Later layers override earlier ones. Within the same layer, later lexicographic
 manifest wins.
@@ -27,6 +28,8 @@ manifest wins.
 Runtime tools live in:
 
 - `~/.luc/tools`
+- `~/.luc/packages/*/tools`
+- `<workspace>/.luc/packages/*/tools`
 - `<workspace>/.luc/tools`
 
 Supported manifest formats:
@@ -110,6 +113,7 @@ Template variables available in `command` and `ui.collapsed_summary`:
 - `.workspace`
 - `.session_id`
 - `.agent_id`
+- `.tool_dir`
 - `.command`
 - `.output`
 - `.timed_out`
@@ -138,6 +142,8 @@ ui:
 Runtime providers live in:
 
 - `~/.luc/providers`
+- `~/.luc/packages/*/providers`
+- `<workspace>/.luc/packages/*/providers`
 - `<workspace>/.luc/providers`
 
 Supported manifest formats:
@@ -221,6 +227,7 @@ For `exec` providers:
 Runtime UI manifests live in:
 
 - `~/.luc/ui`
+- `~/.luc/packages/*/ui`
 - `<workspace>/.luc/packages/*/ui`
 - `<workspace>/.luc/ui`
 
@@ -273,6 +280,7 @@ Runtime UI notes:
 Runtime hook manifests live in:
 
 - `~/.luc/hooks`
+- `~/.luc/packages/*/hooks`
 - `<workspace>/.luc/packages/*/hooks`
 - `<workspace>/.luc/hooks`
 
@@ -322,6 +330,7 @@ Hook notes:
 Runtime extension host manifests live in:
 
 - `~/.luc/extensions`
+- `~/.luc/packages/*/extensions`
 - `<workspace>/.luc/packages/*/extensions`
 - `<workspace>/.luc/extensions`
 
@@ -374,6 +383,8 @@ Runtime skills live in:
 
 - `~/.agents/skills`
 - `~/.luc/skills`
+- `~/.luc/packages/*/skills`
+- `<workspace>/.luc/packages/*/skills`
 - `<workspace>/.agents/skills`
 - `<workspace>/.luc/skills`
 
@@ -434,6 +445,8 @@ Current skill behavior:
 Runtime themes live in:
 
 - `~/.luc/themes`
+- `~/.luc/packages/*/themes`
+- `<workspace>/.luc/packages/*/themes`
 - `<workspace>/.luc/themes`
 
 Supported manifest formats:
@@ -478,6 +491,7 @@ Project prompt overrides the global prompt when both exist.
 Prompt extension manifests live in:
 
 - `~/.luc/prompts`
+- `~/.luc/packages/*/prompts`
 - `<workspace>/.luc/packages/*/prompts`
 - `<workspace>/.luc/prompts`
 
