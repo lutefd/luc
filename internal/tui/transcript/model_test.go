@@ -193,6 +193,47 @@ func TestTranscriptRendersUserImageAttachments(t *testing.T) {
 	}
 }
 
+func TestTranscriptDarkThemeStylesUserMessageBody(t *testing.T) {
+	model := New(theme.Default(theme.VariantDark), theme.VariantDark)
+	model.SetSize(80, 20)
+	model.Apply(history.EventEnvelope{
+		Kind:    "message.user",
+		Payload: history.MessagePayload{ID: "u1", Content: "hard to read"},
+	})
+
+	view := model.View()
+	want := model.theme.UserBubble.Render("hard to read")
+	if !strings.Contains(view, want) {
+		t.Fatalf("expected dark theme user message body to use themed foreground, view=%q want=%q", view, want)
+	}
+}
+
+func TestTranscriptDarkThemeStylesAttachmentName(t *testing.T) {
+	model := New(theme.Default(theme.VariantDark), theme.VariantDark)
+	model.SetSize(80, 20)
+	model.Apply(history.EventEnvelope{
+		Kind: "message.user",
+		Payload: history.MessagePayload{
+			ID: "u1",
+			Attachments: []history.AttachmentPayload{{
+				ID:        "img_1",
+				Name:      "pasted.png",
+				Type:      "image",
+				MediaType: "image/png",
+				Data:      testImageBase64,
+				Width:     1,
+				Height:    1,
+			}},
+		},
+	})
+
+	view := model.View()
+	want := model.theme.UserBubble.Render("pasted.png")
+	if !strings.Contains(view, want) {
+		t.Fatalf("expected attachment name to use themed foreground, view=%q want=%q", view, want)
+	}
+}
+
 func TestTranscriptCollapsesBashOutputInToolCards(t *testing.T) {
 	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
 	model.SetSize(80, 20)

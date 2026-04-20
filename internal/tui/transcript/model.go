@@ -437,7 +437,7 @@ func (m Model) renderBlock(block Block) string {
 	case "user":
 		// Crush-style: per-line left prefix (cyan bar) + content, label above.
 		label := m.theme.UserLabel.Render("You")
-		body := prefixLines(block.Content, width-2, m.theme.UserPrefix.Render("▎"))
+		body := prefixLines(m.theme.UserBubble.Render(block.Content), width-2, m.theme.UserPrefix.Render("▎"))
 		parts := []string{label}
 		if strings.TrimSpace(block.Content) != "" {
 			parts = append(parts, body)
@@ -456,7 +456,7 @@ func (m Model) renderBlock(block Block) string {
 			}
 		}
 		label := m.theme.AssistantLabel.Render("◆ Luc")
-		body := prefixLines(content, width-2, m.theme.AssistantPrefix.Render("▎"))
+		body := prefixLines(m.theme.AssistantBody.Render(content), width-2, m.theme.AssistantPrefix.Render("▎"))
 		return lipgloss.JoinVertical(lipgloss.Left, label, body)
 	case "tool":
 		return m.renderToolBlock(block, width)
@@ -864,7 +864,7 @@ func (m Model) renderAttachmentCardBody(attachment media.Attachment) string {
 	}
 
 	lines := []string{
-		lipgloss.JoinHorizontal(lipgloss.Left, label, " ", name),
+		lipgloss.JoinHorizontal(lipgloss.Left, label, " ", m.theme.UserBubble.Render(name)),
 	}
 	if len(meta) > 0 {
 		lines = append(lines, m.theme.Muted.Render(strings.Join(meta, " • ")))
