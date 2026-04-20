@@ -1,0 +1,14 @@
+schema: luc.provider/v1
+type: exec
+id: anthropic
+name: Anthropic
+command: ./adapter.py
+env:
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+models:
+  - id: claude-opus-4-7
+    name: Claude Opus 4.7
+  - id: claude-sonnet-4-6
+    name: Claude Sonnet 4.6
+  - id: claude-haiku-4-5
+    name: Claude Haiku 4.5
