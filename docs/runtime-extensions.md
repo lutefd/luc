@@ -290,6 +290,45 @@ Hook notes:
 - Supported hook `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
 - Hook failures are logged and surfaced through `hook.failed` history events, but they do not break the session.
 
+### Extension Hosts
+
+Runtime extension host manifests live in:
+
+- `~/.luc/extensions`
+- `<workspace>/.luc/packages/*/extensions`
+- `<workspace>/.luc/extensions`
+
+Phase 1 is observe-only. Extension hosts are long-lived child processes that
+stay attached to the active session over JSONL on stdin/stdout.
+
+Example:
+
+```yaml
+schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+  args: [--jsonl]
+subscriptions:
+  - event: session.start
+  - event: message.assistant.final
+  - event: tool.finished
+```
+
+Extension host notes:
+
+- Hosts are started on session start/open and restarted on `luc reload`.
+- `runtime.command` is executed relative to the extension manifest directory; `runtime.args` and `runtime.env` are optional.
+- Startup sends `hello`, then `storage_snapshot`, then `session_start`.
+- Observe events are currently limited to `session.start`, `session.reload`, `message.assistant.final`, `tool.finished`, `tool.error`, and `compaction.completed`.
+- `session_shutdown` is sent before luc tears a host down for reload, close, or session switch.
+- Host stdout message types in this slice are `ready`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
+- `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- Extension hosts are trusted local processes in this phase. Failures are logged and surfaced through `extension.failed` history events, but the session continues.
+- Sync interception seams and hosted tools are planned, but they are not part of this observe-only slice yet.
+
 ### Skills
 
 Runtime skills live in:
@@ -472,6 +511,9 @@ tools/providers/hooks, for example:
 - `ui.view.open`
 - `ui.command`
 - `hooks.live_events`
+- `extensions.observe_events`
+- `extensions.storage.session`
+- `extensions.storage.workspace`
 
 Unsupported required capabilities do not crash reload. luc skips that
 contribution and records a reload diagnostic instead.
@@ -492,6 +534,7 @@ These runtime surfaces work today without recompiling:
 - providers (`openai-compatible` and `exec`)
 - runtime UI manifests (commands, views, approval policies)
 - hooks
+- extension hosts (`luc.extension/v1`, observe-only)
 - skills
 - themes
 - system prompt
