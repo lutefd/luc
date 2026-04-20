@@ -1,0 +1,10 @@
+schema: luc.tool/v2
+name: session_audit_status
+description: Show the current session-audit extension state.
+runtime:
+  kind: extension
+  extension_id: session-audit
+  handler: status
+input_schema:
+  type: object
+  properties: {}

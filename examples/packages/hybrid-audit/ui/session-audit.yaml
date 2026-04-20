@@ -1,0 +1,20 @@
+schema: luc.ui/v1
+id: session-audit
+commands:
+  - id: session-audit.open
+    name: Open Session Audit
+    action:
+      kind: view.open
+      view_id: session-audit.status
+views:
+  - id: session-audit.status
+    title: Session Audit
+    placement: inspector_tab
+    source_tool: session_audit_status
+    render: json
+approval_policies:
+  - id: session-audit-bash
+    tool_names: [bash]
+    mode: confirm
+    title: Run shell command?
+    body_template: "{{ index .arguments \"command\" }}"

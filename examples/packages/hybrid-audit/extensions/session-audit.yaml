@@ -1,0 +1,12 @@
+schema: luc.extension/v1
+id: session-audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+subscriptions:
+  - event: message.assistant.final
+  - event: tool.finished
+  - event: tool.preflight
+    mode: sync
+    failure_mode: closed
