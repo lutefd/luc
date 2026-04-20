@@ -219,7 +219,7 @@ func (m *Mode) handleCommand(ctx context.Context, command Command) error {
 		if strings.TrimSpace(command.ModelID) == "" {
 			return m.writeError(command.ID, commandType, "model_id is required")
 		}
-		if err := m.controller.SwitchModel(command.ModelID); err != nil {
+		if err := m.controller.SwitchModelForProvider(command.ProviderID, command.ModelID); err != nil {
 			return m.writeError(command.ID, commandType, err.Error())
 		}
 		return m.writeSuccess(command.ID, commandType, m.state())

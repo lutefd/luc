@@ -131,11 +131,15 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 // the provider client. The session remains intact — subsequent turns use
 // the new model.
 func (c *Controller) SwitchModel(modelID string) error {
+	return c.SwitchModelForProvider("", modelID)
+}
+
+func (c *Controller) SwitchModelForProvider(providerID, modelID string) error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
 
 	reg := c.Registry()
-	model, providerDef, ok := reg.FindModel(modelID)
+	model, providerDef, ok := reg.FindModel(providerID, modelID)
 	if !ok {
 		// Allow arbitrary model IDs (e.g. fine-tuned names) not in the
 		// registry — just set the name and keep the current provider.

@@ -23,6 +23,7 @@ type Command struct {
 	Scope        string            `json:"scope,omitempty"`
 	SinceSeq     uint64            `json:"since_seq,omitempty"`
 	SessionID    string            `json:"session_id,omitempty"`
+	ProviderID   string            `json:"provider_id,omitempty"`
 	ModelID      string            `json:"model_id,omitempty"`
 	Message      string            `json:"message,omitempty"`
 	Attachments  []AttachmentInput `json:"attachments,omitempty"`

@@ -1467,7 +1467,7 @@ models:
 		t.Fatal(err)
 	}
 
-	model, providerDef, ok := reg.FindModel("private-model")
+	model, providerDef, ok := reg.FindModel("", "private-model")
 	if !ok {
 		t.Fatalf("expected runtime provider model in registry, got %#v", reg.AllModels())
 	}
@@ -1555,7 +1555,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := controller.Registry().FindModel("private-model"); !ok {
+	if _, _, ok := controller.Registry().FindModel("", "private-model"); !ok {
 		t.Fatalf("expected runtime provider model in controller registry, got %#v", controller.Registry().AllModels())
 	}
 

@@ -92,9 +92,23 @@ func (r *Registry) AllModels() []ModelDef {
 }
 
 // FindModel returns the model and its provider definition by model ID.
-func (r *Registry) FindModel(modelID string) (ModelDef, ProviderDef, bool) {
+// When providerID is non-empty it is used as a hint: if the named provider
+// has a matching model it is returned first, otherwise the search falls back
+// to all providers. This ensures that two providers with the same model ID
+// (e.g. a gateway and a direct provider both offering claude-opus-4-7) can
+// be distinguished by the caller.
+func (r *Registry) FindModel(providerID, modelID string) (ModelDef, ProviderDef, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if providerID != "" {
+		if p, ok := r.providers[providerID]; ok {
+			for _, m := range p.Models {
+				if m.ID == modelID {
+					return m, p, true
+				}
+			}
+		}
+	}
 	for _, pid := range r.order {
 		p := r.providers[pid]
 		for _, m := range p.Models {

@@ -550,7 +550,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case modelspicker.Selected:
-		if err := m.controller.SwitchModel(msg.ModelID); err != nil {
+		if err := m.controller.SwitchModelForProvider(msg.ProviderID, msg.ModelID); err != nil {
 			m.setStatus("Error: " + err.Error())
 		} else {
 			m.inspector.SetSessionMeta(m.controller.Session())

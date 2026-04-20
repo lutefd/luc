@@ -264,7 +264,7 @@ func (c *Controller) rawSessionEvents() []history.EventEnvelope {
 }
 
 func (c *Controller) currentContextWindow() int {
-	model, _, ok := c.Registry().FindModel(c.config.Provider.Model)
+	model, _, ok := c.Registry().FindModel(c.config.Provider.Kind, c.config.Provider.Model)
 	if ok && model.ContextK > 0 {
 		return model.ContextK * 1000
 	}
