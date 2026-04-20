@@ -63,16 +63,17 @@ func init() {
 }
 
 type Controller struct {
-	workspace workspace.Info
-	config    config.Config
-	store     *history.Store
-	logger    *logging.Manager
-	provider  provider.Provider
-	registry  *provider.Registry
-	tools     *tools.Manager
-	uiBroker  luruntime.UIBroker
-	hostCaps  []string
-	runtime   luruntime.ContributionSet
+	workspace      workspace.Info
+	config         config.Config
+	store          *history.Store
+	logger         *logging.Manager
+	provider       provider.Provider
+	registry       *provider.Registry
+	tools          *tools.Manager
+	uiBroker       luruntime.UIBroker
+	hostCaps       []string
+	runtime        luruntime.ContributionSet
+	extensionHosts *extensionSupervisor
 
 	session  history.SessionMeta
 	events   chan history.EventEnvelope
@@ -246,6 +247,7 @@ func (c *Controller) CancelTurn() bool {
 }
 
 func (c *Controller) Close() error {
+	c.shutdownExtensionHosts(context.Background(), "close")
 	if c.store == nil {
 		return nil
 	}
@@ -497,6 +499,8 @@ func (c *Controller) Reload(ctx context.Context) error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
 
+	c.shutdownExtensionHosts(ctx, "reload")
+
 	cfg, err := config.Load(c.workspace.Root)
 	if err != nil {
 		c.emit("reload.failed", history.ReloadPayload{Version: c.version.Load(), Error: err.Error()})
@@ -570,6 +574,7 @@ func (c *Controller) Reload(ctx context.Context) error {
 	for _, diagnostic := range runtimeSet.Diagnostics {
 		c.logger.Ring.Add("warn", diagnostic.Message)
 	}
+	c.restartExtensionHosts(ctx, "")
 	version := c.version.Add(1)
 	c.emit("reload.finished", history.ReloadPayload{Version: version})
 	c.logger.Ring.Add("info", fmt.Sprintf("reload finished: runtime version %d", version))
@@ -904,6 +909,7 @@ func (c *Controller) emit(kind string, payload any) {
 		c.logger.Ring.Add("warn", "dropping UI event because channel is full")
 	}
 	c.dispatchHooks(ev)
+	c.dispatchExtensionObserveEvents(ev)
 }
 
 func (c *Controller) mirrorEventToLogs(kind string, payload any) {
@@ -995,6 +1001,8 @@ func (c *Controller) loadLatestSession() error {
 }
 
 func (c *Controller) applySession(meta history.SessionMeta, events []history.EventEnvelope) error {
+	c.shutdownExtensionHosts(context.Background(), "session_switch")
+
 	if err := c.configureSessionProvider(meta); err != nil {
 		return err
 	}
@@ -1016,6 +1024,7 @@ func (c *Controller) applySession(meta history.SessionMeta, events []history.Eve
 		}
 	}
 	c.rebuildReplayState()
+	c.restartExtensionHosts(context.Background(), luruntime.ExtensionEventSessionStart)
 
 	return nil
 }
