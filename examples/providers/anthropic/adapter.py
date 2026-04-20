@@ -33,6 +33,11 @@ THINKING_MODELS = {
     "claude-3-7-sonnet-latest",
 }
 
+# Models that do not accept the temperature parameter.
+TEMPERATURE_UNSUPPORTED_MODELS = {
+    "claude-opus-4-7",
+}
+
 
 def emit(obj: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -192,7 +197,7 @@ def main() -> None:
         kwargs["system"] = system
     if tools:
         kwargs["tools"] = tools
-    if temperature != 1.0:
+    if temperature != 1.0 and model not in TEMPERATURE_UNSUPPORTED_MODELS:
         kwargs["temperature"] = temperature
 
     # Extended thinking: opt-in for supported models via env var.
