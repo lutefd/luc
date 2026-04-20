@@ -18,6 +18,7 @@ func EnsureGlobalRuntime() error {
 
 	dirs := []string{
 		root,
+		filepath.Join(root, "packages"),
 		filepath.Join(root, "tools"),
 		filepath.Join(root, "providers"),
 		filepath.Join(root, "ui"),

@@ -61,6 +61,7 @@ func ensureStateDirs(info Info) error {
 		filepath.Join(info.StateDir, "history"),
 		filepath.Join(info.StateDir, "history", "sessions"),
 		filepath.Join(info.StateDir, "logs"),
+		filepath.Join(info.StateDir, "packages"),
 		filepath.Join(info.StateDir, "extensions"),
 		filepath.Join(info.StateDir, "extensions", "sessions"),
 		filepath.Join(info.StateDir, "extensions", "workspace"),

@@ -312,21 +312,29 @@ func layeredManifestFiles(workspaceRoot, category string) ([]string, error) {
 }
 
 func runtimePackageDirs(workspaceRoot, category string) ([]string, error) {
-	root := filepath.Join(workspaceRoot, ".luc", "packages")
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	var dirs []string
+	roots := []string{}
+	globalRoot, err := configRoot()
 	if err != nil {
 		return nil, err
 	}
+	roots = append(roots, filepath.Join(globalRoot, "packages"))
+	roots = append(roots, filepath.Join(workspaceRoot, ".luc", "packages"))
 
-	var dirs []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		dirs = append(dirs, filepath.Join(root, entry.Name(), category))
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dirs = append(dirs, filepath.Join(root, entry.Name(), category))
+		}
 	}
 	sort.Strings(dirs)
 	return dirs, nil
