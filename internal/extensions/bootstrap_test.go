@@ -36,6 +36,9 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 			t.Fatalf("expected %q to exist: %v", dir, err)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(root, bootstrapStateFile)); err != nil {
+		t.Fatalf("expected bootstrap state file to exist: %v", err)
+	}
 
 	for _, path := range []string{
 		filepath.Join(root, "skills", "runtime-extension-authoring", "luc.yaml"),
@@ -141,12 +144,12 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	}
 }
 
-func TestEnsureGlobalRuntimeDoesNotOverwriteExistingAssets(t *testing.T) {
+func TestEnsureGlobalRuntimeDoesNotOverwriteManagedAssetsWithinSameBootstrapVersion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	path := filepath.Join(home, ".luc", "skills", "skill-usage", "SKILL.md")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := EnsureGlobalRuntime(); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("custom"), 0o644); err != nil {
@@ -166,6 +169,92 @@ func TestEnsureGlobalRuntimeDoesNotOverwriteExistingAssets(t *testing.T) {
 	}
 }
 
+func TestEnsureGlobalRuntimeRefreshesManagedAssetsWhenBootstrapDigestChanges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := EnsureGlobalRuntime(); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(home, ".luc")
+	path := filepath.Join(root, "skills", "skill-usage", "SKILL.md")
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, bootstrapStateFile), []byte("outdated-digest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureGlobalRuntime(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetMap, digest, err := expectedBootstrapAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != assetMap[filepath.Join("skills", "skill-usage", "SKILL.md")] {
+		t.Fatalf("expected managed asset to refresh to embedded content, got %q", string(data))
+	}
+	state, err := os.ReadFile(filepath.Join(root, bootstrapStateFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(state)) != digest {
+		t.Fatalf("expected bootstrap digest %q, got %q", digest, strings.TrimSpace(string(state)))
+	}
+}
+
+func TestEnsureGlobalRuntimeRefreshesLegacyManagedAssetsWithoutTouchingUserSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, ".luc")
+	managedPath := filepath.Join(root, "skills", "skill-usage", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(managedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managedPath, []byte("legacy-managed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	userSkillPath := filepath.Join(root, "skills", "custom-user-skill", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(userSkillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userSkillPath, []byte("user-skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureGlobalRuntime(); err != nil {
+		t.Fatal(err)
+	}
+
+	assetMap, _, err := expectedBootstrapAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedData, err := os.ReadFile(managedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(managedData) != assetMap[filepath.Join("skills", "skill-usage", "SKILL.md")] {
+		t.Fatalf("expected legacy managed asset to refresh to embedded content, got %q", string(managedData))
+	}
+	userData, err := os.ReadFile(userSkillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(userData) != "user-skill" {
+		t.Fatalf("expected user skill to remain untouched, got %q", string(userData))
+	}
+}
+
 func TestEnsureGlobalRuntimeMirrorsEmbeddedBootstrapAssetsExactly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -175,22 +264,7 @@ func TestEnsureGlobalRuntimeMirrorsEmbeddedBootstrapAssetsExactly(t *testing.T) 
 	}
 
 	root := filepath.Join(home, ".luc")
-	expected := map[string]string{}
-	err := fs.WalkDir(bootstrapAssets, bootstrapAssetRoot, func(assetPath string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if assetPath == bootstrapAssetRoot || d.IsDir() {
-			return nil
-		}
-		relPath := filepath.FromSlash(strings.TrimPrefix(assetPath, bootstrapAssetRoot+"/"))
-		data, err := fs.ReadFile(bootstrapAssets, assetPath)
-		if err != nil {
-			return err
-		}
-		expected[relPath] = string(data)
-		return nil
-	})
+	expected, _, err := expectedBootstrapAssets()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +280,9 @@ func TestEnsureGlobalRuntimeMirrorsEmbeddedBootstrapAssetsExactly(t *testing.T) 
 		relPath, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
+		}
+		if relPath == bootstrapStateFile {
+			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -230,6 +307,18 @@ func TestEnsureGlobalRuntimeMirrorsEmbeddedBootstrapAssetsExactly(t *testing.T) 
 			t.Fatalf("expected bootstrapped file %q to match embedded asset", relPath)
 		}
 	}
+}
+
+func expectedBootstrapAssets() (map[string]string, string, error) {
+	assets, digest, err := bootstrapAssetManifest()
+	if err != nil {
+		return nil, "", err
+	}
+	expected := make(map[string]string, len(assets))
+	for _, asset := range assets {
+		expected[filepath.FromSlash(asset.RelPath)] = string(asset.Data)
+	}
+	return expected, digest, nil
 }
 
 func containsAll(s string, needles ...string) bool {
