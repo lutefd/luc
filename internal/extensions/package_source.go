@@ -317,10 +317,23 @@ func moduleHasPrefix(module, prefix string) bool {
 }
 
 func resolveLatestGitTag(repoURL string) (string, error) {
-	cmd := exec.Command("git", "ls-remote", "--tags", "--refs", repoURL)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("resolve latest tag for %s: %w", repoURL, err)
+	urls := gitRemoteCandidates(repoURL)
+	var (
+		out     []byte
+		lastErr error
+	)
+	for _, candidate := range urls {
+		cmd := exec.Command("git", "ls-remote", "--tags", "--refs", candidate)
+		output, err := cmd.Output()
+		if err == nil {
+			out = output
+			lastErr = nil
+			break
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("resolve latest tag for %s: %w", repoURL, lastErr)
 	}
 	var tags []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -346,32 +359,153 @@ func resolveLatestGitTag(repoURL string) (string, error) {
 }
 
 func cloneGitRevision(repoURL, revision string) (string, func() error, error) {
-	tempDir, err := os.MkdirTemp("", "luc-pkg-git-*")
-	if err != nil {
-		return "", nil, err
-	}
-	cleanup := func() error { return os.RemoveAll(tempDir) }
+	urls := gitRemoteCandidates(repoURL)
+	var lastErr error
+	for _, candidate := range urls {
+		tempDir, err := os.MkdirTemp("", "luc-pkg-git-*")
+		if err != nil {
+			return "", nil, err
+		}
+		cleanup := func() error { return os.RemoveAll(tempDir) }
 
-	if semver.IsValid(canonicalSemver(revision)) {
-		cmd := exec.Command("git", "clone", "--depth", "1", "--branch", revision, repoURL, tempDir)
+		if semver.IsValid(canonicalSemver(revision)) {
+			cmd := exec.Command("git", "clone", "--depth", "1", "--branch", revision, candidate, tempDir)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				_ = cleanup()
+				lastErr = fmt.Errorf("clone %s@%s: %v: %s", candidate, revision, err, strings.TrimSpace(string(out)))
+				continue
+			}
+			return tempDir, cleanup, nil
+		}
+
+		cmd := exec.Command("git", "clone", candidate, tempDir)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			_ = cleanup()
-			return "", nil, fmt.Errorf("clone %s@%s: %v: %s", repoURL, revision, err, strings.TrimSpace(string(out)))
+			lastErr = fmt.Errorf("clone %s: %v: %s", candidate, err, strings.TrimSpace(string(out)))
+			continue
+		}
+		checkout := exec.Command("git", "-C", tempDir, "checkout", "--detach", revision)
+		if out, err := checkout.CombinedOutput(); err != nil {
+			_ = cleanup()
+			lastErr = fmt.Errorf("checkout %s: %v: %s", revision, err, strings.TrimSpace(string(out)))
+			continue
 		}
 		return tempDir, cleanup, nil
 	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("clone %s: no candidate URLs", repoURL)
+	}
+	return "", nil, lastErr
+}
 
-	cmd := exec.Command("git", "clone", repoURL, tempDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		_ = cleanup()
-		return "", nil, fmt.Errorf("clone %s: %v: %s", repoURL, err, strings.TrimSpace(string(out)))
+// gitRemoteCandidates returns a list of git remote URLs to try for the given
+// repository, preferring SSH (scp-like) over HTTPS when possible. Enterprise
+// networks frequently block outbound HTTPS to public git hosts, so we try SSH
+// first and fall back to HTTPS. Inputs that are already SSH, git://, file://
+// or unrecognized schemes are returned as-is (with no fallback duplicates).
+func gitRemoteCandidates(repoURL string) []string {
+	repoURL = strings.TrimSpace(repoURL)
+	if repoURL == "" {
+		return nil
 	}
-	checkout := exec.Command("git", "-C", tempDir, "checkout", "--detach", revision)
-	if out, err := checkout.CombinedOutput(); err != nil {
-		_ = cleanup()
-		return "", nil, fmt.Errorf("checkout %s: %v: %s", revision, err, strings.TrimSpace(string(out)))
+
+	// Already an SSH URL (scp-like, e.g. git@github.com:owner/repo.git) or
+	// ssh:// scheme — try it first, fall back to derived HTTPS if we can.
+	if strings.HasPrefix(repoURL, "ssh://") || isScpLikeGitURL(repoURL) {
+		if https, ok := sshToHTTPS(repoURL); ok && https != repoURL {
+			return []string{repoURL, https}
+		}
+		return []string{repoURL}
 	}
-	return tempDir, cleanup, nil
+
+	// HTTPS/HTTP — try SSH first, fall back to the original HTTPS URL.
+	if strings.HasPrefix(repoURL, "https://") || strings.HasPrefix(repoURL, "http://") {
+		if ssh, ok := httpsToSSH(repoURL); ok {
+			return []string{ssh, repoURL}
+		}
+		return []string{repoURL}
+	}
+
+	// git://, file://, or anything else — use as-is.
+	return []string{repoURL}
+}
+
+// httpsToSSH converts an https://host/owner/repo(.git) URL to the scp-like
+// SSH form git@host:owner/repo.git. Returns false if the URL cannot be
+// meaningfully converted (missing host or path).
+func httpsToSSH(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	host := u.Host
+	if host == "" {
+		return "", false
+	}
+	// Strip any user info / port — SSH expects just the hostname with the
+	// default git user.
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if colon := strings.Index(host, ":"); colon >= 0 {
+		host = host[:colon]
+	}
+	path := strings.TrimPrefix(u.Path, "/")
+	if path == "" {
+		return "", false
+	}
+	if !strings.HasSuffix(path, ".git") {
+		path += ".git"
+	}
+	return "git@" + host + ":" + path, true
+}
+
+// sshToHTTPS converts an SSH URL (either scp-like git@host:owner/repo.git or
+// ssh://git@host/owner/repo.git) into its https://host/owner/repo equivalent.
+func sshToHTTPS(raw string) (string, bool) {
+	if strings.HasPrefix(raw, "ssh://") {
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || u.Path == "" {
+			return "", false
+		}
+		host := u.Hostname()
+		path := strings.TrimPrefix(u.Path, "/")
+		if path == "" {
+			return "", false
+		}
+		return "https://" + host + "/" + path, true
+	}
+	if isScpLikeGitURL(raw) {
+		// git@host:owner/repo.git
+		at := strings.Index(raw, "@")
+		colon := strings.Index(raw, ":")
+		if at < 0 || colon < 0 || colon <= at+1 {
+			return "", false
+		}
+		host := raw[at+1 : colon]
+		path := raw[colon+1:]
+		if host == "" || path == "" {
+			return "", false
+		}
+		return "https://" + host + "/" + path, true
+	}
+	return "", false
+}
+
+// isScpLikeGitURL reports whether raw looks like the scp-style SSH form
+// git@host:owner/repo.git (no scheme, user@host:path).
+func isScpLikeGitURL(raw string) bool {
+	if strings.Contains(raw, "://") {
+		return false
+	}
+	at := strings.Index(raw, "@")
+	colon := strings.Index(raw, ":")
+	if at < 0 || colon < 0 || colon <= at {
+		return false
+	}
+	// Guard against Windows-style drive letters (C:\...) by requiring the
+	// '@' to appear before the ':'.
+	return at < colon
 }
 
 func downloadAndExtractPackageArchive(url string) (string, func() error, error) {
