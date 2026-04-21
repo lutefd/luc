@@ -21,6 +21,8 @@ Lookup order:
 Later layers override earlier ones. Within the same layer, later lexicographic
 manifest wins.
 
+The user and project package layers are populated by `luc pkg install`.
+
 ## Supported Runtime Surfaces
 
 ### Tools
@@ -388,6 +390,9 @@ Runtime skills live in:
 - `<workspace>/.agents/skills`
 - `<workspace>/.luc/skills`
 
+That means `luc pkg install` can ship reusable skills without copying them into
+`~/.luc/skills` directly.
+
 Preferred format:
 
 - `skill-name/SKILL.md`
@@ -448,6 +453,9 @@ Runtime themes live in:
 - `~/.luc/packages/*/themes`
 - `<workspace>/.luc/packages/*/themes`
 - `<workspace>/.luc/themes`
+
+That means `luc pkg install` can ship reusable themes without copying them into
+`~/.luc/themes` directly.
 
 Supported manifest formats:
 

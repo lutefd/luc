@@ -8,20 +8,21 @@ proposing core code changes.
 Use this lookup order:
 
 1. Global base layer in `~/.luc/...`
-2. Installed package layer in `<workspace>/.luc/packages/*/...`
-3. Project-local override in `<workspace>/.luc/...`
+2. User installed package layer in `~/.luc/packages/*/...`
+3. Project installed package layer in `<workspace>/.luc/packages/*/...`
+4. Project-local override in `<workspace>/.luc/...`
 
 Supported runtime extension types:
 
-- Tools in `~/.luc/tools` and `<workspace>/.luc/tools`
-- Extension hosts in `~/.luc/extensions`, `<workspace>/.luc/packages/*/extensions`, and `<workspace>/.luc/extensions`
-- Providers in `~/.luc/providers` and `<workspace>/.luc/providers`
-- UI manifests in `~/.luc/ui`, `<workspace>/.luc/packages/*/ui`, and `<workspace>/.luc/ui`
-- Hook manifests in `~/.luc/hooks`, `<workspace>/.luc/packages/*/hooks`, and `<workspace>/.luc/hooks`
-- Skills in `~/.luc/skills`, `<workspace>/.luc/skills`, `~/.agents/skills`, and `<workspace>/.agents/skills`
-- Themes in `~/.luc/themes` and `<workspace>/.luc/themes`
+- Tools in `~/.luc/tools`, `~/.luc/packages/*/tools`, `<workspace>/.luc/packages/*/tools`, and `<workspace>/.luc/tools`
+- Extension hosts in `~/.luc/extensions`, `~/.luc/packages/*/extensions`, `<workspace>/.luc/packages/*/extensions`, and `<workspace>/.luc/extensions`
+- Providers in `~/.luc/providers`, `~/.luc/packages/*/providers`, `<workspace>/.luc/packages/*/providers`, and `<workspace>/.luc/providers`
+- UI manifests in `~/.luc/ui`, `~/.luc/packages/*/ui`, `<workspace>/.luc/packages/*/ui`, and `<workspace>/.luc/ui`
+- Hook manifests in `~/.luc/hooks`, `~/.luc/packages/*/hooks`, `<workspace>/.luc/packages/*/hooks`, and `<workspace>/.luc/hooks`
+- Skills in `~/.agents/skills`, `~/.luc/skills`, `~/.luc/packages/*/skills`, `<workspace>/.luc/packages/*/skills`, `<workspace>/.agents/skills`, and `<workspace>/.luc/skills`
+- Themes in `~/.luc/themes`, `~/.luc/packages/*/themes`, `<workspace>/.luc/packages/*/themes`, and `<workspace>/.luc/themes`
 - System prompt overrides in `~/.luc/prompts/system.md` and `<workspace>/.luc/prompts/system.md`
-- Prompt extension manifests in `~/.luc/prompts`, `<workspace>/.luc/packages/*/prompts`, and `<workspace>/.luc/prompts`
+- Prompt extension manifests in `~/.luc/prompts`, `~/.luc/packages/*/prompts`, `<workspace>/.luc/packages/*/prompts`, and `<workspace>/.luc/prompts`
 
 Authoring workflow:
 
@@ -37,6 +38,7 @@ Authoring workflow:
 Rules:
 
 - Do not suggest recompiling for tools, providers, skills, themes, UI, or hooks unless runtime limits make that unavoidable.
+- `luc pkg install` populates the user and project package layers, including package-backed skills and themes.
 - For a simple shell-style runtime tool, provide `name`, `description`, `command`, `schema`, and optional `ui`.
 - For a capability-enabled tool, use `schema: luc.tool/v1` with `runtime.kind: exec`, optional `runtime.capabilities`, and `input_schema`.
 - For a stateful hosted tool, use `schema: luc.tool/v2` with `runtime.kind: extension`, `runtime.extension_id`, `runtime.handler`, and `input_schema`.

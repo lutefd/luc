@@ -6,7 +6,7 @@ luc does know how to use runtime skills, but the behavior is currently simple.
 
 What happens now:
 
-- Skills are discovered from `~/.luc/skills`, `<workspace>/.luc/skills`, `~/.agents/skills`, and `<workspace>/.agents/skills`, with project-local overrides winning.
+- Skills are discovered from `~/.agents/skills`, `~/.luc/skills`, `~/.luc/packages/*/skills`, `<workspace>/.luc/packages/*/skills`, `<workspace>/.agents/skills`, and `<workspace>/.luc/skills`, with later layers overriding earlier ones.
 - Preferred skill shape is `skill-name/SKILL.md`.
 - `luc.yaml` is optional metadata for the skill package, mainly `interface.display_name` and `interface.short_description`.
 - On each user request, luc sends a compact skill catalog in the system prompt rather than preloading full skill bodies.
@@ -15,6 +15,7 @@ What happens now:
 - `load_skill` returns the full `SKILL.md` body once per session, so luc does not reinject the body into the system prompt on every turn.
 - If a loaded skill references bundled files, the model can fetch them with `read_skill_resource`.
 - Top-level standalone `.md` files still work as a compatibility fallback.
+- `luc pkg install` can contribute runtime skills through the package-layer directories above.
 
 What this means in practice:
 

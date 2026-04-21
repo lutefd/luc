@@ -6,9 +6,10 @@ Create luc themes as YAML or JSON manifests.
 
 Location:
 
-- Prefer `~/.luc/themes/<name>.yaml` for user-wide themes.
+- Prefer `~/.luc/themes/<name>.yaml` for a user-wide hand-authored theme.
+- Use `luc pkg install` when the theme should ship as a reusable package; packaged themes are discovered from `~/.luc/packages/*/themes` and `<workspace>/.luc/packages/*/themes`.
 - Use `<workspace>/.luc/themes/<name>.yaml` only when the user wants a project-local override.
-- Workspace themes override home themes with the same name.
+- Later layers win: project-local theme files override package-installed themes, and project package themes override user-scope themes with the same name.
 - The filename without the extension is the theme ID users select in luc.
 
 Manifest shape:
@@ -43,6 +44,6 @@ Activation:
 
 When creating a theme for the user:
 
-- Prefer the global `~/.luc/themes` layer unless they explicitly want a project-specific override.
+- Prefer the global `~/.luc/themes` layer for direct local authoring unless they explicitly want a project-specific override or a packaged distribution path.
 - Keep the palette intentional instead of changing every token by default.
 - Mention the theme name they should select or persist in config.

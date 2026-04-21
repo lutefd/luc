@@ -28,8 +28,9 @@ func builtinSkills() []Skill {
 			Prompt: `Create luc themes as YAML or JSON manifests. Follow these rules:
 
 LOCATION
-- Prefer ` + "`~/.luc/themes/<name>.yaml`" + ` for user-wide themes.
-- Use ` + "`<workspace>/.luc/themes/<name>.yaml`" + ` only when the user wants a project-local override. Workspace themes take precedence over home themes with the same name.
+- Prefer ` + "`~/.luc/themes/<name>.yaml`" + ` for a user-wide hand-authored theme.
+- Use ` + "`luc pkg install`" + ` when the theme should ship as a reusable package; packaged themes are discovered from ` + "`~/.luc/packages/*/themes`" + ` and ` + "`<workspace>/.luc/packages/*/themes`" + `.
+- Use ` + "`<workspace>/.luc/themes/<name>.yaml`" + ` only when the user wants a project-local override. Project-local theme files take precedence over package-installed and home themes with the same name.
 - The filename (sans extension) is the theme ID used to select it.
 
 MANIFEST SHAPE
