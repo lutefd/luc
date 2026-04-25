@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -60,6 +61,7 @@ type HostedToolInvoker interface {
 }
 
 type Manager struct {
+	mu            sync.RWMutex
 	workspace     string
 	tools         map[string]Tool
 	dynamicTools  map[string]string
@@ -96,10 +98,14 @@ func NewManager(workspaceRoot string) (*Manager, error) {
 }
 
 func (m *Manager) Version() uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.version
 }
 
 func (m *Manager) Specs() []provider.ToolSpec {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := make([]provider.ToolSpec, 0, len(m.tools))
 	for _, tool := range m.tools {
 		out = append(out, tool.Spec())
@@ -108,6 +114,8 @@ func (m *Manager) Specs() []provider.ToolSpec {
 }
 
 func (m *Manager) RegisterDynamicTools(extensionID string, defs []extensions.ToolDef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	extensionID = strings.TrimSpace(extensionID)
 	if extensionID == "" {
 		return errors.New("dynamic tool extension id is required")
@@ -150,7 +158,9 @@ func (m *Manager) RegisterDynamicTools(extensionID string, defs []extensions.Too
 }
 
 func (m *Manager) Run(ctx context.Context, req Request) (Result, error) {
+	m.mu.RLock()
 	tool, ok := m.tools[req.Name]
+	m.mu.RUnlock()
 	if !ok {
 		return Result{}, fmt.Errorf("unknown tool %q", req.Name)
 	}
@@ -159,10 +169,12 @@ func (m *Manager) Run(ctx context.Context, req Request) (Result, error) {
 }
 
 func (m *Manager) SetHostedToolInvoker(invoker HostedToolInvoker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.hostedInvoker = invoker
 	for _, tool := range m.tools {
 		if runtimeTool, ok := tool.(*runtimeTool); ok {
-			runtimeTool.hostedInvoker = invoker
+			runtimeTool.setHostedInvoker(invoker)
 		}
 	}
 }
@@ -505,6 +517,7 @@ func buildDiff(path, before, after string) string {
 }
 
 type runtimeTool struct {
+	mu            sync.RWMutex
 	workspace     string
 	def           extensions.ToolDef
 	hostedInvoker HostedToolInvoker
@@ -518,12 +531,25 @@ func (t *runtimeTool) Spec() provider.ToolSpec {
 	}
 }
 
+func (t *runtimeTool) setHostedInvoker(invoker HostedToolInvoker) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.hostedInvoker = invoker
+}
+
+func (t *runtimeTool) hostedInvokerSnapshot() HostedToolInvoker {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.hostedInvoker
+}
+
 func (t *runtimeTool) Run(ctx context.Context, req Request) (Result, error) {
 	if t.def.RuntimeKind == "extension" {
-		if t.hostedInvoker == nil {
+		invoker := t.hostedInvokerSnapshot()
+		if invoker == nil {
 			return Result{}, fmt.Errorf("hosted tool %s has no extension invoker", t.def.Name)
 		}
-		return t.hostedInvoker.InvokeHostedTool(ctx, t.def, req)
+		return invoker.InvokeHostedTool(ctx, t.def, req)
 	}
 	if luruntime.HasCapability(t.def.Capabilities, luruntime.CapabilityStructuredIO) {
 		return t.runStructured(ctx, req)
