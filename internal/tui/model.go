@@ -628,6 +628,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case runRuntimeCommandMsg:
 		return m, m.handleRuntimeCommand(msg.CommandID)
+	case runtimeToolActionDoneMsg:
+		if msg.Err != nil {
+			m.setStatus("Tool failed: " + msg.Err.Error())
+		} else if strings.EqualFold(strings.TrimSpace(msg.Presentation), "status") || strings.TrimSpace(msg.Presentation) == "" {
+			m.setStatus("Tool finished: " + msg.ToolName)
+		}
+		return m, nil
 	case runtimeViewLoadedMsg:
 		if msg.Err != nil {
 			if m.runtimePage.open && m.runtimePage.view.ID == msg.ViewID {

@@ -39,6 +39,13 @@ type runtimeViewLoadedMsg struct {
 	Err       error
 }
 
+type runtimeToolActionDoneMsg struct {
+	ActionID     string
+	ToolName     string
+	Presentation string
+	Err          error
+}
+
 type runtimePageState struct {
 	open    bool
 	view    luruntime.RuntimeView
@@ -90,6 +97,36 @@ func waitForUIBroker(ch <-chan uiBrokerRequest) tea.Cmd {
 			return nil
 		}
 		return uiBrokerActionMsg{request: request}
+	}
+}
+
+func runtimeToolActionCmd(controller *kernel.Controller, action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
+	return func() tea.Msg {
+		result, err := controller.RunRuntimeToolAction(context.Background(), action.ToolName, action.Arguments)
+		if response != nil {
+			reply := uiBrokerResponse{
+				result: luruntime.UIResult{
+					ActionID: action.ID,
+					Accepted: err == nil,
+					Data: map[string]any{
+						"tool_name": action.ToolName,
+						"content":   result.Content,
+						"metadata":  result.Metadata,
+					},
+				},
+				err: err,
+			}
+			select {
+			case response <- reply:
+			default:
+			}
+		}
+		return runtimeToolActionDoneMsg{
+			ActionID:     action.ID,
+			ToolName:     action.ToolName,
+			Presentation: action.Result.Presentation,
+			Err:          err,
+		}
 	}
 }
 
@@ -223,6 +260,11 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 		Kind:      command.ActionKind,
 		ViewID:    command.ViewID,
 		CommandID: command.CommandID,
+		ToolName:  command.ToolName,
+		Arguments: command.Arguments,
+		Result: luruntime.UIActionResult{
+			Presentation: command.Result.Presentation,
+		},
 	}, nil)
 }
 
@@ -254,6 +296,9 @@ func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiB
 	case "command.run":
 		m.replyRuntimeAction(response, luruntime.UIResult{ActionID: action.ID, Accepted: true}, nil)
 		return m.handleRuntimeCommand(action.CommandID)
+	case "tool.run":
+		m.setStatus("Running " + action.ToolName + "...")
+		return runtimeToolActionCmd(m.controller, action, response)
 	default:
 		m.replyRuntimeAction(response, luruntime.UIResult{ActionID: action.ID}, fmt.Errorf("unsupported runtime action %q", action.Kind))
 		return nil
