@@ -30,13 +30,36 @@ type RuntimeActionResult struct {
 	Presentation string `json:"presentation,omitempty"`
 }
 
+type RuntimeAction struct {
+	Kind      string              `json:"kind,omitempty"`
+	Title     string              `json:"title,omitempty"`
+	Body      string              `json:"body,omitempty"`
+	Render    string              `json:"render,omitempty"`
+	Input     UIActionInput       `json:"input,omitempty"`
+	Options   []UIOption          `json:"options,omitempty"`
+	ViewID    string              `json:"view_id,omitempty"`
+	CommandID string              `json:"command_id,omitempty"`
+	ToolName  string              `json:"tool_name,omitempty"`
+	Arguments map[string]any      `json:"arguments,omitempty"`
+	Result    RuntimeActionResult `json:"result,omitempty"`
+}
+
+type RuntimeViewAction struct {
+	ID         string        `json:"id"`
+	Label      string        `json:"label"`
+	Shortcut   string        `json:"shortcut,omitempty"`
+	Action     RuntimeAction `json:"action"`
+	SourcePath string        `json:"source_path,omitempty"`
+}
+
 type RuntimeView struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Placement  string `json:"placement"`
-	SourceTool string `json:"source_tool"`
-	Render     string `json:"render"`
-	SourcePath string `json:"source_path,omitempty"`
+	ID         string              `json:"id"`
+	Title      string              `json:"title"`
+	Placement  string              `json:"placement"`
+	SourceTool string              `json:"source_tool"`
+	Render     string              `json:"render"`
+	Actions    []RuntimeViewAction `json:"actions,omitempty"`
+	SourcePath string              `json:"source_path,omitempty"`
 }
 
 type ApprovalPolicy struct {

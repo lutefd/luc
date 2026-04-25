@@ -14,6 +14,7 @@ const (
 	HostCapabilityUICommand               = "ui.command"
 	HostCapabilityUICommandShortcut       = "ui.command.shortcut"
 	HostCapabilityUIToolRun               = "tool.run"
+	HostCapabilityUIViewActions           = "ui.view.actions"
 	HostCapabilityLiveHooks               = "hooks.live_events"
 	HostCapabilityExtensionObserveEvents  = "extensions.observe_events"
 	HostCapabilityExtensionSessionStorage = "extensions.storage.session"
@@ -141,6 +142,7 @@ func DefaultHostCapabilities() []string {
 		HostCapabilityUICommand,
 		HostCapabilityUICommandShortcut,
 		HostCapabilityUIToolRun,
+		HostCapabilityUIViewActions,
 		HostCapabilityLiveHooks,
 		HostCapabilityExtensionObserveEvents,
 		HostCapabilityExtensionSessionStorage,

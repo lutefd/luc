@@ -49,11 +49,12 @@ type runtimeToolActionDoneMsg struct {
 }
 
 type runtimePageState struct {
-	open    bool
-	view    luruntime.RuntimeView
-	content string
-	err     string
-	loading bool
+	open         bool
+	view         luruntime.RuntimeView
+	content      string
+	err          string
+	loading      bool
+	activeAction int
 }
 
 type runtimeDialogState struct {
@@ -159,7 +160,12 @@ func (m *Model) syncRuntimeUI() {
 	m.rebuildCommandRegistry()
 	m.inspector.SetRuntimeViews(m.controller.RuntimeContributions().UI.InspectorViews())
 	if m.runtimePage.open {
-		if _, ok := m.controller.RuntimeContributions().UI.View(m.runtimePage.view.ID); !ok {
+		if view, ok := m.controller.RuntimeContributions().UI.View(m.runtimePage.view.ID); ok {
+			m.runtimePage.view = view
+			if m.runtimePage.activeAction >= len(view.Actions) {
+				m.runtimePage.activeAction = 0
+			}
+		} else {
 			m.runtimePage = runtimePageState{}
 		}
 	}
@@ -269,6 +275,25 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 			Presentation: command.Result.Presentation,
 		},
 	}, nil)
+}
+
+func uiActionFromRuntimeAction(id string, action luruntime.RuntimeAction) luruntime.UIAction {
+	return luruntime.UIAction{
+		ID:        id,
+		Kind:      action.Kind,
+		Title:     action.Title,
+		Body:      action.Body,
+		Render:    action.Render,
+		Input:     action.Input,
+		Options:   action.Options,
+		ViewID:    action.ViewID,
+		CommandID: action.CommandID,
+		ToolName:  action.ToolName,
+		Arguments: action.Arguments,
+		Result: luruntime.UIActionResult{
+			Presentation: action.Result.Presentation,
+		},
+	}
 }
 
 func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
@@ -492,14 +517,64 @@ func (m *Model) handleRuntimePageKey(msg tea.KeyPressMsg) tea.Cmd {
 	if !m.runtimePage.open {
 		return nil
 	}
+	actions := m.runtimePage.view.Actions
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		m.runtimePage = runtimePageState{}
 		return nil
 	case msg.Text == "r" || msg.Text == "R":
 		return runtimeViewCmd(m.controller, m.runtimePage.view.ID)
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "shift+tab"))):
+		if m.runtimePage.activeAction > 0 {
+			m.runtimePage.activeAction--
+		}
+		return nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "tab"))):
+		if m.runtimePage.activeAction < len(actions)-1 {
+			m.runtimePage.activeAction++
+		}
+		return nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if len(actions) == 0 {
+			return nil
+		}
+		return m.runRuntimeViewAction(m.runtimePage.view, actions[m.runtimePage.activeAction])
+	}
+	for _, action := range actions {
+		if strings.EqualFold(strings.TrimSpace(action.Shortcut), strings.TrimSpace(msg.String())) || strings.EqualFold(strings.TrimSpace(action.Shortcut), strings.TrimSpace(msg.Keystroke())) {
+			return m.runRuntimeViewAction(m.runtimePage.view, action)
+		}
 	}
 	return nil
+}
+
+func (m *Model) runRuntimeViewAction(view luruntime.RuntimeView, action luruntime.RuntimeViewAction) tea.Cmd {
+	id := "runtime.view." + view.ID + ".action." + action.ID
+	return m.handleRuntimeAction(uiActionFromRuntimeAction(id, action.Action), nil)
+}
+
+func (m Model) renderRuntimeViewActions(actions []luruntime.RuntimeViewAction, active int) string {
+	if len(actions) == 0 {
+		return ""
+	}
+	lines := []string{m.theme.SidebarLabel.Render("Actions")}
+	for i, action := range actions {
+		label := strings.TrimSpace(action.Label)
+		if label == "" {
+			label = action.ID
+		}
+		if shortcut := strings.TrimSpace(action.Shortcut); shortcut != "" {
+			label = fmt.Sprintf("%s (%s)", label, shortcut)
+		}
+		prefix := "  "
+		style := m.theme.SidebarValue
+		if i == active {
+			prefix = "› "
+			style = m.theme.PaletteActive
+		}
+		lines = append(lines, style.Render(prefix+label))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderRuntimePage() string {
@@ -518,14 +593,16 @@ func (m Model) renderRuntimePage() string {
 	}
 	panelWidth := max(40, m.width-6)
 	panelHeight := max(8, m.height-4)
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
+	parts := []string{
 		m.theme.HeaderBrand.Render(title),
 		"",
-		m.theme.SidebarValue.Width(panelWidth-8).Render(body),
-		"",
-		m.theme.Footer.Render("esc close  •  r refresh"),
-	)
+		m.theme.SidebarValue.Width(panelWidth - 8).Render(body),
+	}
+	if actions := m.renderRuntimeViewActions(m.runtimePage.view.Actions, m.runtimePage.activeAction); actions != "" {
+		parts = append(parts, "", actions)
+	}
+	parts = append(parts, "", m.theme.Footer.Render("esc close  •  r refresh  •  tab action  •  enter run"))
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	box := m.theme.PaletteFrame.Width(panelWidth).Height(panelHeight).Render(m.theme.PaletteSurface.Width(panelWidth - 6).Render(content))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
 }

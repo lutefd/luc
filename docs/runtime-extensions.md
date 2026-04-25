@@ -262,6 +262,22 @@ views:
     placement: inspector_tab
     source_tool: provider_status
     render: markdown
+    actions:
+      - id: approve
+        label: Approve
+        shortcut: a
+        action:
+          kind: tool.run
+          tool_name: review_set_state
+          arguments:
+            action: approve
+          result:
+            presentation: status
+      - id: refresh
+        label: Refresh
+        action:
+          kind: view.refresh
+          view_id: provider.status
 approval_policies:
   - id: guarded-bash
     tool_names: [bash]
@@ -281,11 +297,12 @@ Supported runtime UI primitives in this slice:
 - Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`
 - View placements: `inspector_tab`, `page`
 - View renderers: `markdown`, `json`, `table`, `kv`
+- View actions: declarative `actions[]` render as host-owned selectable rows in runtime inspector tabs and pages. Navigate with tab/arrows, press `enter` to activate, or use an action `shortcut`.
 
 Runtime UI notes:
 
 - Runtime commands are registered into luc's command palette alongside the built-in commands.
-- Runtime views are host-owned and read-only in this slice.
+- Runtime views are host-owned. View content is rendered from `source_tool`; optional view `actions[]` are host-rendered controls that trigger existing runtime action kinds.
 - A view's `source_tool` runs when the view opens or refreshes.
 - `render: markdown` uses luc's built-in glamour-based terminal markdown renderer.
 - `modal.open` and `confirm.request` are host-rendered dialog actions. `modal.open` supports `render: markdown`, multiple `options`, and optional text `input` for blocking workflows, but does not provide arbitrary custom TUI layout injection.

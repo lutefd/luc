@@ -40,6 +40,15 @@ views:
     placement: inspector_tab
     source_tool: provider_status
     render: markdown
+    actions:
+      - id: approve
+        label: Approve
+        shortcut: a
+        action:
+          kind: tool.run
+          tool_name: review_set_state
+          arguments:
+            action: approve
 approval_policies:
   - id: guarded-bash
     tool_names: [bash]
@@ -53,6 +62,11 @@ views:
     placement: page
     source_tool: provider_status
     render: json
+    actions:
+      - id: refresh
+        label: Refresh
+        action:
+          kind: view.refresh
 `)
 	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "ui", "project.yaml"), `schema: luc.ui/v1
 id: project-ui
@@ -89,6 +103,9 @@ approval_policies:
 	}
 	if view.Title != "Package Provider Status" || view.Placement != "page" {
 		t.Fatalf("expected package override for view, got %#v", view)
+	}
+	if len(view.Actions) != 1 || view.Actions[0].ID != "refresh" || view.Actions[0].Action.Kind != "view.refresh" {
+		t.Fatalf("expected package override for view actions, got %#v", view.Actions)
 	}
 	policy, ok := set.UI.ApprovalPolicyForTool("bash")
 	if !ok {

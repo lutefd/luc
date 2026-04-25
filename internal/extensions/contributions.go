@@ -39,6 +39,12 @@ type uiManifest struct {
 		Placement  string `yaml:"placement" json:"placement"`
 		SourceTool string `yaml:"source_tool" json:"source_tool"`
 		Render     string `yaml:"render" json:"render"`
+		Actions    []struct {
+			ID       string             `yaml:"id" json:"id"`
+			Label    string             `yaml:"label" json:"label"`
+			Shortcut string             `yaml:"shortcut" json:"shortcut"`
+			Action   viewActionManifest `yaml:"action" json:"action"`
+		} `yaml:"actions" json:"actions"`
 	} `yaml:"views" json:"views"`
 	ApprovalPolicies []struct {
 		ID           string   `yaml:"id" json:"id"`
@@ -49,6 +55,31 @@ type uiManifest struct {
 		ConfirmLabel string   `yaml:"confirm_label" json:"confirm_label"`
 		CancelLabel  string   `yaml:"cancel_label" json:"cancel_label"`
 	} `yaml:"approval_policies" json:"approval_policies"`
+}
+
+type viewActionManifest struct {
+	Kind   string `yaml:"kind" json:"kind"`
+	Title  string `yaml:"title" json:"title"`
+	Body   string `yaml:"body" json:"body"`
+	Render string `yaml:"render" json:"render"`
+	Input  struct {
+		Enabled     bool   `yaml:"enabled" json:"enabled"`
+		Multiline   bool   `yaml:"multiline" json:"multiline"`
+		Placeholder string `yaml:"placeholder" json:"placeholder"`
+		Value       string `yaml:"value" json:"value"`
+	} `yaml:"input" json:"input"`
+	Options []struct {
+		ID      string `yaml:"id" json:"id"`
+		Label   string `yaml:"label" json:"label"`
+		Primary bool   `yaml:"primary" json:"primary"`
+	} `yaml:"options" json:"options"`
+	ViewID    string         `yaml:"view_id" json:"view_id"`
+	CommandID string         `yaml:"command_id" json:"command_id"`
+	ToolName  string         `yaml:"tool_name" json:"tool_name"`
+	Arguments map[string]any `yaml:"arguments" json:"arguments"`
+	Result    struct {
+		Presentation string `yaml:"presentation" json:"presentation"`
+	} `yaml:"result" json:"result"`
 }
 
 type hookManifest struct {
@@ -166,6 +197,11 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 			if id == "" {
 				return nil, nil, nil, nil, fmt.Errorf("%s: views[].id is required", path)
 			}
+			for _, action := range view.Actions {
+				if strings.TrimSpace(action.ID) == "" {
+					return nil, nil, nil, nil, fmt.Errorf("%s: views[%s].actions[].id is required", path, id)
+				}
+			}
 			if _, ok := viewByID[id]; !ok {
 				viewOrder = append(viewOrder, id)
 			}
@@ -175,6 +211,7 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 				Placement:  strings.TrimSpace(view.Placement),
 				SourceTool: strings.TrimSpace(view.SourceTool),
 				Render:     strings.TrimSpace(view.Render),
+				Actions:    runtimeViewActions(view.Actions, path),
 				SourcePath: path,
 			}
 		}
@@ -399,6 +436,63 @@ func runtimePackageDirs(workspaceRoot, category string) ([]string, error) {
 	return dirs, nil
 }
 
+func runtimeActionFromManifest(action viewActionManifest) luruntime.RuntimeAction {
+	options := make([]luruntime.UIOption, 0, len(action.Options))
+	for _, option := range action.Options {
+		options = append(options, luruntime.UIOption{
+			ID:      strings.TrimSpace(option.ID),
+			Label:   strings.TrimSpace(option.Label),
+			Primary: option.Primary,
+		})
+	}
+	return luruntime.RuntimeAction{
+		Kind:   strings.TrimSpace(action.Kind),
+		Title:  strings.TrimSpace(action.Title),
+		Body:   action.Body,
+		Render: strings.TrimSpace(action.Render),
+		Input: luruntime.UIActionInput{
+			Enabled:     action.Input.Enabled,
+			Multiline:   action.Input.Multiline,
+			Placeholder: strings.TrimSpace(action.Input.Placeholder),
+			Value:       action.Input.Value,
+		},
+		Options:   options,
+		ViewID:    strings.TrimSpace(action.ViewID),
+		CommandID: strings.TrimSpace(action.CommandID),
+		ToolName:  strings.TrimSpace(action.ToolName),
+		Arguments: cloneStringAnyMap(action.Arguments),
+		Result: luruntime.RuntimeActionResult{
+			Presentation: strings.TrimSpace(action.Result.Presentation),
+		},
+	}
+}
+
+func runtimeViewActions(actions []struct {
+	ID       string             `yaml:"id" json:"id"`
+	Label    string             `yaml:"label" json:"label"`
+	Shortcut string             `yaml:"shortcut" json:"shortcut"`
+	Action   viewActionManifest `yaml:"action" json:"action"`
+}, sourcePath string) []luruntime.RuntimeViewAction {
+	if len(actions) == 0 {
+		return nil
+	}
+	out := make([]luruntime.RuntimeViewAction, 0, len(actions))
+	for _, action := range actions {
+		id := strings.TrimSpace(action.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, luruntime.RuntimeViewAction{
+			ID:         id,
+			Label:      strings.TrimSpace(firstNonEmpty(action.Label, id)),
+			Shortcut:   strings.TrimSpace(action.Shortcut),
+			Action:     runtimeActionFromManifest(action.Action),
+			SourcePath: sourcePath,
+		})
+	}
+	return out
+}
+
 func cloneStringAnyMap(src map[string]any) map[string]any {
 	if len(src) == 0 {
 		return nil
@@ -425,6 +519,13 @@ func parseUIManifest(path string) (uiManifest, error) {
 	if strings.TrimSpace(manifest.ID) == "" {
 		return uiManifest{}, fmt.Errorf("%s: id is required", path)
 	}
+	for _, command := range manifest.Commands {
+		switch strings.TrimSpace(command.Action.Kind) {
+		case "", "view.open", "view.refresh", "command.run", "tool.run":
+		default:
+			return uiManifest{}, fmt.Errorf("%s: unsupported command action kind %q", path, command.Action.Kind)
+		}
+	}
 	for _, view := range manifest.Views {
 		switch placement := strings.TrimSpace(view.Placement); placement {
 		case "inspector_tab", "page":
@@ -438,6 +539,13 @@ func parseUIManifest(path string) (uiManifest, error) {
 		}
 		if strings.TrimSpace(view.SourceTool) == "" {
 			return uiManifest{}, fmt.Errorf("%s: views[%s].source_tool is required", path, view.ID)
+		}
+		for _, action := range view.Actions {
+			switch strings.TrimSpace(action.Action.Kind) {
+			case "", "view.open", "view.refresh", "command.run", "tool.run", "modal.open", "confirm.request":
+			default:
+				return uiManifest{}, fmt.Errorf("%s: unsupported view action kind %q", path, action.Action.Kind)
+			}
 		}
 	}
 	for _, policy := range manifest.ApprovalPolicies {
