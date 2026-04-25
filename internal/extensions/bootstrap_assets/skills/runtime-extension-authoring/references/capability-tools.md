@@ -31,7 +31,7 @@ Rules:
 - Use `runtime.kind: exec` for capability-enabled tools.
 - `structured_io` means luc sends one JSON request envelope on stdin and expects JSONL events on stdout.
 - `client_actions` allows the tool to ask the host to open views, request confirmation, or run host-owned commands.
-- Supported tool `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- Supported tool `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
 - Prefer `input_schema` instead of legacy `schema` for `luc.tool/v1` tools.
 - Use `ui.default_collapsed: true` when the tool would otherwise spam the transcript.
 

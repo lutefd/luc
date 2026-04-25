@@ -24,7 +24,7 @@ Provider notes:
 - Provider events can stream `thinking`, `text_delta`, `tool_call`, `client_action`, and `done`.
 - `thinking` and `text_delta` use `text`; `tool_call` uses `tool_call` with `id`, `name`, and JSON-string `arguments`; `client_action` uses `action`; fatal adapter failures may also return an `error` string.
 - If the provider declares `capabilities: [client_actions]`, luc includes `host_capabilities` in the request and the adapter may emit `client_action` events.
-- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
 - The provider adapts upstream APIs. luc still owns tool execution and UI rendering.
 
 Example matching UI manifest:
@@ -63,5 +63,6 @@ Composition rules:
 - Put reusable commands, views, and approval policies in `luc.ui/v1`.
 - Runtime commands may declare `description`, `category`, and `shortcut`; avoid built-in shortcut collisions because luc reports them as diagnostics.
 - Use `view.open` or `view.refresh` for persistent host-owned views.
+- Use `tool.run` when a runtime command should execute an extension tool through luc's normal tool pipeline.
 - If the workflow needs explicit confirmation, use approval policies or `confirm.request` client actions.
 - Keep runtime views declarative and read-only in this slice.

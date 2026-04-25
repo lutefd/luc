@@ -72,6 +72,7 @@ approval_policies:
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer controller.Close()
 	broker := &approvingBroker{}
 	controller.SetUIBroker(broker)
 
@@ -80,6 +81,91 @@ approval_policies:
 	}
 	if broker.action.Kind != "confirm.request" || !strings.Contains(broker.action.Body, "printf hello") {
 		t.Fatalf("expected approval dialog for bash, got %#v", broker.action)
+	}
+}
+
+func TestControllerRunRuntimeToolActionUsesToolPipeline(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "config.yaml"), "ui:\n  approvals_mode: policy\n")
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "tools", "review_set_state.yaml"), `name: review_set_state
+description: Set review state.
+command: printf '%s' '{{ .action }}'
+schema:
+  type: object
+  properties:
+    action:
+      type: string
+`)
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "ui", "policy.yaml"), `schema: luc.ui/v1
+id: approvals
+approval_policies:
+  - id: review-state
+    tool_names: [review_set_state]
+    mode: confirm
+    title: Change review state?
+    body_template: "{{ index .arguments \"action\" }}"
+`)
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "patch.yaml"), `schema: luc.extension/v1
+id: review_patch
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./patch.py
+subscriptions:
+  - event: tool.preflight
+    mode: sync
+  - event: tool.result
+    mode: sync
+`)
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "patch.py"), `#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("type") == "hello":
+        print(json.dumps({"type":"ready","protocol_version":1}), flush=True)
+    elif msg.get("type") == "event" and msg.get("event") == "tool.preflight" and msg.get("payload", {}).get("tool_name") == "review_set_state":
+        args = dict(msg.get("payload", {}).get("arguments") or {})
+        args["action"] = "approve-patched"
+        print(json.dumps({"type":"decision","request_id":msg["request_id"],"decision":"patch","arguments":args}), flush=True)
+    elif msg.get("type") == "event" and msg.get("event") == "tool.result" and msg.get("payload", {}).get("tool_name") == "review_set_state":
+        print(json.dumps({"type":"decision","request_id":msg["request_id"],"decision":"patch","content":"patched result"}), flush=True)
+    elif msg.get("type") == "event":
+        print(json.dumps({"type":"decision","request_id":msg["request_id"],"decision":"allow"}), flush=True)
+    elif msg.get("type") == "session_shutdown":
+        break
+`)
+	if err := os.Chmod(filepath.Join(root, ".luc", "extensions", "patch.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &approvingBroker{}
+	controller.SetUIBroker(broker)
+
+	result, err := controller.RunRuntimeToolAction(context.Background(), "review_set_state", map[string]any{"action": "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if broker.action.Kind != "confirm.request" || !strings.Contains(broker.action.Body, "approve-patched") {
+		t.Fatalf("expected approval after preflight patch, got %#v", broker.action)
+	}
+	if result.Content != "patched result" {
+		t.Fatalf("expected patched tool result, got %#v", result)
+	}
+	var finished history.ToolResultPayload
+	for _, ev := range controller.SessionEvents() {
+		if ev.Kind == "tool.finished" {
+			finished = history.DecodePayload[history.ToolResultPayload](ev.Payload)
+		}
+	}
+	if finished.Content != "patched result" {
+		t.Fatalf("expected patched emitted tool result, got %#v", finished)
 	}
 }
 

@@ -12,15 +12,22 @@ type Diagnostic struct {
 }
 
 type RuntimeCommand struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Category    string `json:"category,omitempty"`
-	Shortcut    string `json:"shortcut,omitempty"`
-	ActionKind  string `json:"action_kind,omitempty"`
-	ViewID      string `json:"view_id,omitempty"`
-	CommandID   string `json:"command_id,omitempty"`
-	SourcePath  string `json:"source_path,omitempty"`
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Category    string              `json:"category,omitempty"`
+	Shortcut    string              `json:"shortcut,omitempty"`
+	ActionKind  string              `json:"action_kind,omitempty"`
+	ViewID      string              `json:"view_id,omitempty"`
+	CommandID   string              `json:"command_id,omitempty"`
+	ToolName    string              `json:"tool_name,omitempty"`
+	Arguments   map[string]any      `json:"arguments,omitempty"`
+	Result      RuntimeActionResult `json:"result,omitempty"`
+	SourcePath  string              `json:"source_path,omitempty"`
+}
+
+type RuntimeActionResult struct {
+	Presentation string `json:"presentation,omitempty"`
 }
 
 type RuntimeView struct {

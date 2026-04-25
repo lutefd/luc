@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,6 +152,64 @@ views:
 	m = updated.(Model)
 	if view := ansi.Strip(m.inspector.DetailView()); !strings.Contains(view, "provider ok") {
 		t.Fatalf("expected runtime inspector content, got %q", view)
+	}
+}
+
+func TestModelRunsRuntimeToolActionFromCommand(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "review_set_state.yaml"), `name: review_set_state
+description: Set review state.
+command: printf 'review approved'
+schema:
+  type: object
+  properties:
+    action:
+      type: string
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "review.yaml"), `schema: luc.ui/v1
+id: review-tools
+commands:
+  - id: review.approve
+    name: Approve Review
+    action:
+      kind: tool.run
+      tool_name: review_set_state
+      arguments:
+        action: approve
+      result:
+        presentation: status
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "review.approve"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime tool action command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.status != "Tool finished: review_set_state" {
+		t.Fatalf("expected status presentation, got %q", m.status)
+	}
+	var found bool
+	for _, ev := range controller.SessionEvents() {
+		if ev.Kind == "tool.finished" && strings.Contains(fmt.Sprint(ev.Payload), "review approved") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected tool.finished event for runtime tool action, got %#v", controller.SessionEvents())
 	}
 }
 

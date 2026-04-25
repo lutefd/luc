@@ -61,6 +61,10 @@ func ensureUIActionID(action *luruntime.UIAction) {
 }
 
 func (c *Controller) emitUIAction(action luruntime.UIAction) {
+	var result map[string]any
+	if strings.TrimSpace(action.Result.Presentation) != "" {
+		result = map[string]any{"presentation": action.Result.Presentation}
+	}
 	c.emit("ui.action", history.UIActionPayload{
 		ID:        action.ID,
 		Kind:      action.Kind,
@@ -69,6 +73,9 @@ func (c *Controller) emitUIAction(action luruntime.UIAction) {
 		Body:      action.Body,
 		ViewID:    action.ViewID,
 		CommandID: action.CommandID,
+		ToolName:  action.ToolName,
+		Arguments: action.Arguments,
+		Result:    result,
 		Context:   action.Context,
 	})
 }

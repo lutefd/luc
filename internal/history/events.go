@@ -106,6 +106,9 @@ type UIActionPayload struct {
 	Body      string         `json:"body,omitempty"`
 	ViewID    string         `json:"view_id,omitempty"`
 	CommandID string         `json:"command_id,omitempty"`
+	ToolName  string         `json:"tool_name,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Result    map[string]any `json:"result,omitempty"`
 	Context   map[string]any `json:"context,omitempty"`
 }
 

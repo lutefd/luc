@@ -131,7 +131,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(runtimeActions), "modal.open", "confirm.request", "view.open", "view.refresh", "command.run", "Tools, providers, hooks, and extension hosts", "command palette", "built-in dialog surface") {
+	if !containsAll(string(runtimeActions), "modal.open", "confirm.request", "view.open", "view.refresh", "command.run", "tool.run", "Tools, providers, hooks, and extension hosts", "command palette", "built-in dialog surface") {
 		t.Fatalf("expected runtime UI actions reference to include host-owned action guidance, got %q", string(runtimeActions))
 	}
 
@@ -139,7 +139,7 @@ func TestEnsureGlobalRuntimeCreatesDirsAndSeedsAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsAll(string(hookPatterns), "message.assistant.final", "tool.finished", "\"root\": \"/abs/workspace\"", "`message` as a compatibility alias", "`done: true`", "`client_action`", "`view.refresh`", "`client_result`", "`modal.open`", "`command.run`", "`input.transform`", "`tool.preflight`") {
+	if !containsAll(string(hookPatterns), "message.assistant.final", "tool.finished", "\"root\": \"/abs/workspace\"", "`message` as a compatibility alias", "`done: true`", "`client_action`", "`view.refresh`", "`client_result`", "`modal.open`", "`command.run`", "`tool.run`", "`input.transform`", "`tool.preflight`") {
 		t.Fatalf("expected hook patterns reference to include concrete hook protocol guidance, got %q", string(hookPatterns))
 	}
 }
