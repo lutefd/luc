@@ -121,6 +121,7 @@ func newController(ctx context.Context, cwd string) (*Controller, error) {
 		controller.logger.Ring.Add("warn", diagnostic.Message)
 	}
 	controller.version.Store(1)
+	controller.toolSpecsVersion = toolManager.Version()
 	controller.systemPrompt = controller.loadSystemPrompt()
 
 	return controller, nil

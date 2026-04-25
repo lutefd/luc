@@ -81,17 +81,16 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 	c.beginTurn(cancel)
 	defer c.endTurn()
 
-	systemPrompt, err := c.composeTurnSystemPrompt(turnCtx, text, attachments)
-	if err != nil {
-		c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
-		return err
-	}
-
 	autoContinues := 0
 
 	for {
 	toolLoop:
 		for range maxToolLoopRounds {
+			systemPrompt, err := c.composeTurnSystemPrompt(turnCtx, text, attachments)
+			if err != nil {
+				c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
+				return err
+			}
 			stream, err := c.provider.Start(turnCtx, provider.Request{
 				Model:       c.config.Provider.Model,
 				System:      systemPrompt,

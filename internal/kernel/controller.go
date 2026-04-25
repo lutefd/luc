@@ -52,6 +52,7 @@ type Controller struct {
 	conversation      []provider.Message
 	compactionSummary string
 	systemPrompt      string
+	toolSpecsVersion  uint64
 	skills            []extensions.Skill
 	promptExts        []extensions.PromptExtension
 	loadedSkills      map[string]struct{}
