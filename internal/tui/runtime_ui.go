@@ -506,22 +506,6 @@ func (m Model) renderRuntimeDialog() string {
 	m.runtimeDialog.body.SetWidth(bodyWidth)
 	m.runtimeDialog.body.SetHeight(bodyHeight)
 	m.runtimeDialog.body.SetContent(m.renderRuntimeDialogBody(action, bodyWidth))
-	options := runtimeDialogOptions(action)
-	var buttons []string
-	for i, option := range options {
-		label := strings.TrimSpace(option.Label)
-		if label == "" {
-			label = strings.TrimSpace(option.ID)
-		}
-		if label == "" {
-			label = "Option"
-		}
-		if i == m.runtimeDialog.active {
-			buttons = append(buttons, m.theme.PaletteActive.Render(" "+label+" "))
-		} else {
-			buttons = append(buttons, m.theme.PaletteFrame.Render(" "+label+" "))
-		}
-	}
 	parts := []string{
 		m.theme.HeaderBrand.Render(title),
 		"",
@@ -532,13 +516,37 @@ func (m Model) renderRuntimeDialog() string {
 	}
 	parts = append(parts,
 		"",
-		strings.Join(buttons, " "),
+		m.renderRuntimeDialogChoices(runtimeDialogOptions(action)),
 		"",
 		m.theme.Footer.Render(runtimeDialogHelp(action, m.runtimeDialog.body.TotalLineCount() > m.runtimeDialog.body.Height())),
 	)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	box := m.theme.PaletteFrame.Width(min(72, max(40, m.width*2/3))).Render(m.theme.PaletteSurface.Render(content))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
+}
+
+func (m Model) renderRuntimeDialogChoices(options []luruntime.UIOption) string {
+	if len(options) == 0 {
+		return ""
+	}
+	var lines []string
+	for i, option := range options {
+		label := strings.TrimSpace(option.Label)
+		if label == "" {
+			label = strings.TrimSpace(option.ID)
+		}
+		if label == "" {
+			label = "Option"
+		}
+		line := "  " + label
+		if i == m.runtimeDialog.active {
+			line = "› " + label
+			lines = append(lines, m.theme.PaletteActive.Render(line))
+		} else {
+			lines = append(lines, m.theme.SidebarValue.Render(line))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) runtimeDialogBodySize(action luruntime.UIAction) (int, int) {
