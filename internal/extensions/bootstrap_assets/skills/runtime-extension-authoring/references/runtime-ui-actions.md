@@ -13,6 +13,7 @@ Supported action kinds in this slice:
 - `command.run`
 - `tool.run`
 - `session.handoff`
+- `timeline.note`
 
 When to use each action:
 
@@ -23,6 +24,7 @@ When to use each action:
 - Use `command.run` to trigger another registered runtime command by ID.
 - Use `tool.run` to execute an extension tool through luc's normal tool pipeline, including approval policies and extension preflight/result hooks.
 - Use `session.handoff` to ask the host to create and switch to a fresh session carrying structured workflow context and optional initial composer text.
+- Use `timeline.note` to add a safe host-owned workflow note to the transcript, such as "Review approved" or "Provider unhealthy".
 
 Rich blocking modal example from a structured tool or provider:
 
@@ -123,6 +125,19 @@ commands:
       command_id: activity.summary.reset
 ```
 
+Add a workflow timeline note from a command manifest:
+
+```yaml
+commands:
+  - id: review.approved.note
+    name: Note Review Approved
+    action:
+      kind: timeline.note
+      title: Review approved
+      body: Ready for implementation.
+      render: markdown
+```
+
 Start a fresh continuation session from a command manifest:
 
 ```yaml
@@ -165,3 +180,4 @@ Rules:
 - `modal.open` and `confirm.request` use the host's built-in dialog surface rather than arbitrary custom TUI layouts.
 - If the flow depends on the user response, mark the action as blocking and expect a `client_result` envelope back over stdin/stdout.
 - `session.handoff` is host-owned: extensions request it, but luc owns session creation, navigation, persistence, and composer seeding. It does not silently submit the initial input.
+- `timeline.note` is host-owned transcript annotation, not arbitrary transcript mutation.

@@ -305,10 +305,11 @@ Supported runtime UI primitives in this slice:
 
 - Command metadata: `description`, `category`, and `shortcut`
 - Command shortcuts use Bubble Tea keystroke syntax such as `ctrl+shift+p`; built-in shortcut collisions and duplicate runtime shortcut collisions are reported as diagnostics.
-- Command actions: `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`
+- Command actions: `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, `timeline.note`
 - `tool.run` executes the named tool through luc's normal tool pipeline, including extension preflight/result hooks and approval policies. `result.presentation: status` reports completion in the status line.
 - `session.handoff` creates and switches to a fresh host-owned session, records a visible handoff event, and seeds `initial_input` into the composer without auto-submitting.
-- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`
+- `timeline.note` records a safe host-owned workflow note in the transcript with optional markdown content.
+- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, `timeline.note`
 - View placements: `inspector_tab`, `page`
 - View renderers: `markdown`, `json`, `table`, `kv`
 - View actions: declarative `actions[]` render as host-owned selectable rows in runtime inspector tabs and pages. Navigate with tab/arrows, press `enter` to activate, or use an action `shortcut`.
