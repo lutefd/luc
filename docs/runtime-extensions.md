@@ -101,7 +101,7 @@ Tool capability notes:
 - Structured request envelopes include `tool_name`, typed `arguments`, `workspace`, `session_id`, `agent_id`, `host_capabilities`, and optional `view_context`.
 - Supported structured tool stdout event types today are `stdout`, `stderr`, `progress`, `client_action`, `result`, `done`, and `error`.
 - Structured tool stdout field names are exact: `stdout`, `stderr`, and `progress` use `text`; `client_action` uses `action`; `result` uses `result`; `error` uses `error`; `done` should set `done: true`.
-- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
 - Structured tools should emit a `result` event carrying the final tool payload, then emit `done` to terminate the stream.
 - Hosted tools use `schema: luc.tool/v2` with `runtime.kind: extension`, `runtime.extension_id`, and `runtime.handler`.
 - Hosted tool discovery remains declarative; luc does not support dynamic tool registration from extension code in this slice.
@@ -247,6 +247,15 @@ commands:
     action:
       kind: view.open
       view_id: provider.status
+  - id: review.approve
+    name: Approve Review
+    action:
+      kind: tool.run
+      tool_name: review_set_state
+      arguments:
+        action: approve
+      result:
+        presentation: status
 views:
   - id: provider.status
     title: Provider Status
@@ -267,8 +276,9 @@ Supported runtime UI primitives in this slice:
 
 - Command metadata: `description`, `category`, and `shortcut`
 - Command shortcuts use Bubble Tea keystroke syntax such as `ctrl+shift+p`; built-in shortcut collisions and duplicate runtime shortcut collisions are reported as diagnostics.
-- Command actions: `view.open`, `view.refresh`, `command.run`
-- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`
+- Command actions: `view.open`, `view.refresh`, `command.run`, `tool.run`
+- `tool.run` executes the named tool through luc's normal tool pipeline, including extension preflight/result hooks and approval policies. `result.presentation: status` reports completion in the status line.
+- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`
 - View placements: `inspector_tab`, `page`
 - View renderers: `markdown`, `json`, `table`, `kv`
 
@@ -375,7 +385,7 @@ Extension host notes:
 - `session_shutdown` is sent before luc tears a host down for reload, close, or session switch.
 - Sync requests are sent as `event` envelopes with a `request_id`; the extension answers with `decision` carrying the same `request_id`.
 - Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
-- `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
 - Extension hosts are trusted local processes in this phase.
 - Host crashes, hangs, and malformed protocol output mark the host unhealthy, surface runtime diagnostics, and trigger bounded automatic restart with exponential backoff.
 - Current restart defaults are 250 ms base delay, 2 s max delay, and 4 retry attempts per session before the host is disabled for the rest of that session.
@@ -648,5 +658,5 @@ These runtime surfaces work today without recompiling:
 These still need core code changes today:
 
 - arbitrary custom TUI layout injection beyond the documented runtime actions and view surfaces
-- new runtime action kinds beyond `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`
+- new runtime action kinds beyond `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`
 - modifying the built-in `Overview` tab directly instead of adding a runtime `inspector_tab` or `page`

@@ -11,6 +11,7 @@ Supported action kinds in this slice:
 - `view.open`
 - `view.refresh`
 - `command.run`
+- `tool.run`
 
 When to use each action:
 
@@ -19,6 +20,7 @@ When to use each action:
 - Use `view.open` to open a runtime view declared in `luc.ui/v1`.
 - Use `view.refresh` to rerun the active runtime view's `source_tool`.
 - Use `command.run` to trigger another registered runtime command by ID.
+- Use `tool.run` to execute an extension tool through luc's normal tool pipeline, including approval policies and extension preflight/result hooks.
 
 Blocking confirmation example from a structured tool or provider:
 
@@ -78,6 +80,21 @@ commands:
     action:
       kind: command.run
       command_id: activity.summary.reset
+```
+
+Run a tool from a command manifest:
+
+```yaml
+commands:
+  - id: review.approve
+    name: Approve Review
+    action:
+      kind: tool.run
+      tool_name: review_set_state
+      arguments:
+        action: approve
+      result:
+        presentation: status
 ```
 
 Rules:
