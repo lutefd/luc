@@ -12,6 +12,7 @@ Supported action kinds in this slice:
 - `view.refresh`
 - `command.run`
 - `tool.run`
+- `session.handoff`
 
 When to use each action:
 
@@ -21,6 +22,7 @@ When to use each action:
 - Use `view.refresh` to rerun the active runtime view's `source_tool`.
 - Use `command.run` to trigger another registered runtime command by ID.
 - Use `tool.run` to execute an extension tool through luc's normal tool pipeline, including approval policies and extension preflight/result hooks.
+- Use `session.handoff` to ask the host to create and switch to a fresh session carrying structured workflow context and optional initial composer text.
 
 Rich blocking modal example from a structured tool or provider:
 
@@ -121,6 +123,25 @@ commands:
       command_id: activity.summary.reset
 ```
 
+Start a fresh continuation session from a command manifest:
+
+```yaml
+commands:
+  - id: review.implement
+    name: Implement Approved Review
+    action:
+      kind: session.handoff
+      title: Start implementation
+      handoff:
+        title: Approved Review
+        body: |
+          ## Approved context
+
+          Carry this review summary into the implementation session.
+        render: markdown
+      initial_input: Implement the approved changes.
+```
+
 Run a tool from a command manifest:
 
 ```yaml
@@ -143,3 +164,4 @@ Rules:
 - Use `modal.open` only for host-owned modal content; supported rich fields are `render: markdown`, `options`, and `input` (`enabled`, `multiline`, `placeholder`, `value`).
 - `modal.open` and `confirm.request` use the host's built-in dialog surface rather than arbitrary custom TUI layouts.
 - If the flow depends on the user response, mark the action as blocking and expect a `client_result` envelope back over stdin/stdout.
+- `session.handoff` is host-owned: extensions request it, but luc owns session creation, navigation, persistence, and composer seeding. It does not silently submit the initial input.
