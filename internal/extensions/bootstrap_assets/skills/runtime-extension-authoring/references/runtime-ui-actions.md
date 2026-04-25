@@ -15,12 +15,51 @@ Supported action kinds in this slice:
 
 When to use each action:
 
-- Use `modal.open` for a host-rendered modal dialog.
+- Use `modal.open` for a host-rendered modal dialog. It may include `render: markdown`, multiple `options`, and optional text `input`.
 - Use `confirm.request` when the tool, provider, or hook needs an explicit user decision.
 - Use `view.open` to open a runtime view declared in `luc.ui/v1`.
 - Use `view.refresh` to rerun the active runtime view's `source_tool`.
 - Use `command.run` to trigger another registered runtime command by ID.
 - Use `tool.run` to execute an extension tool through luc's normal tool pipeline, including approval policies and extension preflight/result hooks.
+
+Rich blocking modal example from a structured tool or provider:
+
+```json
+{
+	"type": "client_action",
+	"action": {
+		"id": "review_1",
+		"kind": "modal.open",
+		"blocking": true,
+		"title": "Review Result",
+		"body": "## Summary\n\nApprove these changes?",
+		"render": "markdown",
+		"options": [
+			{ "id": "approve", "label": "Approve" },
+			{ "id": "revise", "label": "Revise" },
+			{ "id": "cancel", "label": "Cancel" }
+		],
+		"input": {
+			"enabled": true,
+			"multiline": true,
+			"placeholder": "Revision notes"
+		}
+	}
+}
+```
+
+Blocking response shape:
+
+```json
+{
+	"type": "client_result",
+	"action_id": "review_1",
+	"choice_id": "revise",
+	"data": {
+		"input": "Please simplify step 3."
+	}
+}
+```
 
 Blocking confirmation example from a structured tool or provider:
 
@@ -101,6 +140,6 @@ Rules:
 
 - Keep view definitions in `luc.ui/v1`; use actions to open or refresh them.
 - Use `confirm.request` instead of inventing your own approval UI.
-- Use `modal.open` only for host-owned modal content; do not assume custom freeform modal rendering unless the host already supports the requested payload shape.
-- `modal.open` and `confirm.request` currently use the host's built-in dialog surface rather than arbitrary custom TUI layouts.
+- Use `modal.open` only for host-owned modal content; supported rich fields are `render: markdown`, `options`, and `input` (`enabled`, `multiline`, `placeholder`, `value`).
+- `modal.open` and `confirm.request` use the host's built-in dialog surface rather than arbitrary custom TUI layouts.
 - If the flow depends on the user response, mark the action as blocking and expect a `client_result` envelope back over stdin/stdout.

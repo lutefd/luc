@@ -288,7 +288,7 @@ Runtime UI notes:
 - Runtime views are host-owned and read-only in this slice.
 - A view's `source_tool` runs when the view opens or refreshes.
 - `render: markdown` uses luc's built-in glamour-based terminal markdown renderer.
-- `modal.open` and `confirm.request` are host-rendered dialog actions; they do not provide arbitrary custom TUI layout injection.
+- `modal.open` and `confirm.request` are host-rendered dialog actions. `modal.open` supports `render: markdown`, multiple `options`, and optional text `input` for blocking workflows, but does not provide arbitrary custom TUI layout injection.
 - Approval policies only auto-intercept tools when `ui.approvals_mode: policy`.
 - In `trusted` mode, normal tool execution is unchanged; explicit client confirmation requests still render.
 
@@ -386,6 +386,7 @@ Extension host notes:
 - Sync requests are sent as `event` envelopes with a `request_id`; the extension answers with `decision` carrying the same `request_id`.
 - Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
 - `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- Rich `modal.open` actions may set `render: markdown`, provide multiple `options`, and enable text `input`; blocking responses include the selected `choice_id` and `data.input` when input is enabled.
 - Extension hosts are trusted local processes in this phase.
 - Host crashes, hangs, and malformed protocol output mark the host unhealthy, surface runtime diagnostics, and trigger bounded automatic restart with exponential backoff.
 - Current restart defaults are 250 ms base delay, 2 s max delay, and 4 retry attempts per session before the host is disabled for the rest of that session.
