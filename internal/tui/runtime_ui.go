@@ -54,6 +54,12 @@ type runtimeSessionHandoffMsg struct {
 	err      error
 }
 
+type runtimeTimelineNoteMsg struct {
+	action   luruntime.UIAction
+	response chan uiBrokerResponse
+	err      error
+}
+
 type runtimePageState struct {
 	open         bool
 	view         luruntime.RuntimeView
@@ -276,6 +282,9 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 	return m.handleRuntimeAction(luruntime.UIAction{
 		ID:           "runtime.command." + command.ID,
 		Kind:         command.ActionKind,
+		Title:        command.Title,
+		Body:         command.Body,
+		Render:       command.Render,
 		ViewID:       command.ViewID,
 		CommandID:    command.CommandID,
 		ToolName:     command.ToolName,
@@ -346,6 +355,8 @@ func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiB
 			return nil
 		}
 		return m.runtimeSessionHandoff(action, response)
+	case "timeline.note":
+		return m.runtimeTimelineNote(action, response)
 	default:
 		m.replyRuntimeAction(response, luruntime.UIResult{ActionID: action.ID}, fmt.Errorf("unsupported runtime action %q", action.Kind))
 		return nil
@@ -355,6 +366,12 @@ func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiB
 func (m *Model) runtimeSessionHandoff(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
 	return func() tea.Msg {
 		return runtimeSessionHandoffMsg{action: action, response: response, err: m.controller.HandoffSession(action)}
+	}
+}
+
+func (m *Model) runtimeTimelineNote(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
+	return func() tea.Msg {
+		return runtimeTimelineNoteMsg{action: action, response: response, err: m.controller.TimelineNote(action)}
 	}
 }
 

@@ -402,13 +402,13 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 		return true
 	case "session.handoff":
 		payload := decode[history.SessionHandoffPayload](ev.Payload)
-		content := strings.TrimSpace(payload.Body)
-		if content == "" {
-			content = strings.TrimSpace(payload.Title)
-		} else if title := strings.TrimSpace(payload.Title); title != "" {
-			content = title + "\n\n" + content
-		}
+		content := titledTimelineContent(payload.Title, payload.Body)
 		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("handoff_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done"})
+		return true
+	case "timeline.note":
+		payload := decode[history.TimelineNotePayload](ev.Payload)
+		content := titledTimelineContent(payload.Title, payload.Body)
+		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("timeline_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done"})
 		return true
 	case "system.note", "system.error":
 		payload := decode[history.MessagePayload](ev.Payload)
@@ -628,9 +628,19 @@ func (m Model) renderBlock(block Block) string {
 		return m.renderCompactionBlock(block, width)
 	case "error":
 		return m.renderErrorBlock(block, width)
+	case "note":
+		return m.renderNoteBlock(block, width)
 	default:
 		return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(block.Content))
 	}
+}
+
+func (m Model) renderNoteBlock(block Block, width int) string {
+	content := strings.TrimSpace(block.Content)
+	if content == "" {
+		content = "Timeline note"
+	}
+	return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(content))
 }
 
 func (m Model) renderToolBlock(block Block, width int) string {
@@ -809,6 +819,17 @@ func summarizeCollapsedOutput(content string) string {
 		nonEmpty = len(lines)
 	}
 	return fmt.Sprintf("Collapsed output: %d line(s), %d byte(s).", nonEmpty, len(trimmed))
+}
+
+func titledTimelineContent(title, body string) string {
+	content := strings.TrimSpace(body)
+	if content == "" {
+		return strings.TrimSpace(title)
+	}
+	if title := strings.TrimSpace(title); title != "" {
+		return title + "\n\n" + content
+	}
+	return content
 }
 
 func shouldHideTool(name string) bool {

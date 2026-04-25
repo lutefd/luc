@@ -658,6 +658,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.invalidateFooter()
 		m.setStatus("Session handoff: " + m.controller.Session().SessionID)
 		return m, nil
+	case runtimeTimelineNoteMsg:
+		if msg.err != nil {
+			m.replyRuntimeAction(msg.response, luruntime.UIResult{ActionID: msg.action.ID}, msg.err)
+			m.setStatus("Timeline note failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.replyRuntimeAction(msg.response, luruntime.UIResult{ActionID: msg.action.ID, Accepted: true}, nil)
+		m.setStatus("Timeline note added")
+		return m, nil
 	case runtimeViewLoadedMsg:
 		if msg.Err != nil {
 			if m.runtimePage.open && m.runtimePage.view.ID == msg.ViewID {

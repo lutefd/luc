@@ -106,6 +106,51 @@ views:
 	}
 }
 
+func TestModelRunsRuntimeTimelineNoteAction(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "timeline.yaml"), `schema: luc.ui/v1
+id: timeline-ui
+commands:
+  - id: review.approved
+    name: Review approved
+    action:
+      kind: timeline.note
+      title: Review approved
+      body: Ready for implementation.
+      render: markdown
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "review.approved"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected timeline note command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	updated, _ = m.Update(appEventsMsg(controller.SessionEvents()))
+	m = updated.(Model)
+	if m.status != "Timeline note added" {
+		t.Fatalf("expected timeline status, got %q", m.status)
+	}
+	events := controller.SessionEvents()
+	if len(events) != 1 || events[0].Kind != "timeline.note" {
+		t.Fatalf("expected timeline note event, got %#v", events)
+	}
+	if transcript := ansi.Strip(m.transcript.View()); !strings.Contains(transcript, "Review approved") || !strings.Contains(transcript, "Ready for implementation.") {
+		t.Fatalf("expected timeline note in transcript, got %q", transcript)
+	}
+}
+
 func TestModelRunsRuntimeSessionHandoffAction(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {

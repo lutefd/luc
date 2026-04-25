@@ -72,6 +72,17 @@ func sessionHandoffContext(payload history.SessionHandoffPayload) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func (c *Controller) TimelineNote(action luruntime.UIAction) error {
+	title := strings.TrimSpace(firstNonEmpty(action.Title, "Timeline note"))
+	body := action.Body
+	render := strings.TrimSpace(action.Render)
+	if render == "" {
+		render = "markdown"
+	}
+	c.emit("timeline.note", history.TimelineNotePayload{Title: title, Body: body, Render: render})
+	return nil
+}
+
 func (c *Controller) NewSession() error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
