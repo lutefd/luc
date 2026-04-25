@@ -29,7 +29,29 @@ views:
     placement: inspector_tab
     source_tool: activity_summary
     render: json
+    actions:
+      - id: refresh
+        label: Refresh
+        action:
+          kind: view.refresh
+          view_id: activity.summary
+      - id: reset
+        label: Reset
+        shortcut: r
+        action:
+          kind: tool.run
+          tool_name: activity_reset
+          result:
+            presentation: status
 ~~~
+
+Runtime view actions:
+
+- Declare `actions[]` on a runtime view when users should act from the same surface where they inspect state.
+- luc renders view actions as native selectable rows in inspector tabs and pages.
+- Users can move with tab/arrows, press `enter`, or use an action `shortcut`.
+- Supported action kinds are `tool.run`, `view.refresh`, `command.run`, `modal.open`, `confirm.request`, and `view.open`.
+- Keep view content declarative; actions trigger host-owned behavior and do not inject custom UI components.
 
 Use this when the user asks for:
 
