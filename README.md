@@ -12,7 +12,7 @@ Requires Go 1.22+.
 
 ## Configuration
 
-luc reads config from `~/.config/luc/config.yaml` (user-global) and `.luc/config.yaml` (workspace-local). Workspace config is merged on top.
+luc reads config from `~/.config/luc/config.yaml` and `~/.luc/config.yaml` (user-global), then `.luc/config.yaml` (workspace-local). Workspace config is merged on top.
 
 Minimal setup:
 
@@ -31,6 +31,23 @@ export OPENAI_API_KEY=sk-...
 ```
 
 Any OpenAI-compatible endpoint works — set `base_url` and `api_key_env` to point at it.
+
+### Fun agent status messages
+
+While the agent is thinking or running tools, luc shows a temporary, playful chat status with an elapsed-time counter. This is UI-only: the real turn state remains in the inspector/overview, and the temporary status disappears once the agent starts streaming its final text response.
+
+Customize the status pool in user or project config:
+
+```yaml
+ui:
+  agent_statuses:
+    - Churning...
+    - Consulting the rubber duck...
+    - Reticulating splines...
+    - Poking at the code goblin...
+```
+
+Use `~/.luc/config.yaml` for statuses across all projects, or `<workspace>/.luc/config.yaml` for a project-specific set.
 
 ## Credentials
 

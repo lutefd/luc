@@ -14,11 +14,14 @@ untouched.
 Lookup order:
 
 1. Global user layer: `~/.luc/...`
-2. Installed package assets: `<workspace>/.luc/packages/*/...`
-3. Project override layer: `<workspace>/.luc/...`
+2. User installed package assets: `~/.luc/packages/*/...`
+3. Project installed package assets: `<workspace>/.luc/packages/*/...`
+4. Project override layer: `<workspace>/.luc/...`
 
 Later layers override earlier ones. Within the same layer, later lexicographic
 manifest wins.
+
+The user and project package layers are populated by `luc pkg install`.
 
 ## Supported Runtime Surfaces
 
@@ -27,6 +30,8 @@ manifest wins.
 Runtime tools live in:
 
 - `~/.luc/tools`
+- `~/.luc/packages/*/tools`
+- `<workspace>/.luc/packages/*/tools`
 - `<workspace>/.luc/tools`
 
 Supported manifest formats:
@@ -110,6 +115,7 @@ Template variables available in `command` and `ui.collapsed_summary`:
 - `.workspace`
 - `.session_id`
 - `.agent_id`
+- `.tool_dir`
 - `.command`
 - `.output`
 - `.timed_out`
@@ -138,6 +144,8 @@ ui:
 Runtime providers live in:
 
 - `~/.luc/providers`
+- `~/.luc/packages/*/providers`
+- `<workspace>/.luc/packages/*/providers`
 - `<workspace>/.luc/providers`
 
 Supported manifest formats:
@@ -221,6 +229,7 @@ For `exec` providers:
 Runtime UI manifests live in:
 
 - `~/.luc/ui`
+- `~/.luc/packages/*/ui`
 - `<workspace>/.luc/packages/*/ui`
 - `<workspace>/.luc/ui`
 
@@ -273,6 +282,7 @@ Runtime UI notes:
 Runtime hook manifests live in:
 
 - `~/.luc/hooks`
+- `~/.luc/packages/*/hooks`
 - `<workspace>/.luc/packages/*/hooks`
 - `<workspace>/.luc/hooks`
 
@@ -322,6 +332,7 @@ Hook notes:
 Runtime extension host manifests live in:
 
 - `~/.luc/extensions`
+- `~/.luc/packages/*/extensions`
 - `<workspace>/.luc/packages/*/extensions`
 - `<workspace>/.luc/extensions`
 
@@ -374,8 +385,13 @@ Runtime skills live in:
 
 - `~/.agents/skills`
 - `~/.luc/skills`
+- `~/.luc/packages/*/skills`
+- `<workspace>/.luc/packages/*/skills`
 - `<workspace>/.agents/skills`
 - `<workspace>/.luc/skills`
+
+That means `luc pkg install` can ship reusable skills without copying them into
+`~/.luc/skills` directly.
 
 Preferred format:
 
@@ -434,7 +450,12 @@ Current skill behavior:
 Runtime themes live in:
 
 - `~/.luc/themes`
+- `~/.luc/packages/*/themes`
+- `<workspace>/.luc/packages/*/themes`
 - `<workspace>/.luc/themes`
+
+That means `luc pkg install` can ship reusable themes without copying them into
+`~/.luc/themes` directly.
 
 Supported manifest formats:
 
@@ -478,6 +499,7 @@ Project prompt overrides the global prompt when both exist.
 Prompt extension manifests live in:
 
 - `~/.luc/prompts`
+- `~/.luc/packages/*/prompts`
 - `<workspace>/.luc/packages/*/prompts`
 - `<workspace>/.luc/prompts`
 
@@ -526,13 +548,53 @@ Matching behavior:
 
 ## Config
 
+luc merges config in this order:
+
+1. `~/.config/luc/config.yaml`
+2. `~/.luc/config.yaml`
+3. `<workspace>/.luc/config.yaml`
+
+Later files override earlier files. Use `~/.luc/config.yaml` for user-wide luc customizations that live with the rest of your runtime extensions, and project `.luc/config.yaml` for workspace-specific behavior.
+
 ```yaml
 ui:
   approvals_mode: trusted
+  agent_statuses:
+    - Churning...
+    - Consulting the rubber duck...
+    - Reticulating splines...
 
 extensions:
   hooks_enabled: true
 ```
+
+### Temporary agent status messages
+
+When a normal agent turn is in flight, the TUI appends a temporary chat-style status line with elapsed seconds, for example:
+
+```text
+· Churning... (4s)
+```
+
+These messages are deliberately playful and are not the real execution state. The real state stays in the inspector/overview. The temporary message stays under the transcript while the assistant is thinking or running tools, then is removed from the chat view once the assistant starts streaming its final text response.
+
+Customize the pool with `ui.agent_statuses` in either user or project config:
+
+```yaml
+# ~/.luc/config.yaml or <workspace>/.luc/config.yaml
+ui:
+  agent_statuses:
+    - Churning...
+    - Counting tiny robots...
+    - Asking the code goblin nicely...
+    - Reticulating splines...
+```
+
+Notes:
+
+- Empty strings are ignored.
+- Project config replaces the user/global list when `agent_statuses` is set.
+- Changes are picked up on app startup; use `luc reload` / `ctrl+r` for other runtime assets.
 
 Allowed approval modes:
 

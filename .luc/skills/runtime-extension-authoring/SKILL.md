@@ -20,6 +20,7 @@ Supported runtime extension types:
 - Hook manifests in `~/.luc/hooks`, `<workspace>/.luc/packages/*/hooks`, and `<workspace>/.luc/hooks`
 - Skills in `~/.luc/skills`, `<workspace>/.luc/skills`, `~/.agents/skills`, and `<workspace>/.agents/skills`
 - Themes in `~/.luc/themes` and `<workspace>/.luc/themes`
+- Config in `~/.luc/config.yaml` and `<workspace>/.luc/config.yaml` for supported built-in UI preferences
 - System prompt overrides in `~/.luc/prompts/system.md` and `<workspace>/.luc/prompts/system.md`
 - Prompt extension manifests in `~/.luc/prompts`, `<workspace>/.luc/packages/*/prompts`, and `<workspace>/.luc/prompts`
 
@@ -32,7 +33,8 @@ Authoring workflow:
    - tools/providers/hooks/extension hosts handle execution and protocol translation
    - UI manifests handle commands, views, and approval policies
    - skills/prompts teach the model how to use the new capability
-5. Remind the user they can reload with `luc reload` or `ctrl+r`.
+   - config handles supported built-in preferences such as playful temporary agent statuses
+5. Remind the user they can reload with `luc reload` or `ctrl+r` when applicable.
 
 Rules:
 
@@ -62,6 +64,14 @@ Rules:
 - Use `skill-name/luc.yaml` only for metadata such as `interface.display_name` and `interface.short_description`.
 - If a skill needs bundled references or scripts, keep them in the same skill directory and assume they will be read through `read_skill_resource`.
 - If creating a runtime theme, inherit from `light` or `dark` and override only the necessary colors.
+- If the user wants to customize the temporary chat-style status shown while the agent is thinking/working, do not create a UI extension. Set `ui.agent_statuses` in `~/.luc/config.yaml` for user-wide statuses or `<workspace>/.luc/config.yaml` for project-specific statuses. This list is playful UI-only text; the real agent state remains in Overview/inspector. The status should remain visible through thinking and tool work, and disappear once the assistant starts streaming its final text response. Example:
+  ```yaml
+  ui:
+    agent_statuses:
+      - Churning...
+      - Consulting the rubber duck...
+      - Reticulating splines...
+  ```
 - If creating prompt tuning without replacing the whole base prompt, use `schema: luc.prompt/v1` with a short `prompt` block and optional `match.providers`, `match.models`, or `match.model_prefixes`.
 - Prompt extensions are appended after the base system prompt, so keep them compact and targeted to the provider/model behavior you want to change.
 - For a one-stop surface-selection guide, read `references/extension-model.md` first.
@@ -78,5 +88,5 @@ Read bundled references when you need exact manifest shapes or end-to-end compos
 
 Current limits:
 
-- Runtime tools, extension hosts, providers, UI manifests, hooks, skills, themes, and prompts are supported.
+- Runtime tools, extension hosts, providers, UI manifests, hooks, skills, themes, prompts, and config-backed UI preferences are supported.
 - Runtime views are read-only in this slice.

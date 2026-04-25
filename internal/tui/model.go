@@ -99,6 +99,7 @@ type Model struct {
 	runtimeBroker  *teaUIBroker
 	runtimePage    runtimePageState
 	runtimeDialog  runtimeDialogState
+	agentStatus    agentStatusState
 	chrome         *chromeCache
 	composerAnchor int
 	composerActive int
@@ -283,6 +284,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.queueWheel(msg)
 	case flushWheelMsg:
 		return m, m.flushQueuedWheel()
+	case agentStatusTickMsg:
+		return m, m.updateAgentStatusTick()
 	case tea.MouseClickMsg:
 		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
 			return m, nil
@@ -420,7 +423,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Focus()
 			m.invalidateFooter()
 			m.resize()
-			return m, submitCmd(m.controller, value, attachments)
+			cmd := submitCmd(m.controller, value, attachments)
+			if m.submitInFlight {
+				cmd = tea.Batch(cmd, m.startAgentStatus(value))
+			}
+			return m, cmd
 		case key.Matches(msg, m.keys.RemoveImage):
 			if len(m.pendingImages) == 0 {
 				m.setStatus("No pending image")
@@ -477,7 +484,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(payload.Text) != "" {
 					m.status = payload.Text
 				}
+			case "message.assistant.delta":
+				m.stopAgentStatus()
 			case "message.assistant.final":
+				m.stopAgentStatus()
 				m.status = "Ready"
 			case "reload.finished":
 				m.status = "Reloaded"
@@ -579,6 +589,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case submitDoneMsg:
 		m.submitInFlight = false
+		m.stopAgentStatus()
 		m.invalidateFooter()
 		if msg.err != nil {
 			m.setStatus(msg.err.Error())

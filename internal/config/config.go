@@ -25,10 +25,11 @@ type ProviderConfig struct {
 }
 
 type UIConfig struct {
-	InspectorPosition string `yaml:"inspector_position"`
-	InspectorOpen     bool   `yaml:"inspector_open"`
-	Theme             string `yaml:"theme"`
-	ApprovalsMode     string `yaml:"approvals_mode"`
+	InspectorPosition string   `yaml:"inspector_position"`
+	InspectorOpen     bool     `yaml:"inspector_open"`
+	Theme             string   `yaml:"theme"`
+	ApprovalsMode     string   `yaml:"approvals_mode"`
+	AgentStatuses     []string `yaml:"agent_statuses"`
 }
 
 type ExtensionsConfig struct {
@@ -58,10 +59,11 @@ type partialProviderConfig struct {
 }
 
 type partialUIConfig struct {
-	InspectorPosition *string `yaml:"inspector_position"`
-	InspectorOpen     *bool   `yaml:"inspector_open"`
-	Theme             *string `yaml:"theme"`
-	ApprovalsMode     *string `yaml:"approvals_mode"`
+	InspectorPosition *string  `yaml:"inspector_position"`
+	InspectorOpen     *bool    `yaml:"inspector_open"`
+	Theme             *string  `yaml:"theme"`
+	ApprovalsMode     *string  `yaml:"approvals_mode"`
+	AgentStatuses     []string `yaml:"agent_statuses"`
 }
 
 type partialExtensionsConfig struct {
@@ -88,6 +90,13 @@ func Default() Config {
 			InspectorOpen:     false,
 			Theme:             "light",
 			ApprovalsMode:     "trusted",
+			AgentStatuses: []string{
+				"Churning...",
+				"Consulting the rubber duck...",
+				"Shuffling tokens...",
+				"Poking at the code goblin...",
+				"Brewing a plan...",
+			},
 		},
 		Extensions: ExtensionsConfig{
 			HooksEnabled: true,
@@ -110,6 +119,7 @@ func Load(workspaceRoot string) (Config, error) {
 
 	paths := []string{
 		filepath.Join(home, ".config", "luc", "config.yaml"),
+		filepath.Join(home, ".luc", "config.yaml"),
 		filepath.Join(workspaceRoot, ".luc", "config.yaml"),
 	}
 
@@ -165,6 +175,9 @@ func mergeFile(path string, cfg *Config) error {
 	}
 	if partial.UI.ApprovalsMode != nil {
 		cfg.UI.ApprovalsMode = *partial.UI.ApprovalsMode
+	}
+	if partial.UI.AgentStatuses != nil {
+		cfg.UI.AgentStatuses = append([]string(nil), partial.UI.AgentStatuses...)
 	}
 	if partial.Extensions.HooksEnabled != nil {
 		cfg.Extensions.HooksEnabled = *partial.Extensions.HooksEnabled

@@ -548,13 +548,53 @@ Matching behavior:
 
 ## Config
 
+luc merges config in this order:
+
+1. `~/.config/luc/config.yaml`
+2. `~/.luc/config.yaml`
+3. `<workspace>/.luc/config.yaml`
+
+Later files override earlier files. Use `~/.luc/config.yaml` for user-wide luc customizations that live with the rest of your runtime extensions, and project `.luc/config.yaml` for workspace-specific behavior.
+
 ```yaml
 ui:
   approvals_mode: trusted
+  agent_statuses:
+    - Churning...
+    - Consulting the rubber duck...
+    - Reticulating splines...
 
 extensions:
   hooks_enabled: true
 ```
+
+### Temporary agent status messages
+
+When a normal agent turn is in flight, the TUI appends a temporary chat-style status line with elapsed seconds, for example:
+
+```text
+· Churning... (4s)
+```
+
+These messages are deliberately playful and are not the real execution state. The real state stays in the inspector/overview. The temporary message stays under the transcript while the assistant is thinking or running tools, then is removed from the chat view once the assistant starts streaming its final text response.
+
+Customize the pool with `ui.agent_statuses` in either user or project config:
+
+```yaml
+# ~/.luc/config.yaml or <workspace>/.luc/config.yaml
+ui:
+  agent_statuses:
+    - Churning...
+    - Counting tiny robots...
+    - Asking the code goblin nicely...
+    - Reticulating splines...
+```
+
+Notes:
+
+- Empty strings are ignored.
+- Project config replaces the user/global list when `agent_statuses` is set.
+- Changes are picked up on app startup; use `luc reload` / `ctrl+r` for other runtime assets.
 
 Allowed approval modes:
 

@@ -172,7 +172,7 @@ func (s *stream) Recv() (provider.Event, error) {
 				call.ID = fmt.Sprintf("tool_%d", ev.OutputIndex)
 			}
 			return provider.Event{Type: "tool_call", ToolCall: call}, nil
-		case "response.completed":
+		case "response.completed", "response.incomplete":
 			if err := completedResponseError(ev); err != nil {
 				return provider.Event{}, err
 			}

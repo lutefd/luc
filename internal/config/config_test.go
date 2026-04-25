@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -23,6 +24,19 @@ provider:
 ui:
   inspector_open: false
   theme: dark
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lucDir := filepath.Join(home, ".luc")
+	if err := os.MkdirAll(lucDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lucDir, "config.yaml"), []byte(`
+ui:
+  agent_statuses:
+    - Reticulating splines...
+    - Counting tokens...
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +76,10 @@ ui:
 	if cfg.UI.Theme != "dark" {
 		t.Fatalf("expected global theme override, got %q", cfg.UI.Theme)
 	}
+	wantStatuses := []string{"Reticulating splines...", "Counting tokens..."}
+	if !reflect.DeepEqual(cfg.UI.AgentStatuses, wantStatuses) {
+		t.Fatalf("expected ~/.luc statuses, got %#v", cfg.UI.AgentStatuses)
+	}
 }
 
 func TestLoadMissingFilesUsesDefaults(t *testing.T) {
@@ -72,7 +90,7 @@ func TestLoadMissingFilesUsesDefaults(t *testing.T) {
 	}
 
 	def := Default()
-	if cfg != def {
+	if !reflect.DeepEqual(cfg, def) {
 		t.Fatalf("expected defaults, got %#v", cfg)
 	}
 }

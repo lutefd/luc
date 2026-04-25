@@ -110,6 +110,24 @@ func TestStreamRecvReturnsExceededToolLimitsFromCompletedResponse(t *testing.T) 
 	}
 }
 
+func TestStreamRecvReturnsExceededToolLimitsFromIncompleteResponse(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"exceeded_tool_limits"}}}`,
+		"",
+	}, "\n")
+
+	s := &stream{
+		body:    io.NopCloser(strings.NewReader(body)),
+		scanner: bufio.NewScanner(strings.NewReader(body)),
+		calls:   make(map[int]provider.ToolCall),
+	}
+
+	_, err := s.Recv()
+	if !errors.Is(err, provider.ErrExceededToolLimits) {
+		t.Fatalf("expected ErrExceededToolLimits, got %#v", err)
+	}
+}
+
 func TestResponseInputFromProviderPreservesToolMessages(t *testing.T) {
 	input := responseInputFromProvider([]provider.Message{
 		{Role: "user", Content: "which model are u?"},

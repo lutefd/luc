@@ -43,27 +43,28 @@ const (
 )
 
 type Model struct {
-	viewport     viewport.Model
-	width        int
-	height       int
-	blocks       []Block
-	spans        []blockSpan
-	contentLines int
-	contentVer   uint64
-	cache        map[string]string
-	expanded     map[string]bool
-	autoFollow   bool
-	selAnchor    int
-	selFocus     int
-	selecting    bool
-	theme        theme.Theme
-	renderer     RenderFunc
-	windowStart  int
-	windowSize   int
-	windowChunk  int
-	scrollbar    scrollbar.State
-	viewKey      string
-	viewCache    string
+	viewport        viewport.Model
+	width           int
+	height          int
+	blocks          []Block
+	spans           []blockSpan
+	contentLines    int
+	contentVer      uint64
+	cache           map[string]string
+	expanded        map[string]bool
+	autoFollow      bool
+	selAnchor       int
+	selFocus        int
+	selecting       bool
+	theme           theme.Theme
+	renderer        RenderFunc
+	windowStart     int
+	windowSize      int
+	windowChunk     int
+	scrollbar       scrollbar.State
+	ephemeralStatus string
+	viewKey         string
+	viewCache       string
 }
 
 type RenderFunc func(width int, text string) (string, error)
@@ -271,6 +272,15 @@ func (m *Model) ApplyBatch(events []history.EventEnvelope) {
 	}
 }
 
+func (m *Model) SetEphemeralStatus(status string) {
+	status = strings.TrimSpace(status)
+	if m.ephemeralStatus == status {
+		return
+	}
+	m.ephemeralStatus = status
+	m.render()
+}
+
 func (m *Model) Reset() {
 	m.blocks = nil
 	m.spans = nil
@@ -283,6 +293,7 @@ func (m *Model) Reset() {
 	m.selFocus = -1
 	m.selecting = false
 	m.windowStart = 0
+	m.ephemeralStatus = ""
 	m.viewKey = ""
 	m.viewCache = ""
 	if m.width > 0 && m.height > 0 {
@@ -421,13 +432,14 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 
 func (m Model) RenderKey() string {
 	return fmt.Sprintf(
-		"%d:%d:%d:%d:%d:%t",
+		"%d:%d:%d:%d:%d:%t:%s",
 		m.contentVer,
 		m.width,
 		m.height,
 		m.contentLines,
 		m.viewport.YOffset(),
 		m.scrollbar.Visible(),
+		m.ephemeralStatus,
 	)
 }
 
@@ -494,6 +506,15 @@ func (m *Model) render() {
 		height := m.renderedHeight(rendered)
 		m.spans = append(m.spans, blockSpan{start: line, end: line + max(0, height-1)})
 		line += height
+	}
+	if m.ephemeralStatus != "" {
+		if len(content) > 0 {
+			content = append(content, "")
+			line++
+		}
+		lines := splitRenderedLines(m.ephemeralStatus)
+		content = append(content, lines...)
+		line += len(lines)
 	}
 
 	if len(content) == 0 {

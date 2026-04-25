@@ -12,7 +12,7 @@ Use this guide when deciding how to extend `luc` without changing core code.
   - `luc.ui/v1` commands, views, approval policies
   - `luc.hook/v1` async hooks
   - `luc.prompt/v1` prompt additions
-  - providers, skills, themes
+  - providers, skills, themes, config-only UI preferences
 - Programmable surface:
   - `luc.extension/v1` long-lived extension hosts
 
@@ -62,6 +62,12 @@ Use `luc.prompt/v1` when:
 
 - you want small provider/model-targeted prompt additions
 - you do not need sync code or session state
+
+Use config-only UI preferences when:
+
+- the user wants to customize built-in UI behavior that already has config support
+- no new command, view, hook, provider, tool, or theme is needed
+- for playful temporary thinking messages, set `ui.agent_statuses` in `~/.luc/config.yaml` or `<workspace>/.luc/config.yaml`
 
 Use an exec provider when:
 
