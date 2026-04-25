@@ -1,4 +1,0 @@
-This is a freshly written test2.txt file.
-It exists to show a newly created file in diffs.
-A few lines changed from whatever was here before.
-Done.
