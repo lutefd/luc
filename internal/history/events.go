@@ -104,6 +104,8 @@ type UIActionPayload struct {
 	Blocking  bool           `json:"blocking,omitempty"`
 	Title     string         `json:"title,omitempty"`
 	Body      string         `json:"body,omitempty"`
+	Render    string         `json:"render,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
 	ViewID    string         `json:"view_id,omitempty"`
 	CommandID string         `json:"command_id,omitempty"`
 	ToolName  string         `json:"tool_name,omitempty"`

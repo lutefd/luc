@@ -26,6 +26,8 @@ type UIAction struct {
 	Blocking  bool           `json:"blocking,omitempty"`
 	Title     string         `json:"title,omitempty"`
 	Body      string         `json:"body,omitempty"`
+	Render    string         `json:"render,omitempty"`
+	Input     UIActionInput  `json:"input,omitempty"`
 	ViewID    string         `json:"view_id,omitempty"`
 	CommandID string         `json:"command_id,omitempty"`
 	ToolName  string         `json:"tool_name,omitempty"`
@@ -33,6 +35,13 @@ type UIAction struct {
 	Result    UIActionResult `json:"result,omitempty"`
 	Options   []UIOption     `json:"options,omitempty"`
 	Context   map[string]any `json:"context,omitempty"`
+}
+
+type UIActionInput struct {
+	Enabled     bool   `json:"enabled,omitempty"`
+	Multiline   bool   `json:"multiline,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Value       string `json:"value,omitempty"`
 }
 
 type UIActionResult struct {

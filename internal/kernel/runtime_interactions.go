@@ -61,6 +61,15 @@ func ensureUIActionID(action *luruntime.UIAction) {
 }
 
 func (c *Controller) emitUIAction(action luruntime.UIAction) {
+	var input map[string]any
+	if action.Input.Enabled {
+		input = map[string]any{
+			"enabled":     action.Input.Enabled,
+			"multiline":   action.Input.Multiline,
+			"placeholder": action.Input.Placeholder,
+			"value":       action.Input.Value,
+		}
+	}
 	var result map[string]any
 	if strings.TrimSpace(action.Result.Presentation) != "" {
 		result = map[string]any{"presentation": action.Result.Presentation}
@@ -71,6 +80,8 @@ func (c *Controller) emitUIAction(action luruntime.UIAction) {
 		Blocking:  action.Blocking,
 		Title:     action.Title,
 		Body:      action.Body,
+		Render:    action.Render,
+		Input:     input,
 		ViewID:    action.ViewID,
 		CommandID: action.CommandID,
 		ToolName:  action.ToolName,
