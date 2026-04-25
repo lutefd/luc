@@ -6,11 +6,13 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/lutefd/luc/internal/kernel"
 	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/runtime/viewrender"
+	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/tui/commands"
 )
 
@@ -58,6 +60,7 @@ type runtimeDialogState struct {
 	open     bool
 	action   luruntime.UIAction
 	active   int
+	input    textarea.Model
 	response chan uiBrokerResponse
 }
 
@@ -271,7 +274,7 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
 	switch strings.TrimSpace(action.Kind) {
 	case "modal.open", "confirm.request":
-		m.runtimeDialog = runtimeDialogState{open: true, action: action, response: response}
+		m.runtimeDialog = m.newRuntimeDialogState(action, response)
 		return nil
 	case "view.open":
 		view, ok := m.controller.RuntimeContributions().UI.View(action.ViewID)
@@ -329,6 +332,28 @@ func (m *Model) maybeRefreshActiveRuntimeView() tea.Cmd {
 	return nil
 }
 
+func (m *Model) newRuntimeDialogState(action luruntime.UIAction, response chan uiBrokerResponse) runtimeDialogState {
+	state := runtimeDialogState{open: true, action: action, response: response}
+	if action.Input.Enabled {
+		input := textarea.New()
+		input.Placeholder = strings.TrimSpace(action.Input.Placeholder)
+		input.SetValue(action.Input.Value)
+		input.Focus()
+		input.ShowLineNumbers = false
+		input.Prompt = "> "
+		input.CharLimit = 0
+		if action.Input.Multiline {
+			input.SetHeight(4)
+			input.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "alt+enter"), key.WithHelp("shift+enter", "newline"))
+		} else {
+			input.SetHeight(1)
+		}
+		applyInputTheme(&input, m.theme, theme.ResolveVariant(m.controller.Config().UI.Theme))
+		state.input = input
+	}
+	return state
+}
+
 func (m *Model) replyRuntimeAction(response chan uiBrokerResponse, result luruntime.UIResult, err error) {
 	if response == nil {
 		return
@@ -343,13 +368,7 @@ func (m *Model) handleRuntimeDialogKey(msg tea.KeyPressMsg) tea.Cmd {
 	if !m.runtimeDialog.open {
 		return nil
 	}
-	options := m.runtimeDialog.action.Options
-	if len(options) == 0 {
-		options = []luruntime.UIOption{
-			{ID: "ok", Label: "OK", Primary: true},
-			{ID: "cancel", Label: "Cancel"},
-		}
-	}
+	options := runtimeDialogOptions(m.runtimeDialog.action)
 
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc", "ctrl+g"))):
@@ -357,12 +376,12 @@ func (m *Model) handleRuntimeDialogKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.replyRuntimeAction(m.runtimeDialog.response, luruntime.UIResult{ActionID: action.ID}, nil)
 		m.runtimeDialog = runtimeDialogState{}
 		return nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("left", "shift+tab"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("left")))):
 		if m.runtimeDialog.active > 0 {
 			m.runtimeDialog.active--
 		}
 		return nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("right", "tab"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("right")))):
 		if m.runtimeDialog.active < len(options)-1 {
 			m.runtimeDialog.active++
 		}
@@ -371,11 +390,27 @@ func (m *Model) handleRuntimeDialogKey(msg tea.KeyPressMsg) tea.Cmd {
 		action := m.runtimeDialog.action
 		choice := options[m.runtimeDialog.active]
 		result := luruntime.UIResult{ActionID: action.ID, Accepted: choice.ID != "cancel", ChoiceID: choice.ID}
+		if action.Input.Enabled {
+			result.Data = map[string]any{"input": m.runtimeDialog.input.Value()}
+		}
 		m.replyRuntimeAction(m.runtimeDialog.response, result, nil)
 		m.runtimeDialog = runtimeDialogState{}
 		return nil
 	}
+	if m.runtimeDialog.action.Input.Enabled {
+		var cmd tea.Cmd
+		m.runtimeDialog.input, cmd = m.runtimeDialog.input.Update(msg)
+		return cmd
+	}
 	return nil
+}
+
+func runtimeDialogOptions(action luruntime.UIAction) []luruntime.UIOption {
+	options := action.Options
+	if len(options) == 0 {
+		return []luruntime.UIOption{{ID: "ok", Label: "OK", Primary: true}, {ID: "cancel", Label: "Cancel"}}
+	}
+	return options
 }
 
 func (m Model) renderRuntimeDialog() string {
@@ -391,10 +426,8 @@ func (m Model) renderRuntimeDialog() string {
 	if body == "" {
 		body = "The extension requested input."
 	}
-	options := action.Options
-	if len(options) == 0 {
-		options = []luruntime.UIOption{{ID: "ok", Label: "OK", Primary: true}, {ID: "cancel", Label: "Cancel"}}
-	}
+	body = m.renderRuntimeDialogBody(body, action.Render)
+	options := runtimeDialogOptions(action)
 	var buttons []string
 	for i, option := range options {
 		label := strings.TrimSpace(option.Label)
@@ -410,18 +443,49 @@ func (m Model) renderRuntimeDialog() string {
 			buttons = append(buttons, m.theme.PaletteFrame.Render(" "+label+" "))
 		}
 	}
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
+	parts := []string{
 		m.theme.HeaderBrand.Render(title),
 		"",
 		m.theme.SidebarValue.Render(body),
+	}
+	if action.Input.Enabled {
+		parts = append(parts, "", m.runtimeDialog.input.View())
+	}
+	parts = append(parts,
 		"",
 		strings.Join(buttons, " "),
 		"",
-		m.theme.Footer.Render("tab choose  •  enter confirm  •  esc cancel"),
+		m.theme.Footer.Render(runtimeDialogHelp(action)),
 	)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	box := m.theme.PaletteFrame.Width(min(72, max(40, m.width*2/3))).Render(m.theme.PaletteSurface.Render(content))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
+}
+
+func (m Model) renderRuntimeDialogBody(body, render string) string {
+	if !strings.EqualFold(strings.TrimSpace(render), "markdown") {
+		return body
+	}
+	_, variant, err := theme.Load(m.controller.Config().UI.Theme, m.controller.Workspace().Root)
+	if err != nil {
+		return body
+	}
+	renderer, err := theme.NewMarkdownRenderer(min(72, max(40, m.width*2/3))-4, variant)
+	if err != nil {
+		return body
+	}
+	rendered, err := renderer.Render(body)
+	if err != nil {
+		return body
+	}
+	return strings.TrimSpace(rendered)
+}
+
+func runtimeDialogHelp(action luruntime.UIAction) string {
+	if action.Input.Enabled && action.Input.Multiline {
+		return "tab choose  •  shift+enter newline  •  enter confirm  •  esc cancel"
+	}
+	return "tab choose  •  enter confirm  •  esc cancel"
 }
 
 func (m *Model) handleRuntimePageKey(msg tea.KeyPressMsg) tea.Cmd {
