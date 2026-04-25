@@ -94,24 +94,33 @@ type ReloadPayload struct {
 	Error   string `json:"error,omitempty"`
 }
 
+type SessionHandoffPayload struct {
+	Title        string `json:"title,omitempty"`
+	Body         string `json:"body,omitempty"`
+	Render       string `json:"render,omitempty"`
+	InitialInput string `json:"initial_input,omitempty"`
+}
+
 type StatusPayload struct {
 	Text string `json:"text"`
 }
 
 type UIActionPayload struct {
-	ID        string         `json:"id"`
-	Kind      string         `json:"kind"`
-	Blocking  bool           `json:"blocking,omitempty"`
-	Title     string         `json:"title,omitempty"`
-	Body      string         `json:"body,omitempty"`
-	Render    string         `json:"render,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	ViewID    string         `json:"view_id,omitempty"`
-	CommandID string         `json:"command_id,omitempty"`
-	ToolName  string         `json:"tool_name,omitempty"`
-	Arguments map[string]any `json:"arguments,omitempty"`
-	Result    map[string]any `json:"result,omitempty"`
-	Context   map[string]any `json:"context,omitempty"`
+	ID           string         `json:"id"`
+	Kind         string         `json:"kind"`
+	Blocking     bool           `json:"blocking,omitempty"`
+	Title        string         `json:"title,omitempty"`
+	Body         string         `json:"body,omitempty"`
+	Render       string         `json:"render,omitempty"`
+	Input        map[string]any `json:"input,omitempty"`
+	ViewID       string         `json:"view_id,omitempty"`
+	CommandID    string         `json:"command_id,omitempty"`
+	ToolName     string         `json:"tool_name,omitempty"`
+	Arguments    map[string]any `json:"arguments,omitempty"`
+	Result       map[string]any `json:"result,omitempty"`
+	Handoff      map[string]any `json:"handoff,omitempty"`
+	InitialInput string         `json:"initial_input,omitempty"`
+	Context      map[string]any `json:"context,omitempty"`
 }
 
 type UIResultPayload struct {

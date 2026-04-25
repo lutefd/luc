@@ -66,7 +66,12 @@ views:
       - id: refresh
         label: Refresh
         action:
-          kind: view.refresh
+          kind: session.handoff
+          title: Start implementation
+          handoff:
+            body: Approved changes.
+            render: markdown
+          initial_input: Implement the approved changes.
 `)
 	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "ui", "project.yaml"), `schema: luc.ui/v1
 id: project-ui
@@ -104,7 +109,7 @@ approval_policies:
 	if view.Title != "Package Provider Status" || view.Placement != "page" {
 		t.Fatalf("expected package override for view, got %#v", view)
 	}
-	if len(view.Actions) != 1 || view.Actions[0].ID != "refresh" || view.Actions[0].Action.Kind != "view.refresh" {
+	if len(view.Actions) != 1 || view.Actions[0].ID != "refresh" || view.Actions[0].Action.Kind != "session.handoff" || view.Actions[0].Action.InitialInput != "Implement the approved changes." {
 		t.Fatalf("expected package override for view actions, got %#v", view.Actions)
 	}
 	policy, ok := set.UI.ApprovalPolicyForTool("bash")

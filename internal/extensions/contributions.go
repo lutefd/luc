@@ -17,21 +17,12 @@ type uiManifest struct {
 	ID                       string   `yaml:"id" json:"id"`
 	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
 	Commands                 []struct {
-		ID          string `yaml:"id" json:"id"`
-		Name        string `yaml:"name" json:"name"`
-		Description string `yaml:"description" json:"description"`
-		Category    string `yaml:"category" json:"category"`
-		Shortcut    string `yaml:"shortcut" json:"shortcut"`
-		Action      struct {
-			Kind      string         `yaml:"kind" json:"kind"`
-			ViewID    string         `yaml:"view_id" json:"view_id"`
-			CommandID string         `yaml:"command_id" json:"command_id"`
-			ToolName  string         `yaml:"tool_name" json:"tool_name"`
-			Arguments map[string]any `yaml:"arguments" json:"arguments"`
-			Result    struct {
-				Presentation string `yaml:"presentation" json:"presentation"`
-			} `yaml:"result" json:"result"`
-		} `yaml:"action" json:"action"`
+		ID          string             `yaml:"id" json:"id"`
+		Name        string             `yaml:"name" json:"name"`
+		Description string             `yaml:"description" json:"description"`
+		Category    string             `yaml:"category" json:"category"`
+		Shortcut    string             `yaml:"shortcut" json:"shortcut"`
+		Action      viewActionManifest `yaml:"action" json:"action"`
 	} `yaml:"commands" json:"commands"`
 	Views []struct {
 		ID         string `yaml:"id" json:"id"`
@@ -80,6 +71,12 @@ type viewActionManifest struct {
 	Result    struct {
 		Presentation string `yaml:"presentation" json:"presentation"`
 	} `yaml:"result" json:"result"`
+	Handoff struct {
+		Title  string `yaml:"title" json:"title"`
+		Body   string `yaml:"body" json:"body"`
+		Render string `yaml:"render" json:"render"`
+	} `yaml:"handoff" json:"handoff"`
+	InitialInput string `yaml:"initial_input" json:"initial_input"`
 }
 
 type hookManifest struct {
@@ -189,7 +186,13 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 				Result: luruntime.RuntimeActionResult{
 					Presentation: strings.TrimSpace(command.Action.Result.Presentation),
 				},
-				SourcePath: path,
+				Handoff: luruntime.RuntimeHandoff{
+					Title:  strings.TrimSpace(command.Action.Handoff.Title),
+					Body:   command.Action.Handoff.Body,
+					Render: strings.TrimSpace(command.Action.Handoff.Render),
+				},
+				InitialInput: command.Action.InitialInput,
+				SourcePath:   path,
 			}
 		}
 		for _, view := range manifest.Views {
@@ -464,6 +467,12 @@ func runtimeActionFromManifest(action viewActionManifest) luruntime.RuntimeActio
 		Result: luruntime.RuntimeActionResult{
 			Presentation: strings.TrimSpace(action.Result.Presentation),
 		},
+		Handoff: luruntime.RuntimeHandoff{
+			Title:  strings.TrimSpace(action.Handoff.Title),
+			Body:   action.Handoff.Body,
+			Render: strings.TrimSpace(action.Handoff.Render),
+		},
+		InitialInput: action.InitialInput,
 	}
 }
 
@@ -521,7 +530,7 @@ func parseUIManifest(path string) (uiManifest, error) {
 	}
 	for _, command := range manifest.Commands {
 		switch strings.TrimSpace(command.Action.Kind) {
-		case "", "view.open", "view.refresh", "command.run", "tool.run":
+		case "", "view.open", "view.refresh", "command.run", "tool.run", "session.handoff":
 		default:
 			return uiManifest{}, fmt.Errorf("%s: unsupported command action kind %q", path, command.Action.Kind)
 		}
@@ -542,7 +551,7 @@ func parseUIManifest(path string) (uiManifest, error) {
 		}
 		for _, action := range view.Actions {
 			switch strings.TrimSpace(action.Action.Kind) {
-			case "", "view.open", "view.refresh", "command.run", "tool.run", "modal.open", "confirm.request":
+			case "", "view.open", "view.refresh", "command.run", "tool.run", "modal.open", "confirm.request", "session.handoff":
 			default:
 				return uiManifest{}, fmt.Errorf("%s: unsupported view action kind %q", path, action.Action.Kind)
 			}
