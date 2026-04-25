@@ -101,6 +101,12 @@ type SessionHandoffPayload struct {
 	InitialInput string `json:"initial_input,omitempty"`
 }
 
+type TimelineNotePayload struct {
+	Title  string `json:"title,omitempty"`
+	Body   string `json:"body,omitempty"`
+	Render string `json:"render,omitempty"`
+}
+
 type StatusPayload struct {
 	Text string `json:"text"`
 }

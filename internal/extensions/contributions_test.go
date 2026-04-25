@@ -157,12 +157,70 @@ commands:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Diagnostics) != 2 {
-		t.Fatalf("expected shortcut diagnostics, got %#v", set.Diagnostics)
+	messages := ""
+	for _, diagnostic := range set.Diagnostics {
+		messages += diagnostic.Message + "\n"
 	}
-	messages := set.Diagnostics[0].Message + "\n" + set.Diagnostics[1].Message
 	if !strings.Contains(messages, "conflicts with runtime command") || !strings.Contains(messages, "conflicts with a built-in shortcut") {
 		t.Fatalf("expected runtime and built-in shortcut collision diagnostics, got %q", messages)
+	}
+}
+
+func TestLoadRuntimeContributionsReportsActionReferenceDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "ui", "project.yaml"), `schema: luc.ui/v1
+id: project-ui
+commands:
+  - id: missing.view
+    name: Missing View
+    action:
+      kind: view.open
+      view_id: missing
+  - id: missing.command
+    name: Missing Command
+    action:
+      kind: command.run
+      command_id: does.not.exist
+  - id: missing.tool
+    name: Missing Tool Name
+    action:
+      kind: tool.run
+  - id: empty.handoff
+    name: Empty Handoff
+    action:
+      kind: session.handoff
+views:
+  - id: review
+    title: Review
+    placement: page
+    source_tool: review_summary
+    render: markdown
+    actions:
+      - id: missing-view
+        label: Missing View
+        action:
+          kind: view.refresh
+          view_id: missing
+`)
+
+	set, err := LoadRuntimeContributions(root, luruntime.DefaultHostCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := ""
+	for _, diagnostic := range set.Diagnostics {
+		messages += diagnostic.Message + "\n"
+	}
+	for _, want := range []string{
+		`references unknown view "missing"`,
+		`references unknown command "does.not.exist"`,
+		`is missing tool_name`,
+		`should include handoff.body or initial_input`,
+		`view review action missing-view`,
+	} {
+		if !strings.Contains(messages, want) {
+			t.Fatalf("expected diagnostic containing %q, got %q", want, messages)
+		}
 	}
 }
 

@@ -18,6 +18,9 @@ type RuntimeCommand struct {
 	Category     string              `json:"category,omitempty"`
 	Shortcut     string              `json:"shortcut,omitempty"`
 	ActionKind   string              `json:"action_kind,omitempty"`
+	Title        string              `json:"title,omitempty"`
+	Body         string              `json:"body,omitempty"`
+	Render       string              `json:"render,omitempty"`
 	ViewID       string              `json:"view_id,omitempty"`
 	CommandID    string              `json:"command_id,omitempty"`
 	ToolName     string              `json:"tool_name,omitempty"`
