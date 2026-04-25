@@ -18,6 +18,9 @@ id: global-ui
 commands:
   - id: provider.status.open
     name: Open provider status
+    description: Show provider health details.
+    category: Provider
+    shortcut: ctrl+shift+p
     action:
       kind: view.open
       view_id: provider.status
@@ -53,6 +56,14 @@ approval_policies:
 	set, err := LoadRuntimeContributions(root, luruntime.DefaultHostCapabilities())
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	command, ok := set.UI.Command("provider.status.open")
+	if !ok {
+		t.Fatal("expected merged runtime command")
+	}
+	if command.Description != "Show provider health details." || command.Category != "Provider" || command.Shortcut != "ctrl+shift+p" {
+		t.Fatalf("expected runtime command metadata, got %#v", command)
 	}
 
 	view, ok := set.UI.View("provider.status")

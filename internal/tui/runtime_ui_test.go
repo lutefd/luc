@@ -23,6 +23,9 @@ id: provider-tools
 commands:
   - id: provider.status.open
     name: Open provider status
+    description: Show provider health details.
+    category: Provider
+    shortcut: ctrl+shift+p
     action:
       kind: view.open
       view_id: provider.status
@@ -43,7 +46,7 @@ views:
 	found := false
 	for _, command := range model.registry.All() {
 		if command.ID == "provider.status.open" {
-			found = true
+			found = command.Description == "Show provider health details." && command.Category == "Provider" && command.Shortcut == "ctrl+shift+p"
 			break
 		}
 	}

@@ -131,8 +131,11 @@ func (m *Model) rebuildCommandRegistry() {
 	for _, command := range m.controller.RuntimeContributions().UI.Commands() {
 		commandID := command.ID
 		registry.Register(commands.Command{
-			ID:   command.ID,
-			Name: command.Name,
+			ID:          command.ID,
+			Name:        command.Name,
+			Description: command.Description,
+			Category:    command.Category,
+			Shortcut:    command.Shortcut,
 			Run: func() tea.Cmd {
 				return func() tea.Msg {
 					return runRuntimeCommandMsg{CommandID: commandID}

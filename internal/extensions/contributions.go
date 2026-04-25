@@ -17,9 +17,12 @@ type uiManifest struct {
 	ID                       string   `yaml:"id" json:"id"`
 	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
 	Commands                 []struct {
-		ID     string `yaml:"id" json:"id"`
-		Name   string `yaml:"name" json:"name"`
-		Action struct {
+		ID          string `yaml:"id" json:"id"`
+		Name        string `yaml:"name" json:"name"`
+		Description string `yaml:"description" json:"description"`
+		Category    string `yaml:"category" json:"category"`
+		Shortcut    string `yaml:"shortcut" json:"shortcut"`
+		Action      struct {
 			Kind      string `yaml:"kind" json:"kind"`
 			ViewID    string `yaml:"view_id" json:"view_id"`
 			CommandID string `yaml:"command_id" json:"command_id"`
@@ -137,12 +140,15 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 				commandOrder = append(commandOrder, id)
 			}
 			commandByID[id] = luruntime.RuntimeCommand{
-				ID:         id,
-				Name:       strings.TrimSpace(firstNonEmpty(command.Name, id)),
-				ActionKind: strings.TrimSpace(command.Action.Kind),
-				ViewID:     strings.TrimSpace(command.Action.ViewID),
-				CommandID:  strings.TrimSpace(command.Action.CommandID),
-				SourcePath: path,
+				ID:          id,
+				Name:        strings.TrimSpace(firstNonEmpty(command.Name, id)),
+				Description: strings.TrimSpace(command.Description),
+				Category:    strings.TrimSpace(command.Category),
+				Shortcut:    strings.TrimSpace(command.Shortcut),
+				ActionKind:  strings.TrimSpace(command.Action.Kind),
+				ViewID:      strings.TrimSpace(command.Action.ViewID),
+				CommandID:   strings.TrimSpace(command.Action.CommandID),
+				SourcePath:  path,
 			}
 		}
 		for _, view := range manifest.Views {

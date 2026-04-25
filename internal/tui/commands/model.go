@@ -18,11 +18,13 @@ import (
 // Command is a single palette entry. Run is invoked when the user selects it;
 // it returns a tea.Cmd that the host program executes.
 type Command struct {
-	ID       string
-	Name     string
-	Shortcut string
-	Hint     string
-	Run      func() tea.Cmd
+	ID          string
+	Name        string
+	Description string
+	Category    string
+	Shortcut    string
+	Hint        string
+	Run         func() tea.Cmd
 }
 
 // Registry is a mutable list of commands, safe to extend at startup.
@@ -178,6 +180,8 @@ func (m Model) filtered() []Command {
 	var out []Command
 	for _, c := range all {
 		if strings.Contains(strings.ToLower(c.Name), q) ||
+			strings.Contains(strings.ToLower(c.Description), q) ||
+			strings.Contains(strings.ToLower(c.Category), q) ||
 			strings.Contains(strings.ToLower(c.ID), q) {
 			out = append(out, c)
 		}
@@ -263,6 +267,9 @@ func (m Model) View() string {
 // so ANSI-styled text measures correctly.
 func renderItem(th theme.Theme, c Command, width int, active bool) string {
 	name := " " + c.Name
+	if strings.TrimSpace(c.Category) != "" {
+		name = " " + c.Category + ": " + c.Name
+	}
 	shortcut := c.Shortcut
 	if shortcut != "" {
 		shortcut = shortcut + " "
