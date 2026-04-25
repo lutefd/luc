@@ -131,8 +131,11 @@ func (m *Model) rebuildCommandRegistry() {
 	for _, command := range m.controller.RuntimeContributions().UI.Commands() {
 		commandID := command.ID
 		registry.Register(commands.Command{
-			ID:   command.ID,
-			Name: command.Name,
+			ID:          command.ID,
+			Name:        command.Name,
+			Description: command.Description,
+			Category:    command.Category,
+			Shortcut:    command.Shortcut,
 			Run: func() tea.Cmd {
 				return func() tea.Msg {
 					return runRuntimeCommandMsg{CommandID: commandID}
@@ -194,6 +197,19 @@ func (m *Model) registerBuiltInCommands(registry *commands.Registry) {
 		ID: "quit", Name: "Quit", Shortcut: "ctrl+c",
 		Run: func() tea.Cmd { return tea.Quit },
 	})
+}
+
+func (m *Model) handleRuntimeCommandShortcut(msg tea.KeyPressMsg) tea.Cmd {
+	shortcut := strings.ToLower(strings.TrimSpace(msg.Keystroke()))
+	if shortcut == "" {
+		shortcut = strings.ToLower(strings.TrimSpace(msg.String()))
+	}
+	for _, command := range m.controller.RuntimeContributions().UI.Commands() {
+		if strings.EqualFold(strings.TrimSpace(command.Shortcut), shortcut) {
+			return m.handleRuntimeCommand(command.ID)
+		}
+	}
+	return nil
 }
 
 func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {

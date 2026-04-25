@@ -241,6 +241,9 @@ id: provider-tools
 commands:
   - id: provider.status.open
     name: Open provider status
+    description: Show the current provider status panel.
+    category: Provider
+    shortcut: ctrl+shift+p
     action:
       kind: view.open
       view_id: provider.status
@@ -262,6 +265,8 @@ approval_policies:
 
 Supported runtime UI primitives in this slice:
 
+- Command metadata: `description`, `category`, and `shortcut`
+- Command shortcuts use Bubble Tea keystroke syntax such as `ctrl+shift+p`; built-in shortcut collisions and duplicate runtime shortcut collisions are reported as diagnostics.
 - Command actions: `view.open`, `view.refresh`, `command.run`
 - Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`
 - View placements: `inspector_tab`, `page`

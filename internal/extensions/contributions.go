@@ -17,9 +17,12 @@ type uiManifest struct {
 	ID                       string   `yaml:"id" json:"id"`
 	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
 	Commands                 []struct {
-		ID     string `yaml:"id" json:"id"`
-		Name   string `yaml:"name" json:"name"`
-		Action struct {
+		ID          string `yaml:"id" json:"id"`
+		Name        string `yaml:"name" json:"name"`
+		Description string `yaml:"description" json:"description"`
+		Category    string `yaml:"category" json:"category"`
+		Shortcut    string `yaml:"shortcut" json:"shortcut"`
+		Action      struct {
 			Kind      string `yaml:"kind" json:"kind"`
 			ViewID    string `yaml:"view_id" json:"view_id"`
 			CommandID string `yaml:"command_id" json:"command_id"`
@@ -137,12 +140,15 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 				commandOrder = append(commandOrder, id)
 			}
 			commandByID[id] = luruntime.RuntimeCommand{
-				ID:         id,
-				Name:       strings.TrimSpace(firstNonEmpty(command.Name, id)),
-				ActionKind: strings.TrimSpace(command.Action.Kind),
-				ViewID:     strings.TrimSpace(command.Action.ViewID),
-				CommandID:  strings.TrimSpace(command.Action.CommandID),
-				SourcePath: path,
+				ID:          id,
+				Name:        strings.TrimSpace(firstNonEmpty(command.Name, id)),
+				Description: strings.TrimSpace(command.Description),
+				Category:    strings.TrimSpace(command.Category),
+				Shortcut:    strings.TrimSpace(command.Shortcut),
+				ActionKind:  strings.TrimSpace(command.Action.Kind),
+				ViewID:      strings.TrimSpace(command.Action.ViewID),
+				CommandID:   strings.TrimSpace(command.Action.CommandID),
+				SourcePath:  path,
 			}
 		}
 		for _, view := range manifest.Views {
@@ -187,6 +193,7 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 	for _, id := range commandOrder {
 		commands = append(commands, commandByID[id])
 	}
+	diagnostics = append(diagnostics, diagnoseRuntimeCommandShortcuts(commands)...)
 	views := make([]luruntime.RuntimeView, 0, len(viewOrder))
 	for _, id := range viewOrder {
 		views = append(views, viewByID[id])
@@ -196,6 +203,48 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 		policies = append(policies, policyByID[id])
 	}
 	return commands, views, policies, diagnostics, nil
+}
+
+func diagnoseRuntimeCommandShortcuts(commands []luruntime.RuntimeCommand) []luruntime.Diagnostic {
+	byShortcut := map[string]luruntime.RuntimeCommand{}
+	var diagnostics []luruntime.Diagnostic
+	for _, command := range commands {
+		shortcut := normalizeCommandShortcut(command.Shortcut)
+		if shortcut == "" {
+			continue
+		}
+		if isReservedBuiltInShortcut(shortcut) {
+			diagnostics = append(diagnostics, luruntime.Diagnostic{
+				SourcePath: command.SourcePath,
+				Kind:       "ui.command",
+				Message:    fmt.Sprintf("runtime command %q shortcut %q conflicts with a built-in shortcut", command.ID, command.Shortcut),
+			})
+			continue
+		}
+		if previous, ok := byShortcut[shortcut]; ok {
+			diagnostics = append(diagnostics, luruntime.Diagnostic{
+				SourcePath: command.SourcePath,
+				Kind:       "ui.command",
+				Message:    fmt.Sprintf("runtime command %q shortcut %q conflicts with runtime command %q", command.ID, command.Shortcut, previous.ID),
+			})
+			continue
+		}
+		byShortcut[shortcut] = command
+	}
+	return diagnostics
+}
+
+func normalizeCommandShortcut(shortcut string) string {
+	return strings.ToLower(strings.TrimSpace(shortcut))
+}
+
+func isReservedBuiltInShortcut(shortcut string) bool {
+	switch shortcut {
+	case "esc", "ctrl+.", "ctrl+r", "ctrl+o", "ctrl+]", "ctrl+\\", "ctrl+m", "ctrl+l", "ctrl+p", "ctrl+c", "ctrl+q", "enter", "shift+enter", "alt+enter", "pgup", "pgdown", "ctrl+d", "ctrl+v", "cmd+v", "ctrl+y", "cmd+c":
+		return true
+	default:
+		return false
+	}
 }
 
 func loadHookRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntime.HookSubscription, []luruntime.Diagnostic, error) {

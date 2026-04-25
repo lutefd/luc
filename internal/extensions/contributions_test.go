@@ -3,6 +3,7 @@ package extensions
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	luruntime "github.com/lutefd/luc/internal/runtime"
@@ -18,6 +19,9 @@ id: global-ui
 commands:
   - id: provider.status.open
     name: Open provider status
+    description: Show provider health details.
+    category: Provider
+    shortcut: ctrl+shift+p
     action:
       kind: view.open
       view_id: provider.status
@@ -55,6 +59,14 @@ approval_policies:
 		t.Fatal(err)
 	}
 
+	command, ok := set.UI.Command("provider.status.open")
+	if !ok {
+		t.Fatal("expected merged runtime command")
+	}
+	if command.Description != "Show provider health details." || command.Category != "Provider" || command.Shortcut != "ctrl+shift+p" {
+		t.Fatalf("expected runtime command metadata, got %#v", command)
+	}
+
 	view, ok := set.UI.View("provider.status")
 	if !ok {
 		t.Fatal("expected merged runtime view")
@@ -68,6 +80,51 @@ approval_policies:
 	}
 	if policy.Mode != "confirm" || policy.Title != "Run shell command?" {
 		t.Fatalf("expected project override for policy, got %#v", policy)
+	}
+}
+
+func TestLoadRuntimeContributionsReportsRuntimeCommandShortcutCollisions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+
+	mustWriteRuntimeManifest(t, filepath.Join(home, ".luc", "ui", "global.yaml"), `schema: luc.ui/v1
+id: global-ui
+commands:
+  - id: global.review
+    name: Global Review
+    shortcut: ctrl+shift+r
+    action:
+      kind: view.open
+      view_id: review
+`)
+	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "ui", "project.yaml"), `schema: luc.ui/v1
+id: project-ui
+commands:
+  - id: project.review
+    name: Project Review
+    shortcut: ctrl+shift+r
+    action:
+      kind: view.open
+      view_id: review
+  - id: project.reload
+    name: Runtime Reload Conflict
+    shortcut: ctrl+r
+    action:
+      kind: view.open
+      view_id: review
+`)
+
+	set, err := LoadRuntimeContributions(root, luruntime.DefaultHostCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Diagnostics) != 2 {
+		t.Fatalf("expected shortcut diagnostics, got %#v", set.Diagnostics)
+	}
+	messages := set.Diagnostics[0].Message + "\n" + set.Diagnostics[1].Message
+	if !strings.Contains(messages, "conflicts with runtime command") || !strings.Contains(messages, "conflicts with a built-in shortcut") {
+		t.Fatalf("expected runtime and built-in shortcut collision diagnostics, got %q", messages)
 	}
 }
 

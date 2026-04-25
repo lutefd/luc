@@ -23,6 +23,9 @@ id: provider-tools
 commands:
   - id: provider.status.open
     name: Open provider status
+    description: Show provider health details.
+    category: Provider
+    shortcut: ctrl+shift+p
     action:
       kind: view.open
       view_id: provider.status
@@ -43,12 +46,62 @@ views:
 	found := false
 	for _, command := range model.registry.All() {
 		if command.ID == "provider.status.open" {
-			found = true
+			found = command.Description == "Show provider health details." && command.Category == "Provider" && command.Shortcut == "ctrl+shift+p"
 			break
 		}
 	}
 	if !found {
 		t.Fatalf("expected runtime command in palette, got %#v", model.registry.All())
+	}
+}
+
+func TestModelDispatchesRuntimeCommandShortcut(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "provider_status.yaml"), `name: provider_status
+description: Show provider status.
+command: printf 'shortcut ok'
+schema:
+  type: object
+  properties: {}
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "provider.yaml"), `schema: luc.ui/v1
+id: provider-tools
+commands:
+  - id: provider.status.open
+    name: Open provider status
+    shortcut: ctrl+shift+r
+    action:
+      kind: view.open
+      view_id: provider.status
+views:
+  - id: provider.status
+    title: Provider Status
+    placement: inspector_tab
+    source_tool: provider_status
+    render: markdown
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl | tea.ModShift})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime shortcut to load view")
+	}
+	m.inspector.SetSize(48, 18)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if view := ansi.Strip(m.inspector.DetailView()); !strings.Contains(view, "shortcut ok") {
+		t.Fatalf("expected runtime inspector content, got %q", view)
 	}
 }
 
