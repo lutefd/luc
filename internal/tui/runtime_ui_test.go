@@ -291,7 +291,7 @@ views:
 	if view := ansi.Strip(m.inspector.DetailView()); !strings.Contains(view, "Approve") {
 		t.Fatalf("expected runtime inspector action, got %q", view)
 	}
-	updated, cmd = m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 	if cmd == nil {
 		t.Fatal("expected runtime inspector action command")

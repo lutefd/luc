@@ -337,6 +337,14 @@ func diagnoseRuntimeCommandShortcuts(commands []luruntime.RuntimeCommand) []luru
 		if shortcut == "" {
 			continue
 		}
+		if isPlainPrintableShortcut(shortcut) {
+			diagnostics = append(diagnostics, luruntime.Diagnostic{
+				SourcePath: command.SourcePath,
+				Kind:       "ui.command",
+				Message:    fmt.Sprintf("runtime command %q shortcut %q must use a modifier or non-printable key", command.ID, command.Shortcut),
+			})
+			continue
+		}
 		if isReservedBuiltInShortcut(shortcut) {
 			diagnostics = append(diagnostics, luruntime.Diagnostic{
 				SourcePath: command.SourcePath,
@@ -360,6 +368,11 @@ func diagnoseRuntimeCommandShortcuts(commands []luruntime.RuntimeCommand) []luru
 
 func normalizeCommandShortcut(shortcut string) string {
 	return strings.ToLower(strings.TrimSpace(shortcut))
+}
+
+func isPlainPrintableShortcut(shortcut string) bool {
+	runes := []rune(shortcut)
+	return len(runes) == 1 && runes[0] >= 0x20 && runes[0] != 0x7f
 }
 
 func isReservedBuiltInShortcut(shortcut string) bool {

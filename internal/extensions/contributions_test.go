@@ -189,6 +189,12 @@ commands:
     name: Empty Handoff
     action:
       kind: session.handoff
+  - id: plain.shortcut
+    name: Plain Shortcut
+    shortcut: a
+    action:
+      kind: view.open
+      view_id: review
 views:
   - id: review
     title: Review
@@ -216,6 +222,7 @@ views:
 		`references unknown command "does.not.exist"`,
 		`is missing tool_name`,
 		`should include handoff.body or initial_input`,
+		`shortcut "a" must use a modifier or non-printable key`,
 		`view review action missing-view`,
 	} {
 		if !strings.Contains(messages, want) {
