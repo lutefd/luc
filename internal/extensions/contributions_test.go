@@ -25,6 +25,15 @@ commands:
     action:
       kind: view.open
       view_id: provider.status
+  - id: review.approve
+    name: Approve Review
+    action:
+      kind: tool.run
+      tool_name: review_set_state
+      arguments:
+        action: approve
+      result:
+        presentation: status
 views:
   - id: provider.status
     title: Global Provider Status
@@ -65,6 +74,13 @@ approval_policies:
 	}
 	if command.Description != "Show provider health details." || command.Category != "Provider" || command.Shortcut != "ctrl+shift+p" {
 		t.Fatalf("expected runtime command metadata, got %#v", command)
+	}
+	toolCommand, ok := set.UI.Command("review.approve")
+	if !ok {
+		t.Fatal("expected tool.run runtime command")
+	}
+	if toolCommand.ActionKind != "tool.run" || toolCommand.ToolName != "review_set_state" || toolCommand.Arguments["action"] != "approve" || toolCommand.Result.Presentation != "status" {
+		t.Fatalf("expected tool.run action metadata, got %#v", toolCommand)
 	}
 
 	view, ok := set.UI.View("provider.status")

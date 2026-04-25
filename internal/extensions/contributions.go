@@ -23,9 +23,14 @@ type uiManifest struct {
 		Category    string `yaml:"category" json:"category"`
 		Shortcut    string `yaml:"shortcut" json:"shortcut"`
 		Action      struct {
-			Kind      string `yaml:"kind" json:"kind"`
-			ViewID    string `yaml:"view_id" json:"view_id"`
-			CommandID string `yaml:"command_id" json:"command_id"`
+			Kind      string         `yaml:"kind" json:"kind"`
+			ViewID    string         `yaml:"view_id" json:"view_id"`
+			CommandID string         `yaml:"command_id" json:"command_id"`
+			ToolName  string         `yaml:"tool_name" json:"tool_name"`
+			Arguments map[string]any `yaml:"arguments" json:"arguments"`
+			Result    struct {
+				Presentation string `yaml:"presentation" json:"presentation"`
+			} `yaml:"result" json:"result"`
 		} `yaml:"action" json:"action"`
 	} `yaml:"commands" json:"commands"`
 	Views []struct {
@@ -148,7 +153,12 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 				ActionKind:  strings.TrimSpace(command.Action.Kind),
 				ViewID:      strings.TrimSpace(command.Action.ViewID),
 				CommandID:   strings.TrimSpace(command.Action.CommandID),
-				SourcePath:  path,
+				ToolName:    strings.TrimSpace(command.Action.ToolName),
+				Arguments:   cloneStringAnyMap(command.Action.Arguments),
+				Result: luruntime.RuntimeActionResult{
+					Presentation: strings.TrimSpace(command.Action.Result.Presentation),
+				},
+				SourcePath: path,
 			}
 		}
 		for _, view := range manifest.Views {
@@ -387,6 +397,17 @@ func runtimePackageDirs(workspaceRoot, category string) ([]string, error) {
 	}
 	sort.Strings(dirs)
 	return dirs, nil
+}
+
+func cloneStringAnyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func parseUIManifest(path string) (uiManifest, error) {

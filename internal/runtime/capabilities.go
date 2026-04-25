@@ -13,6 +13,7 @@ const (
 	HostCapabilityUIViewOpen              = "ui.view.open"
 	HostCapabilityUICommand               = "ui.command"
 	HostCapabilityUICommandShortcut       = "ui.command.shortcut"
+	HostCapabilityUIToolRun               = "tool.run"
 	HostCapabilityLiveHooks               = "hooks.live_events"
 	HostCapabilityExtensionObserveEvents  = "extensions.observe_events"
 	HostCapabilityExtensionSessionStorage = "extensions.storage.session"
@@ -27,8 +28,15 @@ type UIAction struct {
 	Body      string         `json:"body,omitempty"`
 	ViewID    string         `json:"view_id,omitempty"`
 	CommandID string         `json:"command_id,omitempty"`
+	ToolName  string         `json:"tool_name,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Result    UIActionResult `json:"result,omitempty"`
 	Options   []UIOption     `json:"options,omitempty"`
 	Context   map[string]any `json:"context,omitempty"`
+}
+
+type UIActionResult struct {
+	Presentation string `json:"presentation,omitempty"`
 }
 
 type UIOption struct {
@@ -123,6 +131,7 @@ func DefaultHostCapabilities() []string {
 		HostCapabilityUIViewOpen,
 		HostCapabilityUICommand,
 		HostCapabilityUICommandShortcut,
+		HostCapabilityUIToolRun,
 		HostCapabilityLiveHooks,
 		HostCapabilityExtensionObserveEvents,
 		HostCapabilityExtensionSessionStorage,
