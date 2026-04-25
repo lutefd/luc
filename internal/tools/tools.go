@@ -62,13 +62,16 @@ type HostedToolInvoker interface {
 type Manager struct {
 	workspace     string
 	tools         map[string]Tool
+	dynamicTools  map[string]string
 	hostedInvoker HostedToolInvoker
+	version       uint64
 }
 
 func NewManager(workspaceRoot string) (*Manager, error) {
 	m := &Manager{
-		workspace: workspaceRoot,
-		tools:     make(map[string]Tool),
+		workspace:    workspaceRoot,
+		tools:        make(map[string]Tool),
+		dynamicTools: make(map[string]string),
 	}
 
 	for _, tool := range []Tool{
@@ -92,12 +95,58 @@ func NewManager(workspaceRoot string) (*Manager, error) {
 	return m, nil
 }
 
+func (m *Manager) Version() uint64 {
+	return m.version
+}
+
 func (m *Manager) Specs() []provider.ToolSpec {
 	out := make([]provider.ToolSpec, 0, len(m.tools))
 	for _, tool := range m.tools {
 		out = append(out, tool.Spec())
 	}
 	return out
+}
+
+func (m *Manager) RegisterDynamicTools(extensionID string, defs []extensions.ToolDef) error {
+	extensionID = strings.TrimSpace(extensionID)
+	if extensionID == "" {
+		return errors.New("dynamic tool extension id is required")
+	}
+	if m.dynamicTools == nil {
+		m.dynamicTools = map[string]string{}
+	}
+	changed := false
+	for name, owner := range m.dynamicTools {
+		if owner == extensionID {
+			delete(m.tools, name)
+			delete(m.dynamicTools, name)
+			changed = true
+		}
+	}
+	for _, def := range defs {
+		name := strings.TrimSpace(def.Name)
+		if name == "" {
+			return errors.New("dynamic tool name is required")
+		}
+		if existingOwner, ok := m.dynamicTools[name]; ok && existingOwner != extensionID {
+			return fmt.Errorf("dynamic tool %q already registered by extension %q", name, existingOwner)
+		}
+		if _, exists := m.tools[name]; exists {
+			if owner, ok := m.dynamicTools[name]; !ok || owner != extensionID {
+				return fmt.Errorf("dynamic tool %q conflicts with an existing tool", name)
+			}
+		}
+		def.Name = name
+		def.ExtensionID = extensionID
+		def.RuntimeKind = "extension"
+		m.tools[name] = &runtimeTool{workspace: m.workspace, def: def, hostedInvoker: m.hostedInvoker}
+		m.dynamicTools[name] = extensionID
+		changed = true
+	}
+	if changed {
+		m.version++
+	}
+	return nil
 }
 
 func (m *Manager) Run(ctx context.Context, req Request) (Result, error) {

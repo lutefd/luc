@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lutefd/luc/internal/extensions"
 	"github.com/lutefd/luc/internal/history"
 	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/tools"
@@ -677,6 +678,8 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 		})
 	case "tool_result":
 		h.resolveHostedToolResult(event)
+	case "tools.register":
+		h.registerDynamicTools(event)
 	case "error":
 		h.reportFailure(errors.New(kernelFirstNonEmpty(event.Error, event.Message, "extension failed")))
 	case "done":
@@ -684,6 +687,27 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 	default:
 		h.reportFailure(fmt.Errorf("unsupported extension message type %q", event.Type))
 	}
+}
+
+func (h *managedExtensionHost) registerDynamicTools(event luruntime.ExtensionHostEvent) {
+	defs := make([]extensions.ToolDef, 0, len(event.Tools))
+	for _, dynamic := range event.Tools {
+		def, err := extensions.DynamicToolDef(h.def.ID, dynamic)
+		if err != nil {
+			h.reportFailure(err)
+			return
+		}
+		defs = append(defs, def)
+	}
+	if h.controller.tools == nil {
+		h.reportFailure(errors.New("dynamic tool registration requires a tool manager"))
+		return
+	}
+	if err := h.controller.tools.RegisterDynamicTools(h.def.ID, defs); err != nil {
+		h.reportFailure(err)
+		return
+	}
+	h.controller.emit("tools.registered", history.ExtensionPayload{ExtensionID: h.def.ID, SourcePath: h.def.SourcePath})
 }
 
 func (h *managedExtensionHost) resolveDecision(decision luruntime.ExtensionDecisionEnvelope) {
