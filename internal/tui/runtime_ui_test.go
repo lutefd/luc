@@ -312,6 +312,63 @@ func TestModelHandlesBlockingRuntimeConfirmDialog(t *testing.T) {
 	}
 }
 
+func TestModelHandlesRichRuntimeModalWithMarkdownChoicesAndInput(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	m := updated.(Model)
+
+	response := make(chan uiBrokerResponse, 1)
+	updated, _ = m.Update(uiBrokerActionMsg{
+		request: uiBrokerRequest{
+			action: luruntime.UIAction{
+				ID:     "review_1",
+				Kind:   "modal.open",
+				Title:  "Review Result",
+				Body:   "## Summary\n\nApprove these changes?",
+				Render: "markdown",
+				Options: []luruntime.UIOption{
+					{ID: "approve", Label: "Approve"},
+					{ID: "revise", Label: "Revise"},
+					{ID: "cancel", Label: "Cancel"},
+				},
+				Input: luruntime.UIActionInput{Enabled: true, Multiline: true, Placeholder: "Revision notes"},
+			},
+			response: response,
+		},
+	})
+	m = updated.(Model)
+	if !m.runtimeDialog.open {
+		t.Fatal("expected rich runtime modal to open")
+	}
+	if rendered := ansi.Strip(m.renderRuntimeDialog()); !strings.Contains(rendered, "Summary") || !strings.Contains(rendered, "Approve these changes?") || !strings.Contains(rendered, "Revision notes") {
+		t.Fatalf("expected markdown modal body and input placeholder, got %q", rendered)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updated.(Model)
+	for _, r := range "Please simplify step 3." {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if m.runtimeDialog.open {
+		t.Fatal("expected rich runtime modal to close after choice")
+	}
+	reply := <-response
+	if !reply.result.Accepted || reply.result.ChoiceID != "revise" || reply.result.Data["input"] != "Please simplify step 3." {
+		t.Fatalf("unexpected rich modal result %#v", reply.result)
+	}
+}
+
 func mustWriteRuntimeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
