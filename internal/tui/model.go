@@ -464,6 +464,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Reloading...")
 			return m, reloadCmd(m.controller)
 		}
+		if cmd := m.handleRuntimeCommandShortcut(msg); cmd != nil {
+			return m, cmd
+		}
 		if handled, cmd := m.handleComposerKey(msg); handled {
 			return m, cmd
 		}
