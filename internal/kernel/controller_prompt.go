@@ -161,6 +161,9 @@ func (c *Controller) skillCatalog() string {
 }
 
 func (c *Controller) toolSpecs() []provider.ToolSpec {
+	if c.tools != nil {
+		c.toolSpecsVersion = c.tools.Version()
+	}
 	specs := append([]provider.ToolSpec(nil), c.tools.Specs()...)
 	if spec := c.skillToolSpec(); spec.Name != "" {
 		specs = append(specs, spec)

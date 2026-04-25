@@ -47,6 +47,10 @@ func (c *Controller) applyInputTransforms(ctx context.Context, text string, atta
 }
 
 func (c *Controller) composeTurnSystemPrompt(ctx context.Context, input string, attachments []media.Attachment) (string, error) {
+	if c.tools != nil && c.toolSpecsVersion != c.tools.Version() {
+		c.toolSpecsVersion = c.tools.Version()
+		c.systemPrompt = c.loadSystemPrompt()
+	}
 	base, err := c.composeSystemPrompt(input)
 	if err != nil {
 		return "", err
