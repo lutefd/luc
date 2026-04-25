@@ -643,6 +643,38 @@ func TestModelHandlesRichRuntimeModalWithMarkdownChoicesAndInput(t *testing.T) {
 	}
 }
 
+func TestRuntimeDialogMarkdownBodyScrolls(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m := updated.(Model)
+	body := "# Long note\n\n" + strings.Join([]string{"line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8", "line 9", "line 10", "line 11", "line 12"}, "\n\n")
+	updated, _ = m.Update(uiBrokerActionMsg{request: uiBrokerRequest{action: luruntime.UIAction{ID: "long", Kind: "modal.open", Title: "Long", Body: body, Render: "markdown"}}})
+	m = updated.(Model)
+	if !m.runtimeDialog.open {
+		t.Fatal("expected runtime modal to open")
+	}
+	before := ansi.Strip(m.renderRuntimeDialog())
+	if strings.Contains(before, "line 12") {
+		t.Fatalf("expected long body to be clipped before scrolling, got %q", before)
+	}
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+	}
+	after := ansi.Strip(m.renderRuntimeDialog())
+	if !strings.Contains(after, "line 12") {
+		t.Fatalf("expected long body to scroll, got %q", after)
+	}
+}
+
 func mustWriteRuntimeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
