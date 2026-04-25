@@ -101,7 +101,7 @@ Tool capability notes:
 - Structured request envelopes include `tool_name`, typed `arguments`, `workspace`, `session_id`, `agent_id`, `host_capabilities`, and optional `view_context`.
 - Supported structured tool stdout event types today are `stdout`, `stderr`, `progress`, `client_action`, `result`, `done`, and `error`.
 - Structured tool stdout field names are exact: `stdout`, `stderr`, and `progress` use `text`; `client_action` uses `action`; `result` uses `result`; `error` uses `error`; `done` should set `done: true`.
-- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action; non-blocking handoff requests are rejected.
 - Structured tools should emit a `result` event carrying the final tool payload, then emit `done` to terminate the stream.
 - Hosted tools use `schema: luc.tool/v2` with `runtime.kind: extension`, `runtime.extension_id`, and `runtime.handler`.
 - Hosted tool discovery remains declarative; luc does not support dynamic tool registration from extension code in this slice.
@@ -221,7 +221,7 @@ For `exec` providers:
 - `thinking` and `text_delta` use `text`; `tool_call` uses `tool_call` with `id`, `name`, and JSON-string `arguments`; `client_action` uses `action`; fatal adapter failures may also return an `error` string.
 - Tool execution still happens inside luc; the adapter only translates the upstream API into luc provider events.
 - Providers may declare `capabilities: [client_actions]` to request host-owned UI actions and receive `client_result` responses back over stdin/stdout.
-- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Capability-enabled provider requests include `host_capabilities` alongside the normal provider request envelope.
 
 ### Runtime UI
@@ -304,15 +304,15 @@ approval_policies:
 Supported runtime UI primitives in this slice:
 
 - Command metadata: `description`, `category`, and `shortcut`
-- Command shortcuts use Bubble Tea keystroke syntax such as `ctrl+shift+p`; built-in shortcut collisions and duplicate runtime shortcut collisions are reported as diagnostics.
+- Command shortcuts use Bubble Tea keystroke syntax such as `ctrl+shift+p`; built-in shortcut collisions, duplicate runtime shortcut collisions, and unmodified printable shortcuts are reported as diagnostics.
 - Command actions: `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, `timeline.note`
-- `tool.run` executes the named tool through luc's normal tool pipeline, including extension preflight/result hooks and approval policies. `result.presentation: status` reports completion in the status line.
+- `tool.run` executes the named tool through luc's normal tool pipeline, including extension preflight/result hooks and approval policies. `result.presentation: status` reports completion in the status line; it does not suppress recorded `tool.requested`/`tool.finished` history events.
 - `session.handoff` creates and switches to a fresh host-owned session, records a visible handoff event, and seeds `initial_input` into the composer without auto-submitting.
 - `timeline.note` records a safe host-owned workflow note in the transcript with optional markdown content.
-- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, `timeline.note`
+- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, `timeline.note`. `session.handoff` is accepted from tools/providers/hooks/extension hosts only when emitted as a blocking client action.
 - View placements: `inspector_tab`, `page`
 - View renderers: `markdown`, `json`, `table`, `kv`
-- View actions: declarative `actions[]` render as host-owned selectable rows in runtime inspector tabs and pages. Navigate with tab/arrows, press `enter` to activate, or use an action `shortcut`.
+- View actions: declarative `actions[]` render as host-owned selectable rows in runtime inspector tabs and pages. Page views support tab/arrows, `enter`, and action shortcuts. Inspector runtime tabs avoid capturing composer text: use tab/shift-tab and `enter`, or modifier-based action shortcuts.
 
 Runtime UI notes:
 
@@ -320,7 +320,7 @@ Runtime UI notes:
 - Runtime views are host-owned. View content is rendered from `source_tool`; optional view `actions[]` are host-rendered controls that trigger existing runtime action kinds.
 - A view's `source_tool` runs when the view opens or refreshes.
 - `render: markdown` uses luc's built-in glamour-based terminal markdown renderer.
-- `modal.open` and `confirm.request` are host-rendered dialog actions. `modal.open` supports `render: markdown`, multiple `options`, and optional text `input` for blocking workflows, but does not provide arbitrary custom TUI layout injection.
+- `modal.open` and `confirm.request` are host-rendered dialog actions. `modal.open` supports scrollable `render: markdown`, multiple `options`, and optional text `input` for blocking workflows, but does not provide arbitrary custom TUI layout injection. For multi-option modals, treat `choice_id` as authoritative; `accepted` is false for cancel/escape.
 - Approval policies only auto-intercept tools when `ui.approvals_mode: policy`.
 - In `trusted` mode, normal tool execution is unchanged; explicit client confirmation requests still render.
 
@@ -371,7 +371,7 @@ Hook notes:
 - Hooks may emit `client_action` only when `runtime.capabilities` includes `client_actions`. That lets a hook request host-owned actions such as `view.refresh` after it updates state.
 - Hook stdin starts with one JSON request envelope line. When `client_actions` is enabled, luc keeps stdin open and sends `client_result` envelopes back on later lines.
 - Hook stdout field names are exact: `log` uses `text` (luc also accepts `message` as a compatibility alias), `progress` uses `progress` (or `message`), `client_action` uses `action`, `error` uses `error` (or `message`), and `done` should set `done: true`.
-- Supported hook `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, and `command.run`.
+- Supported hook `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Hook failures are logged and surfaced through `hook.failed` history events, but they do not break the session.
 
 ### Extension Hosts
@@ -417,7 +417,7 @@ Extension host notes:
 - `session_shutdown` is sent before luc tears a host down for reload, close, or session switch.
 - Sync requests are sent as `event` envelopes with a `request_id`; the extension answers with `decision` carrying the same `request_id`.
 - Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
-- `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Rich `modal.open` actions may set `render: markdown`, provide multiple `options`, and enable text `input`; blocking responses include the selected `choice_id` and `data.input` when input is enabled.
 - Extension hosts are trusted local processes in this phase.
 - Host crashes, hangs, and malformed protocol output mark the host unhealthy, surface runtime diagnostics, and trigger bounded automatic restart with exponential backoff.
@@ -659,6 +659,10 @@ tools/providers/hooks, for example:
 - `ui.confirm`
 - `ui.view.open`
 - `ui.command`
+- `ui.tool.run`
+- `ui.view.actions`
+- `ui.session.handoff`
+- `ui.timeline.note`
 - `hooks.live_events`
 - `extensions.observe_events`
 - `extensions.storage.session`
@@ -691,5 +695,5 @@ These runtime surfaces work today without recompiling:
 These still need core code changes today:
 
 - arbitrary custom TUI layout injection beyond the documented runtime actions and view surfaces
-- new runtime action kinds beyond `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`
+- new runtime action kinds beyond `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`
 - modifying the built-in `Overview` tab directly instead of adding a runtime `inspector_tab` or `page`

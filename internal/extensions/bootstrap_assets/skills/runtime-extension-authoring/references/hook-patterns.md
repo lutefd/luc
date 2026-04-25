@@ -50,7 +50,7 @@ Hook rules:
 - Hooks may also emit `client_action` when `runtime.capabilities` includes `client_actions`. That lets a hook request host-owned actions such as `view.refresh` after it updates state.
 - Hook stdin starts with one JSON request envelope line. When `client_actions` is enabled, luc keeps stdin open and sends `client_result` envelopes back on later lines.
 - Hook stdout field names are exact: `log` uses `text` (luc also accepts `message` as a compatibility alias), `progress` uses `progress` (or `message`), `client_action` uses `action`, `error` uses `error` (or `message`), and `done` should set `done: true`.
-- Supported hook `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- Supported hook `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Hook failures should be surfaced as diagnostics, not treated as fatal session errors.
 - When a hook needs interactive host UI, prefer moving that behavior into a tool or provider plus `luc.ui/v1` instead of stretching hook responsibilities.
 
