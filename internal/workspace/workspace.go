@@ -14,18 +14,20 @@ type Info struct {
 	ProjectID string
 	HasGit    bool
 	Branch    string
+	GitRoot   string
 	StateDir  string
 }
 
 func Detect(cwd string) (Info, error) {
-	root, hasGit, err := findRoot(cwd)
+	root := filepath.Clean(cwd)
+	gitRoot, hasGit, err := findGitRoot(root)
 	if err != nil {
 		return Info{}, err
 	}
 
 	branch := ""
 	if hasGit {
-		branch, _ = currentBranch(root)
+		branch, _ = currentBranch(gitRoot)
 	}
 
 	sum := sha1.Sum([]byte(root))
@@ -34,25 +36,37 @@ func Detect(cwd string) (Info, error) {
 		ProjectID: hex.EncodeToString(sum[:8]),
 		HasGit:    hasGit,
 		Branch:    branch,
+		GitRoot:   gitRoot,
 		StateDir:  filepath.Join(root, ".luc"),
 	}
 
 	return info, ensureStateDirs(info)
 }
 
-func findRoot(cwd string) (string, bool, error) {
+func findGitRoot(cwd string) (string, bool, error) {
 	current := cwd
 	for {
-		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil && isValidGitRoot(current) {
 			return current, true, nil
 		}
 
 		next := filepath.Dir(current)
 		if next == current {
-			return cwd, false, nil
+			return "", false, nil
 		}
 		current = next
 	}
+}
+
+func isValidGitRoot(root string) bool {
+	gitDir, err := resolveGitDir(root)
+	if err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "HEAD")); err != nil {
+		return false
+	}
+	return true
 }
 
 func ensureStateDirs(info Info) error {
