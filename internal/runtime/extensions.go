@@ -197,6 +197,7 @@ type ExtensionHostEvent struct {
 	Content             string              `json:"content,omitempty"`
 	Metadata            map[string]any      `json:"metadata,omitempty"`
 	Result              *ToolResultEnvelope `json:"result,omitempty"`
+	Tools               []DynamicToolDef    `json:"tools,omitempty"`
 	Error               string              `json:"error,omitempty"`
 	CollapsedSummary    string              `json:"collapsed_summary,omitempty"`
 	ErrorClassification string              `json:"error_classification,omitempty"`

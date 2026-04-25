@@ -32,6 +32,21 @@ type ClientResultEnvelope struct {
 	Result UIResult `json:"result"`
 }
 
+type DynamicToolDef struct {
+	Name           string           `json:"name"`
+	Description    string           `json:"description,omitempty"`
+	InputSchema    map[string]any   `json:"input_schema,omitempty"`
+	Schema         map[string]any   `json:"schema,omitempty"`
+	Handler        string           `json:"handler,omitempty"`
+	TimeoutSeconds int              `json:"timeout_seconds,omitempty"`
+	UI             DynamicToolUIDef `json:"ui,omitempty"`
+}
+
+type DynamicToolUIDef struct {
+	DefaultCollapsed bool   `json:"default_collapsed,omitempty"`
+	CollapsedSummary string `json:"collapsed_summary,omitempty"`
+}
+
 type HostedToolInvokeEnvelope struct {
 	Type      string              `json:"type"`
 	RequestID string              `json:"request_id,omitempty"`

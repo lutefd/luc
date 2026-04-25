@@ -34,6 +34,43 @@ type ToolDef struct {
 	SourcePath     string
 }
 
+func DynamicToolDef(extensionID string, dynamic luruntime.DynamicToolDef) (ToolDef, error) {
+	name := strings.TrimSpace(dynamic.Name)
+	if name == "" {
+		return ToolDef{}, errors.New("dynamic tool is missing name")
+	}
+	schemaValue := any(dynamic.InputSchema)
+	if len(dynamic.Schema) > 0 {
+		schemaValue = dynamic.Schema
+	}
+	schema, err := json.Marshal(schemaValue)
+	if err != nil {
+		return ToolDef{}, err
+	}
+	if string(schema) == "null" {
+		schema = json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	handler := strings.TrimSpace(dynamic.Handler)
+	if handler == "" {
+		handler = name
+	}
+	return ToolDef{
+		Name:           name,
+		Description:    strings.TrimSpace(dynamic.Description),
+		Schema:         json.RawMessage(schema),
+		SchemaVersion:  "luc.tool/v2",
+		RuntimeKind:    "extension",
+		ExtensionID:    strings.TrimSpace(extensionID),
+		Handler:        handler,
+		TimeoutSeconds: dynamic.TimeoutSeconds,
+		UI: ToolUI{
+			DefaultCollapsed: dynamic.UI.DefaultCollapsed,
+			CollapsedSummary: strings.TrimSpace(dynamic.UI.CollapsedSummary),
+		},
+		SourcePath: "dynamic:" + strings.TrimSpace(extensionID),
+	}, nil
+}
+
 type Skill struct {
 	Name        string
 	DisplayName string
