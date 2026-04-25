@@ -47,7 +47,7 @@ Rules:
 - Use `luc.extension/v1` when the capability needs session-scoped state, selected sync interception seams, or hosted tool handlers.
 - Supported sync extension seams today are `input.transform`, `prompt.context`, `tool.preflight`, and `tool.result`.
 - Use hooks for async side effects only. If the user wants to mutate the active turn loop, guard tools, or inject prompt context synchronously, prefer `luc.extension/v1` instead of `luc.hook/v1`.
-- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Capability-enabled tools and providers should be paired with `luc.ui/v1` manifests when they need reusable commands, inspector/page views, or approval policy wiring.
 - Runtime UI stays host-owned in this slice. Views are declarative and read-only.
 - luc does support creating brand-new runtime views with `luc.ui/v1`. New `inspector_tab` and `page` views are valid runtime extension targets.
@@ -75,7 +75,7 @@ Read bundled references when you need exact manifest shapes or end-to-end compos
 - `references/capability-tools.md` for `luc.tool/v1`, `luc.tool/v2`, `structured_io`, `client_actions`, hosted tools, and tool request envelopes.
 - `references/provider-ui-composition.md` for `type: exec` providers, host capabilities, and matching `luc.ui/v1` manifests.
 - `references/runtime-ui-views.md` for new runtime `inspector_tab` and `page` views with concrete generic examples.
-- `references/runtime-ui-actions.md` for host-owned UI actions such as `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- `references/runtime-ui-actions.md` for host-owned UI actions such as `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`.
 - `references/hook-patterns.md` for `luc.hook/v1` manifests, async event delivery, and the boundary between hooks and `luc.extension/v1`.
 
 Current limits:

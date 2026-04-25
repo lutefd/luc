@@ -24,7 +24,7 @@ Provider notes:
 - Provider events can stream `thinking`, `text_delta`, `tool_call`, `client_action`, and `done`.
 - `thinking` and `text_delta` use `text`; `tool_call` uses `tool_call` with `id`, `name`, and JSON-string `arguments`; `client_action` uses `action`; fatal adapter failures may also return an `error` string.
 - If the provider declares `capabilities: [client_actions]`, luc includes `host_capabilities` in the request and the adapter may emit `client_action` events.
-- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, and `tool.run`.
+- Supported provider `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - The provider adapts upstream APIs. luc still owns tool execution and UI rendering.
 
 Example matching UI manifest:

@@ -7,6 +7,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/lutefd/luc/internal/kernel"
@@ -54,6 +55,12 @@ type runtimeSessionHandoffMsg struct {
 	err      error
 }
 
+type runtimeTimelineNoteMsg struct {
+	action   luruntime.UIAction
+	response chan uiBrokerResponse
+	err      error
+}
+
 type runtimePageState struct {
 	open         bool
 	view         luruntime.RuntimeView
@@ -67,6 +74,7 @@ type runtimeDialogState struct {
 	open     bool
 	action   luruntime.UIAction
 	active   int
+	body     viewport.Model
 	input    textarea.Model
 	response chan uiBrokerResponse
 }
@@ -276,6 +284,9 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 	return m.handleRuntimeAction(luruntime.UIAction{
 		ID:           "runtime.command." + command.ID,
 		Kind:         command.ActionKind,
+		Title:        command.Title,
+		Body:         command.Body,
+		Render:       command.Render,
 		ViewID:       command.ViewID,
 		CommandID:    command.CommandID,
 		ToolName:     command.ToolName,
@@ -346,6 +357,8 @@ func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiB
 			return nil
 		}
 		return m.runtimeSessionHandoff(action, response)
+	case "timeline.note":
+		return m.runtimeTimelineNote(action, response)
 	default:
 		m.replyRuntimeAction(response, luruntime.UIResult{ActionID: action.ID}, fmt.Errorf("unsupported runtime action %q", action.Kind))
 		return nil
@@ -355,6 +368,12 @@ func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiB
 func (m *Model) runtimeSessionHandoff(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
 	return func() tea.Msg {
 		return runtimeSessionHandoffMsg{action: action, response: response, err: m.controller.HandoffSession(action)}
+	}
+}
+
+func (m *Model) runtimeTimelineNote(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
+	return func() tea.Msg {
+		return runtimeTimelineNoteMsg{action: action, response: response, err: m.controller.TimelineNote(action)}
 	}
 }
 
@@ -383,7 +402,12 @@ func (m *Model) maybeRefreshActiveRuntimeView() tea.Cmd {
 }
 
 func (m *Model) newRuntimeDialogState(action luruntime.UIAction, response chan uiBrokerResponse) runtimeDialogState {
-	state := runtimeDialogState{open: true, action: action, response: response}
+	bodyWidth, bodyHeight := m.runtimeDialogBodySize(action)
+	body := viewport.New()
+	body.SetWidth(bodyWidth)
+	body.SetHeight(bodyHeight)
+	state := runtimeDialogState{open: true, action: action, body: body, response: response}
+	state.body.SetContent(m.renderRuntimeDialogBody(action, bodyWidth))
 	if action.Input.Enabled {
 		input := textarea.New()
 		input.Placeholder = strings.TrimSpace(action.Input.Placeholder)
@@ -425,6 +449,12 @@ func (m *Model) handleRuntimeDialogKey(msg tea.KeyPressMsg) tea.Cmd {
 		action := m.runtimeDialog.action
 		m.replyRuntimeAction(m.runtimeDialog.response, luruntime.UIResult{ActionID: action.ID}, nil)
 		m.runtimeDialog = runtimeDialogState{}
+		return nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "pgup"))):
+		m.runtimeDialog.body, _ = m.runtimeDialog.body.Update(msg)
+		return nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "pgdown"))):
+		m.runtimeDialog.body, _ = m.runtimeDialog.body.Update(msg)
 		return nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("left")))):
 		if m.runtimeDialog.active > 0 {
@@ -472,11 +502,10 @@ func (m Model) renderRuntimeDialog() string {
 	if title == "" {
 		title = "Runtime Dialog"
 	}
-	body := strings.TrimSpace(action.Body)
-	if body == "" {
-		body = "The extension requested input."
-	}
-	body = m.renderRuntimeDialogBody(body, action.Render)
+	bodyWidth, bodyHeight := m.runtimeDialogBodySize(action)
+	m.runtimeDialog.body.SetWidth(bodyWidth)
+	m.runtimeDialog.body.SetHeight(bodyHeight)
+	m.runtimeDialog.body.SetContent(m.renderRuntimeDialogBody(action, bodyWidth))
 	options := runtimeDialogOptions(action)
 	var buttons []string
 	for i, option := range options {
@@ -496,7 +525,7 @@ func (m Model) renderRuntimeDialog() string {
 	parts := []string{
 		m.theme.HeaderBrand.Render(title),
 		"",
-		m.theme.SidebarValue.Render(body),
+		m.theme.SidebarValue.Render(m.runtimeDialog.body.View()),
 	}
 	if action.Input.Enabled {
 		parts = append(parts, "", m.runtimeDialog.input.View())
@@ -505,22 +534,35 @@ func (m Model) renderRuntimeDialog() string {
 		"",
 		strings.Join(buttons, " "),
 		"",
-		m.theme.Footer.Render(runtimeDialogHelp(action)),
+		m.theme.Footer.Render(runtimeDialogHelp(action, m.runtimeDialog.body.TotalLineCount() > m.runtimeDialog.body.Height())),
 	)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	box := m.theme.PaletteFrame.Width(min(72, max(40, m.width*2/3))).Render(m.theme.PaletteSurface.Render(content))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
 }
 
-func (m Model) renderRuntimeDialogBody(body, render string) string {
-	if !strings.EqualFold(strings.TrimSpace(render), "markdown") {
+func (m Model) runtimeDialogBodySize(action luruntime.UIAction) (int, int) {
+	width := min(72, max(40, m.width*2/3)) - 4
+	height := max(3, min(12, m.height/3))
+	if action.Input.Enabled {
+		height = max(3, height-2)
+	}
+	return width, height
+}
+
+func (m Model) renderRuntimeDialogBody(action luruntime.UIAction, width int) string {
+	body := strings.TrimSpace(action.Body)
+	if body == "" {
+		body = "The extension requested input."
+	}
+	if !strings.EqualFold(strings.TrimSpace(action.Render), "markdown") {
 		return body
 	}
 	_, variant, err := theme.Load(m.controller.Config().UI.Theme, m.controller.Workspace().Root)
 	if err != nil {
 		return body
 	}
-	renderer, err := theme.NewMarkdownRenderer(min(72, max(40, m.width*2/3))-4, variant)
+	renderer, err := theme.NewMarkdownRenderer(width, variant)
 	if err != nil {
 		return body
 	}
@@ -531,11 +573,16 @@ func (m Model) renderRuntimeDialogBody(body, render string) string {
 	return strings.TrimSpace(rendered)
 }
 
-func runtimeDialogHelp(action luruntime.UIAction) string {
-	if action.Input.Enabled && action.Input.Multiline {
-		return "tab choose  •  shift+enter newline  •  enter confirm  •  esc cancel"
+func runtimeDialogHelp(action luruntime.UIAction, scrollable bool) string {
+	parts := []string{"tab choose"}
+	if scrollable {
+		parts = append(parts, "↑/↓ scroll")
 	}
-	return "tab choose  •  enter confirm  •  esc cancel"
+	if action.Input.Enabled && action.Input.Multiline {
+		parts = append(parts, "shift+enter newline")
+	}
+	parts = append(parts, "enter confirm", "esc cancel")
+	return strings.Join(parts, "  •  ")
 }
 
 func (m *Model) handleRuntimePageKey(msg tea.KeyPressMsg) tea.Cmd {

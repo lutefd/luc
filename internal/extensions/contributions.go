@@ -179,6 +179,9 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 				Category:    strings.TrimSpace(command.Category),
 				Shortcut:    strings.TrimSpace(command.Shortcut),
 				ActionKind:  strings.TrimSpace(command.Action.Kind),
+				Title:       strings.TrimSpace(command.Action.Title),
+				Body:        command.Action.Body,
+				Render:      strings.TrimSpace(command.Action.Render),
 				ViewID:      strings.TrimSpace(command.Action.ViewID),
 				CommandID:   strings.TrimSpace(command.Action.CommandID),
 				ToolName:    strings.TrimSpace(command.Action.ToolName),
@@ -243,16 +246,87 @@ func loadUIRegistry(workspaceRoot string, hostCapabilities []string) ([]luruntim
 	for _, id := range commandOrder {
 		commands = append(commands, commandByID[id])
 	}
-	diagnostics = append(diagnostics, diagnoseRuntimeCommandShortcuts(commands)...)
 	views := make([]luruntime.RuntimeView, 0, len(viewOrder))
 	for _, id := range viewOrder {
 		views = append(views, viewByID[id])
 	}
+	diagnostics = append(diagnostics, diagnoseRuntimeCommandShortcuts(commands)...)
+	diagnostics = append(diagnostics, diagnoseRuntimeActionReferences(commands, views)...)
 	policies := make([]luruntime.ApprovalPolicy, 0, len(policyOrder))
 	for _, id := range policyOrder {
 		policies = append(policies, policyByID[id])
 	}
 	return commands, views, policies, diagnostics, nil
+}
+
+func diagnoseRuntimeActionReferences(commands []luruntime.RuntimeCommand, views []luruntime.RuntimeView) []luruntime.Diagnostic {
+	commandByID := map[string]struct{}{}
+	viewByID := map[string]struct{}{}
+	for _, command := range commands {
+		commandByID[strings.ToLower(strings.TrimSpace(command.ID))] = struct{}{}
+	}
+	for _, view := range views {
+		viewByID[strings.ToLower(strings.TrimSpace(view.ID))] = struct{}{}
+	}
+	var diagnostics []luruntime.Diagnostic
+	for _, command := range commands {
+		action := luruntime.RuntimeAction{
+			Kind:         command.ActionKind,
+			Title:        command.Title,
+			Body:         command.Body,
+			Render:       command.Render,
+			ViewID:       command.ViewID,
+			CommandID:    command.CommandID,
+			ToolName:     command.ToolName,
+			Handoff:      command.Handoff,
+			InitialInput: command.InitialInput,
+		}
+		diagnostics = append(diagnostics, diagnoseRuntimeActionReference(command.SourcePath, "ui.command", "command "+command.ID, action, commandByID, viewByID)...)
+	}
+	for _, view := range views {
+		for _, action := range view.Actions {
+			diagnostics = append(diagnostics, diagnoseRuntimeActionReference(action.SourcePath, "ui.view.action", "view "+view.ID+" action "+action.ID, action.Action, commandByID, viewByID)...)
+		}
+	}
+	return diagnostics
+}
+
+func diagnoseRuntimeActionReference(sourcePath, kind, owner string, action luruntime.RuntimeAction, commandByID, viewByID map[string]struct{}) []luruntime.Diagnostic {
+	actionKind := strings.TrimSpace(action.Kind)
+	var diagnostics []luruntime.Diagnostic
+	switch actionKind {
+	case "view.open", "view.refresh":
+		viewID := strings.TrimSpace(action.ViewID)
+		if viewID == "" {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q is missing view_id", owner, actionKind))
+		} else if _, ok := viewByID[strings.ToLower(viewID)]; !ok {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q references unknown view %q", owner, actionKind, viewID))
+		}
+	case "command.run":
+		commandID := strings.TrimSpace(action.CommandID)
+		if commandID == "" {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q is missing command_id", owner, actionKind))
+		} else if _, ok := commandByID[strings.ToLower(commandID)]; !ok {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q references unknown command %q", owner, actionKind, commandID))
+		}
+	case "tool.run":
+		if strings.TrimSpace(action.ToolName) == "" {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q is missing tool_name", owner, actionKind))
+		}
+	case "session.handoff":
+		if strings.TrimSpace(action.Handoff.Body) == "" && strings.TrimSpace(action.InitialInput) == "" {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q should include handoff.body or initial_input", owner, actionKind))
+		}
+	case "timeline.note":
+		if strings.TrimSpace(action.Title) == "" && strings.TrimSpace(action.Body) == "" {
+			diagnostics = append(diagnostics, runtimeDiagnostic(sourcePath, kind, "%s action %q should include title or body", owner, actionKind))
+		}
+	}
+	return diagnostics
+}
+
+func runtimeDiagnostic(sourcePath, kind, format string, args ...any) luruntime.Diagnostic {
+	return luruntime.Diagnostic{SourcePath: sourcePath, Kind: kind, Message: fmt.Sprintf(format, args...)}
 }
 
 func diagnoseRuntimeCommandShortcuts(commands []luruntime.RuntimeCommand) []luruntime.Diagnostic {
@@ -261,6 +335,14 @@ func diagnoseRuntimeCommandShortcuts(commands []luruntime.RuntimeCommand) []luru
 	for _, command := range commands {
 		shortcut := normalizeCommandShortcut(command.Shortcut)
 		if shortcut == "" {
+			continue
+		}
+		if isPlainPrintableShortcut(shortcut) {
+			diagnostics = append(diagnostics, luruntime.Diagnostic{
+				SourcePath: command.SourcePath,
+				Kind:       "ui.command",
+				Message:    fmt.Sprintf("runtime command %q shortcut %q must use a modifier or non-printable key", command.ID, command.Shortcut),
+			})
 			continue
 		}
 		if isReservedBuiltInShortcut(shortcut) {
@@ -286,6 +368,11 @@ func diagnoseRuntimeCommandShortcuts(commands []luruntime.RuntimeCommand) []luru
 
 func normalizeCommandShortcut(shortcut string) string {
 	return strings.ToLower(strings.TrimSpace(shortcut))
+}
+
+func isPlainPrintableShortcut(shortcut string) bool {
+	runes := []rune(shortcut)
+	return len(runes) == 1 && runes[0] >= 0x20 && runes[0] != 0x7f
 }
 
 func isReservedBuiltInShortcut(shortcut string) bool {
@@ -530,7 +617,7 @@ func parseUIManifest(path string) (uiManifest, error) {
 	}
 	for _, command := range manifest.Commands {
 		switch strings.TrimSpace(command.Action.Kind) {
-		case "", "view.open", "view.refresh", "command.run", "tool.run", "session.handoff":
+		case "", "view.open", "view.refresh", "command.run", "tool.run", "session.handoff", "timeline.note":
 		default:
 			return uiManifest{}, fmt.Errorf("%s: unsupported command action kind %q", path, command.Action.Kind)
 		}
@@ -551,7 +638,7 @@ func parseUIManifest(path string) (uiManifest, error) {
 		}
 		for _, action := range view.Actions {
 			switch strings.TrimSpace(action.Action.Kind) {
-			case "", "view.open", "view.refresh", "command.run", "tool.run", "modal.open", "confirm.request", "session.handoff":
+			case "", "view.open", "view.refresh", "command.run", "tool.run", "modal.open", "confirm.request", "session.handoff", "timeline.note":
 			default:
 				return uiManifest{}, fmt.Errorf("%s: unsupported view action kind %q", path, action.Action.Kind)
 			}

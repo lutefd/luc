@@ -8,7 +8,7 @@ A terminal AI agent with a streaming TUI, local tool execution, and a runtime ex
 go install github.com/lutefd/luc/cmd/luc@latest
 ```
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ## Configuration
 

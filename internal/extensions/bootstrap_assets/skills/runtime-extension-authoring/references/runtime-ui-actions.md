@@ -1,6 +1,6 @@
 # Runtime UI Actions
 
-Runtime UI actions are host-owned. Tools, providers, hooks, and extension hosts can request them through `client_action` events, and `luc.ui/v1` command manifests can trigger some of the same actions declaratively.
+Runtime UI actions are host-owned. Tools, providers, hooks, and extension hosts can request them through `client_action` events, and `luc.ui/v1` command/view action manifests can trigger some of the same actions declaratively. Interactive hosts such as the TUI handle these directly; RPC mode exposes `ui.action` events for the RPC client to handle/respond.
 
 Runtime `commands` are registered into luc's command palette alongside the built-in commands.
 
@@ -13,16 +13,18 @@ Supported action kinds in this slice:
 - `command.run`
 - `tool.run`
 - `session.handoff`
+- `timeline.note`
 
 When to use each action:
 
-- Use `modal.open` for a host-rendered modal dialog. It may include `render: markdown`, multiple `options`, and optional text `input`.
+- Use `modal.open` for a host-rendered modal dialog. It may include scrollable `render: markdown`, multiple `options`, and optional text `input`.
 - Use `confirm.request` when the tool, provider, or hook needs an explicit user decision.
 - Use `view.open` to open a runtime view declared in `luc.ui/v1`.
 - Use `view.refresh` to rerun the active runtime view's `source_tool`.
 - Use `command.run` to trigger another registered runtime command by ID.
-- Use `tool.run` to execute an extension tool through luc's normal tool pipeline, including approval policies and extension preflight/result hooks.
-- Use `session.handoff` to ask the host to create and switch to a fresh session carrying structured workflow context and optional initial composer text.
+- Use `tool.run` to execute an extension tool through luc's normal tool pipeline, including approval policies and extension preflight/result hooks. `result.presentation` controls UI feedback only; tool execution is still recorded in history.
+- Use `session.handoff` to ask the host to create and switch to a fresh session carrying structured workflow context and optional initial composer text. User-invoked runtime command/view actions may hand off directly; client actions from tools/providers/hooks/extension hosts must be blocking.
+- Use `timeline.note` to add a safe host-owned workflow note to the transcript, such as "Review approved" or "Provider unhealthy".
 
 Rich blocking modal example from a structured tool or provider:
 
@@ -50,7 +52,7 @@ Rich blocking modal example from a structured tool or provider:
 }
 ```
 
-Blocking response shape:
+Blocking response shape. For multi-option modals, use `choice_id` as the source of truth; `accepted` is false for cancel/escape.
 
 ```json
 {
@@ -123,6 +125,19 @@ commands:
       command_id: activity.summary.reset
 ```
 
+Add a workflow timeline note from a command manifest:
+
+```yaml
+commands:
+  - id: review.approved.note
+    name: Note Review Approved
+    action:
+      kind: timeline.note
+      title: Review approved
+      body: Ready for implementation.
+      render: markdown
+```
+
 Start a fresh continuation session from a command manifest:
 
 ```yaml
@@ -161,7 +176,8 @@ Rules:
 
 - Keep view definitions in `luc.ui/v1`; use actions to open or refresh them.
 - Use `confirm.request` instead of inventing your own approval UI.
-- Use `modal.open` only for host-owned modal content; supported rich fields are `render: markdown`, `options`, and `input` (`enabled`, `multiline`, `placeholder`, `value`).
+- Use `modal.open` only for host-owned modal content; supported rich fields are scrollable `render: markdown`, `options`, and `input` (`enabled`, `multiline`, `placeholder`, `value`).
 - `modal.open` and `confirm.request` use the host's built-in dialog surface rather than arbitrary custom TUI layouts.
 - If the flow depends on the user response, mark the action as blocking and expect a `client_result` envelope back over stdin/stdout.
-- `session.handoff` is host-owned: extensions request it, but luc owns session creation, navigation, persistence, and composer seeding. It does not silently submit the initial input.
+- `session.handoff` is host-owned: extensions request it, but luc owns session creation, navigation, persistence, and composer seeding. It does not silently submit the initial input. When emitted as a client action, it must be blocking.
+- `timeline.note` is host-owned transcript annotation, not arbitrary transcript mutation.

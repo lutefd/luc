@@ -106,6 +106,51 @@ views:
 	}
 }
 
+func TestModelRunsRuntimeTimelineNoteAction(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "timeline.yaml"), `schema: luc.ui/v1
+id: timeline-ui
+commands:
+  - id: review.approved
+    name: Review approved
+    action:
+      kind: timeline.note
+      title: Review approved
+      body: Ready for implementation.
+      render: markdown
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "review.approved"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected timeline note command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	updated, _ = m.Update(appEventsMsg(controller.SessionEvents()))
+	m = updated.(Model)
+	if m.status != "Timeline note added" {
+		t.Fatalf("expected timeline status, got %q", m.status)
+	}
+	events := controller.SessionEvents()
+	if len(events) != 1 || events[0].Kind != "timeline.note" {
+		t.Fatalf("expected timeline note event, got %#v", events)
+	}
+	if transcript := ansi.Strip(m.transcript.View()); !strings.Contains(transcript, "Review approved") || !strings.Contains(transcript, "Ready for implementation.") {
+		t.Fatalf("expected timeline note in transcript, got %q", transcript)
+	}
+}
+
 func TestModelRunsRuntimeSessionHandoffAction(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -246,7 +291,7 @@ views:
 	if view := ansi.Strip(m.inspector.DetailView()); !strings.Contains(view, "Approve") {
 		t.Fatalf("expected runtime inspector action, got %q", view)
 	}
-	updated, cmd = m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 	if cmd == nil {
 		t.Fatal("expected runtime inspector action command")
@@ -595,6 +640,38 @@ func TestModelHandlesRichRuntimeModalWithMarkdownChoicesAndInput(t *testing.T) {
 	reply := <-response
 	if !reply.result.Accepted || reply.result.ChoiceID != "revise" || reply.result.Data["input"] != "Please simplify step 3." {
 		t.Fatalf("unexpected rich modal result %#v", reply.result)
+	}
+}
+
+func TestRuntimeDialogMarkdownBodyScrolls(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m := updated.(Model)
+	body := "# Long note\n\n" + strings.Join([]string{"line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8", "line 9", "line 10", "line 11", "line 12"}, "\n\n")
+	updated, _ = m.Update(uiBrokerActionMsg{request: uiBrokerRequest{action: luruntime.UIAction{ID: "long", Kind: "modal.open", Title: "Long", Body: body, Render: "markdown"}}})
+	m = updated.(Model)
+	if !m.runtimeDialog.open {
+		t.Fatal("expected runtime modal to open")
+	}
+	before := ansi.Strip(m.renderRuntimeDialog())
+	if strings.Contains(before, "line 12") {
+		t.Fatalf("expected long body to be clipped before scrolling, got %q", before)
+	}
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+	}
+	after := ansi.Strip(m.renderRuntimeDialog())
+	if !strings.Contains(after, "line 12") {
+		t.Fatalf("expected long body to scroll, got %q", after)
 	}
 }
 

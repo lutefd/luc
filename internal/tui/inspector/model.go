@@ -177,7 +177,7 @@ func (m *Model) HandleRuntimeViewActionKey(msg tea.KeyPressMsg) (luruntime.Runti
 	}
 	active := m.runtimeActiveAction[view.ID]
 	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "shift+tab"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
 		if active > 0 {
 			active--
 			m.runtimeActiveAction[view.ID] = active
@@ -185,7 +185,7 @@ func (m *Model) HandleRuntimeViewActionKey(msg tea.KeyPressMsg) (luruntime.Runti
 			m.refreshContent()
 		}
 		return luruntime.RuntimeView{}, luruntime.RuntimeViewAction{}, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "tab"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 		if active < len(view.Actions)-1 {
 			active++
 			m.runtimeActiveAction[view.ID] = active
@@ -197,11 +197,20 @@ func (m *Model) HandleRuntimeViewActionKey(msg tea.KeyPressMsg) (luruntime.Runti
 		return view, view.Actions[active], true
 	}
 	for _, action := range view.Actions {
-		if strings.EqualFold(strings.TrimSpace(action.Shortcut), strings.TrimSpace(msg.String())) || strings.EqualFold(strings.TrimSpace(action.Shortcut), strings.TrimSpace(msg.Keystroke())) {
+		shortcut := strings.TrimSpace(action.Shortcut)
+		if shortcut == "" || isPlainRuntimeViewActionShortcut(shortcut) {
+			continue
+		}
+		if strings.EqualFold(shortcut, strings.TrimSpace(msg.String())) || strings.EqualFold(shortcut, strings.TrimSpace(msg.Keystroke())) {
 			return view, action, true
 		}
 	}
 	return luruntime.RuntimeView{}, luruntime.RuntimeViewAction{}, false
+}
+
+func isPlainRuntimeViewActionShortcut(shortcut string) bool {
+	runes := []rune(strings.TrimSpace(shortcut))
+	return len(runes) == 1 && runes[0] >= 0x20 && runes[0] != 0x7f
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
