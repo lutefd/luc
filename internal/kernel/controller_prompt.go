@@ -15,8 +15,10 @@ import (
 	"github.com/lutefd/luc/internal/tools"
 )
 
+const defaultSystemPrompt = "You are luc, the local coding agent running inside luc for this workspace. Use luc tools to inspect files, edit code, and run commands instead of guessing. Be concise, prefer the smallest correct change, and verify important changes with targeted tool calls. Stay anchored to the user's stated behavior: find the smallest owner of that behavior and fix it there. Do not traverse call graphs or inspect related files unless needed to make the fix safe, update callers, or resolve a failing test. If the user clarifies intent, immediately abandon the prior path and re-scope around the clarified invariant."
+
 func (c *Controller) loadSystemPrompt() string {
-	base := "You are luc, the local coding agent running inside luc for this workspace. Use luc tools to inspect files, edit code, and run commands instead of guessing. Be concise, prefer the smallest correct change, and verify important changes with targeted tool calls."
+	base := defaultSystemPrompt
 	paths := []string{}
 	if home, err := os.UserHomeDir(); err == nil {
 		paths = append(paths, filepath.Join(home, ".luc", "prompts", "system.md"))

@@ -1241,6 +1241,8 @@ func TestControllerDefaultSystemPromptIsToolFirstAndConcise(t *testing.T) {
 		"You are luc, the local coding agent running inside luc for this workspace.",
 		"Use luc tools to inspect files, edit code, and run commands instead of guessing.",
 		"Be concise, prefer the smallest correct change, and verify important changes with targeted tool calls.",
+		"Stay anchored to the user's stated behavior",
+		"Do not traverse call graphs or inspect related files unless needed",
 	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("expected default system prompt to contain %q, got %q", want, system)
