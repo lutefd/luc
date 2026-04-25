@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
@@ -29,35 +30,36 @@ const (
 var tabNames = [builtInTabCount]string{"Overview", "Tool", "Logs", "Context"}
 
 type Model struct {
-	width          int
-	height         int
-	contentLines   int
-	stateVer       uint64
-	contentVer     uint64
-	session        history.SessionMeta
-	tool           history.ToolResultPayload
-	lastCall       history.ToolCallPayload
-	logs           []logging.Entry
-	workspace      workspace.Info
-	status         string
-	lastUser       string
-	lastAssistant  string
-	userTurns      int
-	assistantTurns int
-	toolCalls      int
-	compactions    int
-	errorCount     int
-	reloadVersion  uint64
-	theme          theme.Theme
-	activeTab      int
-	viewport       viewport.Model
-	runtimeViews   []luruntime.RuntimeView
-	runtimeContent map[string]string
-	scrollbar      scrollbar.State
-	summaryKey     string
-	summaryCache   string
-	detailKey      string
-	detailCache    string
+	width               int
+	height              int
+	contentLines        int
+	stateVer            uint64
+	contentVer          uint64
+	session             history.SessionMeta
+	tool                history.ToolResultPayload
+	lastCall            history.ToolCallPayload
+	logs                []logging.Entry
+	workspace           workspace.Info
+	status              string
+	lastUser            string
+	lastAssistant       string
+	userTurns           int
+	assistantTurns      int
+	toolCalls           int
+	compactions         int
+	errorCount          int
+	reloadVersion       uint64
+	theme               theme.Theme
+	activeTab           int
+	viewport            viewport.Model
+	runtimeViews        []luruntime.RuntimeView
+	runtimeContent      map[string]string
+	runtimeActiveAction map[string]int
+	scrollbar           scrollbar.State
+	summaryKey          string
+	summaryCache        string
+	detailKey           string
+	detailCache         string
 }
 
 func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
@@ -65,13 +67,14 @@ func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
 	vp.MouseWheelEnabled = false
 	vp.SoftWrap = false
 	return Model{
-		workspace:      ws,
-		session:        session,
-		status:         "Ready",
-		theme:          th,
-		activeTab:      tabOverview,
-		viewport:       vp,
-		runtimeContent: map[string]string{},
+		workspace:           ws,
+		session:             session,
+		status:              "Ready",
+		theme:               th,
+		activeTab:           tabOverview,
+		viewport:            vp,
+		runtimeContent:      map[string]string{},
+		runtimeActiveAction: map[string]int{},
 	}
 }
 
@@ -126,6 +129,7 @@ func (m *Model) SetRuntimeViews(views []luruntime.RuntimeView) {
 	for id := range m.runtimeContent {
 		if _, ok := valid[id]; !ok {
 			delete(m.runtimeContent, id)
+			delete(m.runtimeActiveAction, id)
 		}
 	}
 	if m.activeTab >= m.totalTabs() {
@@ -164,6 +168,40 @@ func (m Model) ActiveRuntimeView() (luruntime.RuntimeView, bool) {
 
 func (m Model) RuntimeViewContent(viewID string) string {
 	return m.runtimeContent[viewID]
+}
+
+func (m *Model) HandleRuntimeViewActionKey(msg tea.KeyPressMsg) (luruntime.RuntimeView, luruntime.RuntimeViewAction, bool) {
+	view, ok := m.activeRuntimeView()
+	if !ok || len(view.Actions) == 0 {
+		return luruntime.RuntimeView{}, luruntime.RuntimeViewAction{}, false
+	}
+	active := m.runtimeActiveAction[view.ID]
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "shift+tab"))):
+		if active > 0 {
+			active--
+			m.runtimeActiveAction[view.ID] = active
+			m.stateVer++
+			m.refreshContent()
+		}
+		return luruntime.RuntimeView{}, luruntime.RuntimeViewAction{}, true
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "tab"))):
+		if active < len(view.Actions)-1 {
+			active++
+			m.runtimeActiveAction[view.ID] = active
+			m.stateVer++
+			m.refreshContent()
+		}
+		return luruntime.RuntimeView{}, luruntime.RuntimeViewAction{}, true
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		return view, view.Actions[active], true
+	}
+	for _, action := range view.Actions {
+		if strings.EqualFold(strings.TrimSpace(action.Shortcut), strings.TrimSpace(msg.String())) || strings.EqualFold(strings.TrimSpace(action.Shortcut), strings.TrimSpace(msg.Keystroke())) {
+			return view, action, true
+		}
+	}
+	return luruntime.RuntimeView{}, luruntime.RuntimeViewAction{}, false
 }
 
 func (m *Model) Apply(ev history.EventEnvelope) {
@@ -669,10 +707,39 @@ func (m Model) runtimeView() string {
 	if content == "" {
 		content = "Loading runtime view..."
 	}
-	return strings.Join([]string{
+	parts := []string{
 		m.theme.SidebarLabel.Render(title),
 		m.theme.SidebarValue.Render(content),
-	}, "\n")
+	}
+	if actions := m.runtimeViewActions(view); actions != "" {
+		parts = append(parts, "", actions)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (m Model) runtimeViewActions(view luruntime.RuntimeView) string {
+	if len(view.Actions) == 0 {
+		return ""
+	}
+	active := m.runtimeActiveAction[view.ID]
+	lines := []string{m.theme.SidebarLabel.Render("Actions")}
+	for i, action := range view.Actions {
+		label := strings.TrimSpace(action.Label)
+		if label == "" {
+			label = action.ID
+		}
+		if shortcut := strings.TrimSpace(action.Shortcut); shortcut != "" {
+			label = fmt.Sprintf("%s (%s)", label, shortcut)
+		}
+		prefix := "  "
+		style := m.theme.SidebarValue
+		if i == active {
+			prefix = "› "
+			style = m.theme.PaletteActive
+		}
+		lines = append(lines, style.Render(prefix+label))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func clampString(s string, limit int) string {

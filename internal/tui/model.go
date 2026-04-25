@@ -350,6 +350,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.runtimeDialog.open {
 			return m, m.handleRuntimeDialogKey(msg)
 		}
+		if m.inspectorOpen {
+			if view, action, handled := m.inspector.HandleRuntimeViewActionKey(msg); handled {
+				if action.ID != "" {
+					return m, m.runRuntimeViewAction(view, action)
+				}
+				return m, nil
+			}
+		}
 		if m.sessionPicker.IsOpen() {
 			cmd, _, handled := m.sessionPicker.Update(msg)
 			if handled {

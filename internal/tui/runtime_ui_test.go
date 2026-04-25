@@ -106,6 +106,85 @@ views:
 	}
 }
 
+func TestModelRunsRuntimeInspectorViewAction(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "provider_status.yaml"), `name: provider_status
+description: Show provider status.
+command: printf 'provider ok'
+schema:
+  type: object
+  properties: {}
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "review_set_state.yaml"), `name: review_set_state
+description: Set review state.
+command: printf 'approved'
+schema:
+  type: object
+  properties:
+    action:
+      type: string
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "provider.yaml"), `schema: luc.ui/v1
+id: provider-tools
+commands:
+  - id: provider.status.open
+    name: Open provider status
+    action:
+      kind: view.open
+      view_id: provider.status
+views:
+  - id: provider.status
+    title: Provider Status
+    placement: inspector_tab
+    source_tool: provider_status
+    render: markdown
+    actions:
+      - id: approve
+        label: Approve
+        shortcut: a
+        action:
+          kind: tool.run
+          tool_name: review_set_state
+          arguments:
+            action: approve
+          result:
+            presentation: status
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "provider.status.open"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime view load command")
+	}
+	m.inspector.SetSize(48, 18)
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if view := ansi.Strip(m.inspector.DetailView()); !strings.Contains(view, "Approve") {
+		t.Fatalf("expected runtime inspector action, got %q", view)
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime inspector action command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.status != "Tool finished: review_set_state" {
+		t.Fatalf("expected status presentation, got %q", m.status)
+	}
+}
+
 func TestModelOpensRuntimeInspectorViewAndRendersSourceTool(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
@@ -210,6 +289,83 @@ commands:
 	}
 	if !found {
 		t.Fatalf("expected tool.finished event for runtime tool action, got %#v", controller.SessionEvents())
+	}
+}
+
+func TestModelRunsRuntimePageViewAction(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "provider_status.yaml"), `name: provider_status
+description: Show provider status.
+command: printf '{"status":"ok"}'
+schema:
+  type: object
+  properties: {}
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "review_set_state.yaml"), `name: review_set_state
+description: Set review state.
+command: printf 'approved'
+schema:
+  type: object
+  properties:
+    action:
+      type: string
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "provider.yaml"), `schema: luc.ui/v1
+id: provider-tools
+commands:
+  - id: provider.status.page
+    name: Open provider page
+    action:
+      kind: view.open
+      view_id: provider.status
+views:
+  - id: provider.status
+    title: Provider Status
+    placement: page
+    source_tool: provider_status
+    render: json
+    actions:
+      - id: approve
+        label: Approve
+        action:
+          kind: tool.run
+          tool_name: review_set_state
+          arguments:
+            action: approve
+          result:
+            presentation: status
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "provider.status.page"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime page open command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if rendered := m.renderRuntimePage(); !strings.Contains(rendered, "Approve") {
+		t.Fatalf("expected runtime page action, got %q", rendered)
+	}
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime page action command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.status != "Tool finished: review_set_state" {
+		t.Fatalf("expected status presentation, got %q", m.status)
 	}
 }
 
