@@ -400,6 +400,16 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 			block.Meta[tools.MetadataUILabel] = cleanText(label)
 		}
 		return true
+	case "session.handoff":
+		payload := decode[history.SessionHandoffPayload](ev.Payload)
+		content := strings.TrimSpace(payload.Body)
+		if content == "" {
+			content = strings.TrimSpace(payload.Title)
+		} else if title := strings.TrimSpace(payload.Title); title != "" {
+			content = title + "\n\n" + content
+		}
+		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("handoff_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done"})
+		return true
 	case "system.note", "system.error":
 		payload := decode[history.MessagePayload](ev.Payload)
 		kind := "note"

@@ -13,6 +13,65 @@ import (
 	luruntime "github.com/lutefd/luc/internal/runtime"
 )
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (c *Controller) HandoffSession(action luruntime.UIAction) error {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+
+	if c.turnActive.Load() {
+		return fmt.Errorf("cannot hand off while a turn is active")
+	}
+	payload := history.SessionHandoffPayload{
+		Title:        strings.TrimSpace(firstNonEmpty(action.Handoff.Title, action.Title, "Session handoff")),
+		Body:         action.Handoff.Body,
+		Render:       strings.TrimSpace(action.Handoff.Render),
+		InitialInput: action.InitialInput,
+	}
+	if payload.Render == "" {
+		payload.Render = "markdown"
+	}
+	now := time.Now().UTC()
+	meta := history.SessionMeta{
+		SessionID: nextID("sess"),
+		ProjectID: c.workspace.ProjectID,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Provider:  c.config.Provider.Kind,
+		Model:     c.config.Provider.Model,
+		Title:     firstNonEmpty(payload.Title, defaultSessionTitle(c.workspace.Root)),
+	}
+	if err := c.applySession(meta, nil); err != nil {
+		return err
+	}
+	c.sessionSaved = true
+	c.saveSessionMeta()
+	c.emit("session.handoff", payload)
+	contextText := sessionHandoffContext(payload)
+	if contextText != "" {
+		c.appendMessage(provider.Message{Role: "user", Content: contextText})
+	}
+	return nil
+}
+
+func sessionHandoffContext(payload history.SessionHandoffPayload) string {
+	var parts []string
+	if title := strings.TrimSpace(payload.Title); title != "" {
+		parts = append(parts, "Session handoff: "+title)
+	}
+	if body := strings.TrimSpace(payload.Body); body != "" {
+		parts = append(parts, body)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func (c *Controller) NewSession() error {
 	c.turnMu.Lock()
 	defer c.turnMu.Unlock()
