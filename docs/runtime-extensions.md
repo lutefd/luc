@@ -256,6 +256,19 @@ commands:
         action: approve
       result:
         presentation: status
+  - id: review.implement
+    name: Implement Approved Review
+    action:
+      kind: session.handoff
+      title: Start implementation
+      handoff:
+        title: Approved Review
+        body: |
+          ## Approved context
+
+          Carry this review summary into a fresh implementation session.
+        render: markdown
+      initial_input: Implement the approved changes.
 views:
   - id: provider.status
     title: Provider Status
@@ -292,9 +305,10 @@ Supported runtime UI primitives in this slice:
 
 - Command metadata: `description`, `category`, and `shortcut`
 - Command shortcuts use Bubble Tea keystroke syntax such as `ctrl+shift+p`; built-in shortcut collisions and duplicate runtime shortcut collisions are reported as diagnostics.
-- Command actions: `view.open`, `view.refresh`, `command.run`, `tool.run`
+- Command actions: `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`
 - `tool.run` executes the named tool through luc's normal tool pipeline, including extension preflight/result hooks and approval policies. `result.presentation: status` reports completion in the status line.
-- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`
+- `session.handoff` creates and switches to a fresh host-owned session, records a visible handoff event, and seeds `initial_input` into the composer without auto-submitting.
+- Client actions: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`
 - View placements: `inspector_tab`, `page`
 - View renderers: `markdown`, `json`, `table`, `kv`
 - View actions: declarative `actions[]` render as host-owned selectable rows in runtime inspector tabs and pages. Navigate with tab/arrows, press `enter` to activate, or use an action `shortcut`.

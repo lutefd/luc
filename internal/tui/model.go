@@ -18,6 +18,7 @@ import (
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/kernel"
 	"github.com/lutefd/luc/internal/media"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/tui/commands"
 	"github.com/lutefd/luc/internal/tui/inspector"
@@ -642,6 +643,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if strings.EqualFold(strings.TrimSpace(msg.Presentation), "status") || strings.TrimSpace(msg.Presentation) == "" {
 			m.setStatus("Tool finished: " + msg.ToolName)
 		}
+		return m, nil
+	case runtimeSessionHandoffMsg:
+		if msg.err != nil {
+			m.replyRuntimeAction(msg.response, luruntime.UIResult{ActionID: msg.action.ID}, msg.err)
+			m.setStatus("Session handoff failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.replyRuntimeAction(msg.response, luruntime.UIResult{ActionID: msg.action.ID, Accepted: true}, nil)
+		m.resetSessionViews()
+		m.input.SetValue(msg.action.InitialInput)
+		m.input.CursorEnd()
+		m.input.Focus()
+		m.invalidateFooter()
+		m.setStatus("Session handoff: " + m.controller.Session().SessionID)
 		return m, nil
 	case runtimeViewLoadedMsg:
 		if msg.Err != nil {

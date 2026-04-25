@@ -106,6 +106,79 @@ views:
 	}
 }
 
+func TestModelRunsRuntimeSessionHandoffAction(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "tools", "review_summary.yaml"), `name: review_summary
+description: Show review summary.
+command: printf 'approved review'
+schema:
+  type: object
+  properties: {}
+`)
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "review.yaml"), `schema: luc.ui/v1
+id: review-ui
+commands:
+  - id: review.open
+    name: Open review
+    action:
+      kind: view.open
+      view_id: review.summary
+views:
+  - id: review.summary
+    title: Review Summary
+    placement: page
+    source_tool: review_summary
+    render: markdown
+    actions:
+      - id: implement
+        label: Implement
+        action:
+          kind: session.handoff
+          title: Start implementation
+          handoff:
+            title: Approved Review
+            body: approved context
+            render: markdown
+          initial_input: Implement the approved changes.
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSession := controller.Session().SessionID
+
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "review.open"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected runtime page open command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected session handoff command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if controller.Session().SessionID == oldSession {
+		t.Fatal("expected session handoff to create a new session")
+	}
+	if got := m.input.Value(); got != "Implement the approved changes." {
+		t.Fatalf("expected handoff initial input in composer, got %q", got)
+	}
+	if events := controller.SessionEvents(); len(events) != 1 || events[0].Kind != "session.handoff" {
+		t.Fatalf("expected visible session handoff event, got %#v", events)
+	}
+}
+
 func TestModelRunsRuntimeInspectorViewAction(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {

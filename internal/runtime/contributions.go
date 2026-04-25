@@ -12,36 +12,46 @@ type Diagnostic struct {
 }
 
 type RuntimeCommand struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Category    string              `json:"category,omitempty"`
-	Shortcut    string              `json:"shortcut,omitempty"`
-	ActionKind  string              `json:"action_kind,omitempty"`
-	ViewID      string              `json:"view_id,omitempty"`
-	CommandID   string              `json:"command_id,omitempty"`
-	ToolName    string              `json:"tool_name,omitempty"`
-	Arguments   map[string]any      `json:"arguments,omitempty"`
-	Result      RuntimeActionResult `json:"result,omitempty"`
-	SourcePath  string              `json:"source_path,omitempty"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name"`
+	Description  string              `json:"description,omitempty"`
+	Category     string              `json:"category,omitempty"`
+	Shortcut     string              `json:"shortcut,omitempty"`
+	ActionKind   string              `json:"action_kind,omitempty"`
+	ViewID       string              `json:"view_id,omitempty"`
+	CommandID    string              `json:"command_id,omitempty"`
+	ToolName     string              `json:"tool_name,omitempty"`
+	Arguments    map[string]any      `json:"arguments,omitempty"`
+	Result       RuntimeActionResult `json:"result,omitempty"`
+	Handoff      RuntimeHandoff      `json:"handoff,omitempty"`
+	InitialInput string              `json:"initial_input,omitempty"`
+	SourcePath   string              `json:"source_path,omitempty"`
 }
 
 type RuntimeActionResult struct {
 	Presentation string `json:"presentation,omitempty"`
 }
 
+type RuntimeHandoff struct {
+	Title  string `json:"title,omitempty"`
+	Body   string `json:"body,omitempty"`
+	Render string `json:"render,omitempty"`
+}
+
 type RuntimeAction struct {
-	Kind      string              `json:"kind,omitempty"`
-	Title     string              `json:"title,omitempty"`
-	Body      string              `json:"body,omitempty"`
-	Render    string              `json:"render,omitempty"`
-	Input     UIActionInput       `json:"input,omitempty"`
-	Options   []UIOption          `json:"options,omitempty"`
-	ViewID    string              `json:"view_id,omitempty"`
-	CommandID string              `json:"command_id,omitempty"`
-	ToolName  string              `json:"tool_name,omitempty"`
-	Arguments map[string]any      `json:"arguments,omitempty"`
-	Result    RuntimeActionResult `json:"result,omitempty"`
+	Kind         string              `json:"kind,omitempty"`
+	Title        string              `json:"title,omitempty"`
+	Body         string              `json:"body,omitempty"`
+	Render       string              `json:"render,omitempty"`
+	Input        UIActionInput       `json:"input,omitempty"`
+	Options      []UIOption          `json:"options,omitempty"`
+	ViewID       string              `json:"view_id,omitempty"`
+	CommandID    string              `json:"command_id,omitempty"`
+	ToolName     string              `json:"tool_name,omitempty"`
+	Arguments    map[string]any      `json:"arguments,omitempty"`
+	Result       RuntimeActionResult `json:"result,omitempty"`
+	Handoff      RuntimeHandoff      `json:"handoff,omitempty"`
+	InitialInput string              `json:"initial_input,omitempty"`
 }
 
 type RuntimeViewAction struct {

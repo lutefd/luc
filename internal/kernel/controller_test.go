@@ -15,6 +15,7 @@ import (
 	"github.com/lutefd/luc/internal/logging"
 	"github.com/lutefd/luc/internal/media"
 	"github.com/lutefd/luc/internal/provider"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/tools"
 )
 
@@ -1705,6 +1706,69 @@ func TestControllerNewAndOpenSession(t *testing.T) {
 	}
 	if len(controller.InitialEvents()) == 0 {
 		t.Fatal("expected restored session events")
+	}
+}
+
+func TestControllerHandoffSessionCreatesSavedSessionWithContext(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "text_delta", Text: "ok"},
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSession := controller.Session().SessionID
+
+	if err := controller.HandoffSession(luruntime.UIAction{
+		Kind:         "session.handoff",
+		Title:        "Start implementation",
+		InitialInput: "Implement the approved changes.",
+		Handoff: luruntime.RuntimeHandoff{
+			Title:  "Approved Review",
+			Body:   "Approved context.",
+			Render: "markdown",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if controller.Session().SessionID == oldSession {
+		t.Fatal("expected a new session")
+	}
+	if !controller.SessionSaved() {
+		t.Fatal("expected handoff session to be saved")
+	}
+	if _, ok, err := controller.store.Meta(controller.Session().SessionID); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("expected handoff session meta")
+	}
+	events := controller.SessionEvents()
+	if len(events) != 1 || events[0].Kind != "session.handoff" {
+		t.Fatalf("expected handoff event, got %#v", events)
+	}
+	conversation := controller.snapshotConversation()
+	if len(conversation) != 1 || !strings.Contains(conversation[0].Content, "Approved context.") {
+		t.Fatalf("expected handoff context in conversation, got %#v", conversation)
+	}
+	if err := controller.Submit(context.Background(), "Implement the approved changes."); err != nil {
+		t.Fatal(err)
+	}
+	if len(providerStub.requests) != 1 || !strings.Contains(providerStub.requests[0].Messages[0].Content, "Approved context.") {
+		t.Fatalf("expected provider request to include handoff context, got %#v", providerStub.requests)
 	}
 }
 

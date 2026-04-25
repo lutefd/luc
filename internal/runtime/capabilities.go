@@ -15,6 +15,7 @@ const (
 	HostCapabilityUICommandShortcut       = "ui.command.shortcut"
 	HostCapabilityUIToolRun               = "tool.run"
 	HostCapabilityUIViewActions           = "ui.view.actions"
+	HostCapabilitySessionHandoff          = "session.handoff"
 	HostCapabilityLiveHooks               = "hooks.live_events"
 	HostCapabilityExtensionObserveEvents  = "extensions.observe_events"
 	HostCapabilityExtensionSessionStorage = "extensions.storage.session"
@@ -22,20 +23,22 @@ const (
 )
 
 type UIAction struct {
-	ID        string         `json:"id,omitempty"`
-	Kind      string         `json:"kind"`
-	Blocking  bool           `json:"blocking,omitempty"`
-	Title     string         `json:"title,omitempty"`
-	Body      string         `json:"body,omitempty"`
-	Render    string         `json:"render,omitempty"`
-	Input     UIActionInput  `json:"input,omitempty"`
-	ViewID    string         `json:"view_id,omitempty"`
-	CommandID string         `json:"command_id,omitempty"`
-	ToolName  string         `json:"tool_name,omitempty"`
-	Arguments map[string]any `json:"arguments,omitempty"`
-	Result    UIActionResult `json:"result,omitempty"`
-	Options   []UIOption     `json:"options,omitempty"`
-	Context   map[string]any `json:"context,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	Kind         string         `json:"kind"`
+	Blocking     bool           `json:"blocking,omitempty"`
+	Title        string         `json:"title,omitempty"`
+	Body         string         `json:"body,omitempty"`
+	Render       string         `json:"render,omitempty"`
+	Input        UIActionInput  `json:"input,omitempty"`
+	ViewID       string         `json:"view_id,omitempty"`
+	CommandID    string         `json:"command_id,omitempty"`
+	ToolName     string         `json:"tool_name,omitempty"`
+	Arguments    map[string]any `json:"arguments,omitempty"`
+	Result       UIActionResult `json:"result,omitempty"`
+	Handoff      RuntimeHandoff `json:"handoff,omitempty"`
+	InitialInput string         `json:"initial_input,omitempty"`
+	Options      []UIOption     `json:"options,omitempty"`
+	Context      map[string]any `json:"context,omitempty"`
 }
 
 type UIActionInput struct {
@@ -143,6 +146,7 @@ func DefaultHostCapabilities() []string {
 		HostCapabilityUICommandShortcut,
 		HostCapabilityUIToolRun,
 		HostCapabilityUIViewActions,
+		HostCapabilitySessionHandoff,
 		HostCapabilityLiveHooks,
 		HostCapabilityExtensionObserveEvents,
 		HostCapabilityExtensionSessionStorage,

@@ -74,20 +74,30 @@ func (c *Controller) emitUIAction(action luruntime.UIAction) {
 	if strings.TrimSpace(action.Result.Presentation) != "" {
 		result = map[string]any{"presentation": action.Result.Presentation}
 	}
+	var handoff map[string]any
+	if strings.TrimSpace(action.Handoff.Title) != "" || strings.TrimSpace(action.Handoff.Body) != "" || strings.TrimSpace(action.Handoff.Render) != "" {
+		handoff = map[string]any{
+			"title":  action.Handoff.Title,
+			"body":   action.Handoff.Body,
+			"render": action.Handoff.Render,
+		}
+	}
 	c.emit("ui.action", history.UIActionPayload{
-		ID:        action.ID,
-		Kind:      action.Kind,
-		Blocking:  action.Blocking,
-		Title:     action.Title,
-		Body:      action.Body,
-		Render:    action.Render,
-		Input:     input,
-		ViewID:    action.ViewID,
-		CommandID: action.CommandID,
-		ToolName:  action.ToolName,
-		Arguments: action.Arguments,
-		Result:    result,
-		Context:   action.Context,
+		ID:           action.ID,
+		Kind:         action.Kind,
+		Blocking:     action.Blocking,
+		Title:        action.Title,
+		Body:         action.Body,
+		Render:       action.Render,
+		Input:        input,
+		ViewID:       action.ViewID,
+		CommandID:    action.CommandID,
+		ToolName:     action.ToolName,
+		Arguments:    action.Arguments,
+		Result:       result,
+		Handoff:      handoff,
+		InitialInput: action.InitialInput,
+		Context:      action.Context,
 	})
 }
 

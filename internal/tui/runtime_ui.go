@@ -48,6 +48,12 @@ type runtimeToolActionDoneMsg struct {
 	Err          error
 }
 
+type runtimeSessionHandoffMsg struct {
+	action   luruntime.UIAction
+	response chan uiBrokerResponse
+	err      error
+}
+
 type runtimePageState struct {
 	open         bool
 	view         luruntime.RuntimeView
@@ -74,6 +80,9 @@ func newTeaUIBroker() *teaUIBroker {
 }
 
 func (b *teaUIBroker) Publish(action luruntime.UIAction) error {
+	if strings.TrimSpace(action.Kind) == "session.handoff" {
+		return fmt.Errorf("session.handoff requires a blocking action")
+	}
 	b.actions <- uiBrokerRequest{action: action}
 	return nil
 }
@@ -265,12 +274,14 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 		return nil
 	}
 	return m.handleRuntimeAction(luruntime.UIAction{
-		ID:        "runtime.command." + command.ID,
-		Kind:      command.ActionKind,
-		ViewID:    command.ViewID,
-		CommandID: command.CommandID,
-		ToolName:  command.ToolName,
-		Arguments: command.Arguments,
+		ID:           "runtime.command." + command.ID,
+		Kind:         command.ActionKind,
+		ViewID:       command.ViewID,
+		CommandID:    command.CommandID,
+		ToolName:     command.ToolName,
+		Arguments:    command.Arguments,
+		Handoff:      command.Handoff,
+		InitialInput: command.InitialInput,
 		Result: luruntime.UIActionResult{
 			Presentation: command.Result.Presentation,
 		},
@@ -279,17 +290,19 @@ func (m *Model) handleRuntimeCommand(commandID string) tea.Cmd {
 
 func uiActionFromRuntimeAction(id string, action luruntime.RuntimeAction) luruntime.UIAction {
 	return luruntime.UIAction{
-		ID:        id,
-		Kind:      action.Kind,
-		Title:     action.Title,
-		Body:      action.Body,
-		Render:    action.Render,
-		Input:     action.Input,
-		Options:   action.Options,
-		ViewID:    action.ViewID,
-		CommandID: action.CommandID,
-		ToolName:  action.ToolName,
-		Arguments: action.Arguments,
+		ID:           id,
+		Kind:         action.Kind,
+		Title:        action.Title,
+		Body:         action.Body,
+		Render:       action.Render,
+		Input:        action.Input,
+		Options:      action.Options,
+		ViewID:       action.ViewID,
+		CommandID:    action.CommandID,
+		ToolName:     action.ToolName,
+		Arguments:    action.Arguments,
+		Handoff:      action.Handoff,
+		InitialInput: action.InitialInput,
 		Result: luruntime.UIActionResult{
 			Presentation: action.Result.Presentation,
 		},
@@ -327,9 +340,21 @@ func (m *Model) handleRuntimeAction(action luruntime.UIAction, response chan uiB
 	case "tool.run":
 		m.setStatus("Running " + action.ToolName + "...")
 		return runtimeToolActionCmd(m.controller, action, response)
+	case "session.handoff":
+		if response != nil && !action.Blocking {
+			m.replyRuntimeAction(response, luruntime.UIResult{ActionID: action.ID}, fmt.Errorf("session.handoff requires a blocking action"))
+			return nil
+		}
+		return m.runtimeSessionHandoff(action, response)
 	default:
 		m.replyRuntimeAction(response, luruntime.UIResult{ActionID: action.ID}, fmt.Errorf("unsupported runtime action %q", action.Kind))
 		return nil
+	}
+}
+
+func (m *Model) runtimeSessionHandoff(action luruntime.UIAction, response chan uiBrokerResponse) tea.Cmd {
+	return func() tea.Msg {
+		return runtimeSessionHandoffMsg{action: action, response: response, err: m.controller.HandoffSession(action)}
 	}
 }
 
