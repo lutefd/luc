@@ -35,6 +35,9 @@ id: provider-tools
 commands:
   - id: provider.status.open
     name: Open provider status
+    description: Show the current provider status panel.
+    category: Provider
+    shortcut: ctrl+shift+p
     action:
       kind: view.open
       view_id: provider.status
@@ -58,6 +61,7 @@ Composition rules:
 
 - Put protocol translation in the provider or tool, not in the UI manifest.
 - Put reusable commands, views, and approval policies in `luc.ui/v1`.
+- Runtime commands may declare `description`, `category`, and `shortcut`; avoid built-in shortcut collisions because luc reports them as diagnostics.
 - Use `view.open` or `view.refresh` for persistent host-owned views.
 - If the workflow needs explicit confirmation, use approval policies or `confirm.request` client actions.
 - Keep runtime views declarative and read-only in this slice.
