@@ -440,10 +440,19 @@ func startManagedExtensionHost(ctx context.Context, supervisor *extensionSupervi
 		return nil, reportedExtensionStartError{err: readyCtx.Err()}
 	}
 
-	sessionStore, workspaceStore, err := loadExtensionStorageSnapshot(controller.workspace.Root, controller.session.SessionID, def.ID)
-	if err != nil {
-		host.reportFailure(err)
-		return nil, reportedExtensionStartError{err: err}
+	var sessionStore, workspaceStore any
+	if luruntime.ExtensionHostHasCapability(def, luruntime.HostCapabilityExtensionSessionStorage) || luruntime.ExtensionHostHasCapability(def, luruntime.HostCapabilityExtensionWorkspaceStore) {
+		loadedSessionStore, loadedWorkspaceStore, err := loadExtensionStorageSnapshot(controller.workspace.Root, controller.session.SessionID, def.ID)
+		if err != nil {
+			host.reportFailure(err)
+			return nil, reportedExtensionStartError{err: err}
+		}
+		if luruntime.ExtensionHostHasCapability(def, luruntime.HostCapabilityExtensionSessionStorage) {
+			sessionStore = loadedSessionStore
+		}
+		if luruntime.ExtensionHostHasCapability(def, luruntime.HostCapabilityExtensionWorkspaceStore) {
+			workspaceStore = loadedWorkspaceStore
+		}
 	}
 	if err := host.send(luruntime.ExtensionStorageSnapshotEnvelope{
 		Type:      "storage_snapshot",
@@ -628,6 +637,10 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 			h.controller.logger.Ring.Add("info", fmt.Sprintf("extension %s: %s", h.def.ID, text))
 		}
 	case "client_action":
+		if !h.hasCapability(luruntime.CapabilityClientAction) {
+			h.reportFailure(errors.New("extension emitted client_action without client_actions capability"))
+			return
+		}
 		if event.Action == nil {
 			h.reportFailure(errors.New("extension client_action is missing action payload"))
 			return
@@ -657,6 +670,10 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 			h.reportFailure(err)
 		}
 	case "storage_update":
+		if !h.canUpdateStorage(event.Scope) {
+			h.reportFailure(fmt.Errorf("extension emitted storage_update for scope %q without declared storage capability", event.Scope))
+			return
+		}
 		if err := persistExtensionStorageUpdate(h.controller.workspace.Root, h.controller.session.SessionID, h.def.ID, event.Scope, event.Value); err != nil {
 			h.reportFailure(err)
 		}
@@ -679,6 +696,10 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 	case "tool_result":
 		h.resolveHostedToolResult(event)
 	case "tools.register":
+		if !h.hasCapability(luruntime.HostCapabilityDynamicTools) {
+			h.reportFailure(errors.New("extension emitted tools.register without tools.dynamic capability"))
+			return
+		}
 		h.registerDynamicTools(event)
 	case "error":
 		h.reportFailure(errors.New(kernelFirstNonEmpty(event.Error, event.Message, "extension failed")))
@@ -686,6 +707,21 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 		return
 	default:
 		h.reportFailure(fmt.Errorf("unsupported extension message type %q", event.Type))
+	}
+}
+
+func (h *managedExtensionHost) hasCapability(capability string) bool {
+	return luruntime.ExtensionHostHasCapability(h.def, capability)
+}
+
+func (h *managedExtensionHost) canUpdateStorage(scope string) bool {
+	switch strings.TrimSpace(scope) {
+	case "session":
+		return h.hasCapability(luruntime.HostCapabilityExtensionSessionStorage)
+	case "workspace":
+		return h.hasCapability(luruntime.HostCapabilityExtensionWorkspaceStore)
+	default:
+		return false
 	}
 }
 

@@ -399,6 +399,9 @@ Example:
 schema: luc.extension/v1
 id: audit
 protocol_version: 1
+capabilities:
+  - extensions.storage.session
+  - extensions.storage.workspace
 runtime:
   kind: exec
   command: ./host.py
@@ -416,7 +419,7 @@ Extension host notes:
 
 - Hosts are started on session start/open and restarted on `luc reload`.
 - `runtime.command` is executed relative to the extension manifest directory; `runtime.args` and `runtime.env` are optional.
-- Startup sends `hello`, then `storage_snapshot`, then `session_start`.
+- Startup sends `hello`, then `storage_snapshot`, then `session_start`. Storage snapshot scopes are only populated for capabilities declared by the extension host.
 - Observe events are currently limited to `session.start`, `session.reload`, `message.assistant.final`, `tool.finished`, `tool.error`, and `compaction.completed`.
 - Sync seams currently supported are `input.transform`, `prompt.context`, `tool.preflight`, and `tool.result`.
 - `mode` defaults to `observe`. Sync subscriptions block only their seam and use per-subscription `timeout_ms` or the built-in defaults.
@@ -424,6 +427,7 @@ Extension host notes:
 - `session_shutdown` is sent before luc tears a host down for reload, close, or session switch.
 - Sync requests are sent as `event` envelopes with a `request_id`; the extension answers with `decision` carrying the same `request_id`.
 - Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `tools.register`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
+- Risky bidirectional messages require explicit `capabilities` on the `luc.extension/v1` manifest. `client_action` requires `client_actions`; `tools.register` requires `tools.dynamic`; `storage_update` requires `extensions.storage.session` or `extensions.storage.workspace` for the target scope.
 - `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Rich `modal.open` actions may set `render: markdown`, provide multiple `options`, and enable text `input`; blocking responses include the selected `choice_id` and `data.input` when input is enabled.
 - Extension hosts are trusted local processes in this phase.
@@ -658,9 +662,9 @@ Allowed approval modes:
 
 ## Host Capability Gating
 
-UI and hook manifests may declare `requires_host_capabilities`. luc compares
+UI, hook, and extension host manifests may declare `requires_host_capabilities`. luc compares
 those requirements against the host capability set it advertises to structured
-tools/providers/hooks, for example:
+tools/providers/hooks and extension hosts, for example:
 
 - `ui.modal`
 - `ui.confirm`
@@ -678,6 +682,8 @@ tools/providers/hooks, for example:
 
 Unsupported required capabilities do not crash reload. luc skips that
 contribution and records a reload diagnostic instead.
+
+`requires_host_capabilities` describes what luc must support before loading a surface. Extension host `capabilities` describes what that specific host is allowed to do after it is loaded.
 
 ## Reloading
 

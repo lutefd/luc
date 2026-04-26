@@ -43,6 +43,9 @@ func TestControllerExtensionHostsObserveEventsAndRehydrateStorage(t *testing.T) 
 	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "audit.yaml"), `schema: luc.extension/v1
 id: audit
 protocol_version: 1
+capabilities:
+  - extensions.storage.session
+  - extensions.storage.workspace
 runtime:
   kind: exec
   command: ./host.py
@@ -127,6 +130,80 @@ subscriptions:
 	waitForExtensionMessages(t, logPath, func(messages []map[string]any) bool {
 		return extensionMessageTypeCount(messages, "session_shutdown") >= 2
 	})
+}
+
+func TestControllerRejectsUndeclaredExtensionHostCapabilities(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{
+		streams: [][]provider.Event{{
+			{Type: "text_delta", Text: "ok"},
+			{Type: "done", Completed: true},
+		}},
+	}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "extension-input.jsonl")
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "audit.yaml"), `schema: luc.extension/v1
+id: audit
+protocol_version: 1
+runtime:
+  kind: exec
+  command: ./host.py
+subscriptions:
+  - event: message.assistant.final
+`)
+	script := "#!/usr/bin/env python3\n" +
+		"import json, sys\n" +
+		"log_path = r'" + logPath + "'\n" +
+		"def emit(obj):\n" +
+		"    sys.stdout.write(json.dumps(obj) + '\\n')\n" +
+		"    sys.stdout.flush()\n" +
+		"for line in sys.stdin:\n" +
+		"    msg = json.loads(line)\n" +
+		"    with open(log_path, 'a', encoding='utf-8') as fh:\n" +
+		"        fh.write(json.dumps(msg) + '\\n')\n" +
+		"    if msg.get('type') == 'hello':\n" +
+		"        emit({'type': 'ready', 'protocol_version': 1})\n" +
+		"    elif msg.get('type') == 'event' and msg.get('event') == 'message.assistant.final':\n" +
+		"        emit({'type': 'storage_update', 'scope': 'session', 'value': {'denied': True}})\n" +
+		"    elif msg.get('type') == 'session_shutdown':\n" +
+		"        break\n"
+	mustWriteKernelFile(t, filepath.Join(root, ".luc", "extensions", "host.py"), script)
+	if err := os.Chmod(filepath.Join(root, ".luc", "extensions", "host.py"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	waitForExtensionMessages(t, logPath, func(messages []map[string]any) bool {
+		return extensionMessageSeen(messages, "event", "message.assistant.final")
+	})
+	for _, ev := range controller.SessionEvents() {
+		if ev.Kind != "extension.failed" {
+			continue
+		}
+		payload := decode[history.ExtensionPayload](ev.Payload)
+		if strings.Contains(payload.Error, "without declared storage capability") {
+			return
+		}
+	}
+	t.Fatalf("expected extension.failed for undeclared storage capability, got %#v", controller.SessionEvents())
 }
 
 func TestControllerSyncExtensionsTransformInputAndAppendPromptContext(t *testing.T) {
