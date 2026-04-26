@@ -83,7 +83,7 @@ input_schema:
 Hosted tool rules:
 
 - Use `runtime.kind: extension` when the tool should run inside a long-lived `luc.extension/v1` host and share its session-local state.
-- Hosted tool discovery is still declarative. The tool manifest remains the canonical registration surface; the extension host does not register tools dynamically.
+- Hosted tools should usually be declared with `luc.tool/v2`. Extension hosts may register dynamic tools only for advanced integrations where the tool catalog is discovered at runtime, such as MCP adapters. Dynamic tools require host capability `tools.dynamic`, are session-scoped, are owned by the registering extension host, use source `dynamic:<extension-id>`, and cannot replace existing built-in or manifest-declared tools.
 - Hosted invocation is sent to the host as `tool_invoke` with `request_id`, `handler`, and the normal tool request envelope nested under `tool`.
 - The host answers with `tool_result` carrying the same normalized result shape luc already uses: `content`, optional `metadata`, `default_collapsed`, and `collapsed_summary`.
 - Hosted tools may emit `client_action` and receive `client_result` the same way structured exec tools do.

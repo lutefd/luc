@@ -104,7 +104,7 @@ Tool capability notes:
 - Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action; non-blocking handoff requests are rejected.
 - Structured tools should emit a `result` event carrying the final tool payload, then emit `done` to terminate the stream.
 - Hosted tools use `schema: luc.tool/v2` with `runtime.kind: extension`, `runtime.extension_id`, and `runtime.handler`.
-- Hosted tool discovery remains declarative; luc does not support dynamic tool registration from extension code in this slice.
+- Hosted tools should usually be declared with `luc.tool/v2`. Extension hosts may register dynamic tools only for advanced integrations where the tool catalog is discovered at runtime, such as MCP adapters. Dynamic tools are session-scoped, owned by the registering extension host, use source `dynamic:<extension-id>`, and cannot replace existing built-in or manifest-declared tools.
 - Hosted tool execution is routed to the named extension host over `tool_invoke`, and the host replies with `tool_result`.
 - Hosted tools return the same normalized result envelope luc already uses for other tools: `content`, optional `metadata`, `default_collapsed`, and `collapsed_summary`.
 
@@ -416,7 +416,7 @@ Extension host notes:
 - `failure_mode` defaults to `open`. `closed` is currently allowed only for `input.transform` and `tool.preflight`.
 - `session_shutdown` is sent before luc tears a host down for reload, close, or session switch.
 - Sync requests are sent as `event` envelopes with a `request_id`; the extension answers with `decision` carrying the same `request_id`.
-- Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
+- Host stdout message types in this slice are `ready`, `decision`, `tool_result`, `tools.register`, `log`, `progress`, `client_action`, `storage_update`, `error`, and `done`.
 - `client_action` uses the same host-owned action kinds as tools/providers/hooks: `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Rich `modal.open` actions may set `render: markdown`, provide multiple `options`, and enable text `input`; blocking responses include the selected `choice_id` and `data.input` when input is enabled.
 - Extension hosts are trusted local processes in this phase.
@@ -424,7 +424,7 @@ Extension host notes:
 - Current restart defaults are 250 ms base delay, 2 s max delay, and 4 retry attempts per session before the host is disabled for the rest of that session.
 - Broken-host diagnostics are exposed through runtime diagnostics and inspector logs, and they clear automatically after the host becomes healthy again.
 - `extension.failed` history events are still emitted when a running host fails, but the session continues.
-- Hosted tools are supported through declarative `luc.tool/v2` manifests backed by `luc.extension/v1` hosts.
+- Hosted tools are supported through declarative `luc.tool/v2` manifests backed by `luc.extension/v1` hosts. Dynamic hosted tool registration is available for advanced runtime-discovered catalogs such as MCP and requires host capability `tools.dynamic`.
 - For a complete hybrid package example, see `examples/packages/hybrid-audit`.
 
 ### Skills
@@ -663,6 +663,7 @@ tools/providers/hooks, for example:
 - `ui.view.actions`
 - `ui.session.handoff`
 - `ui.timeline.note`
+- `tools.dynamic`
 - `hooks.live_events`
 - `extensions.observe_events`
 - `extensions.storage.session`
