@@ -177,9 +177,24 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 					})
 				}
 				c.emit("message.assistant.tool_calls", payload)
-				c.appendMessage(assistantMsg)
 
-				for _, call := range calls {
+				completedCalls := make([]provider.ToolCall, 0, len(calls))
+				completedResults := make([]provider.Message, 0, len(calls))
+				appendCompletedToolMessages := func() {
+					if len(completedCalls) == 0 {
+						return
+					}
+					if len(completedCalls) == len(calls) {
+						c.appendMessage(assistantMsg)
+					} else {
+						c.appendMessage(provider.Message{Role: "assistant", ToolCalls: completedCalls})
+					}
+					for _, msg := range completedResults {
+						c.appendMessage(msg)
+					}
+				}
+
+				for i, call := range calls {
 					preparedCall, preflightErr := c.prepareToolCall(turnCtx, call)
 					c.emit("tool.requested", history.ToolCallPayload{
 						ID:        preparedCall.ID,
@@ -196,6 +211,9 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 						result, err = c.runPreparedToolCall(turnCtx, preparedCall)
 					}
 					if turnCtx.Err() != nil || errors.Is(err, context.Canceled) {
+						if len(completedCalls) > 0 || i == 0 {
+							c.appendInterruptedToolMessages(calls, completedCalls, completedResults, i)
+						}
 						return c.handleTurnCanceled()
 					}
 					payload := history.ToolResultPayload{
@@ -211,13 +229,15 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 						payload = c.applyToolResultPatches(turnCtx, preparedCall, payload)
 					}
 					c.emit("tool.finished", payload)
-					c.appendMessage(provider.Message{
+					completedCalls = append(completedCalls, preparedCall)
+					completedResults = append(completedResults, provider.Message{
 						Role:       "tool",
 						ToolCallID: preparedCall.ID,
 						Name:       preparedCall.Name,
 						Content:    toolResponseContent(payload),
 					})
 				}
+				appendCompletedToolMessages()
 				continue
 			}
 
@@ -266,6 +286,32 @@ func (c *Controller) endTurn() {
 	c.mu.Lock()
 	c.turnCancel = nil
 	c.mu.Unlock()
+}
+
+func (c *Controller) appendInterruptedToolMessages(calls []provider.ToolCall, completedCalls []provider.ToolCall, completedResults []provider.Message, current int) {
+	if len(calls) == 0 || current < 0 || current >= len(calls) {
+		return
+	}
+	toAppend := append([]provider.ToolCall(nil), completedCalls...)
+	toAppend = append(toAppend, calls[current])
+	c.appendMessage(provider.Message{Role: "assistant", ToolCalls: toAppend})
+	for _, msg := range completedResults {
+		c.appendMessage(msg)
+	}
+	call := calls[current]
+	payload := history.ToolResultPayload{
+		ID:      call.ID,
+		Name:    call.Name,
+		Content: "Tool execution was interrupted before luc recorded a result.",
+		Error:   "tool execution interrupted",
+	}
+	c.emit("tool.finished", payload)
+	c.appendMessage(provider.Message{
+		Role:       "tool",
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		Content:    toolResponseContent(payload),
+	})
 }
 
 func (c *Controller) handleTurnCanceled() error {
