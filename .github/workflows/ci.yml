@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  fmt:
-    name: go fmt
+  ci:
+    name: go fmt and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: "1.26"
           cache: true
 
       - name: Run go fmt
@@ -28,19 +28,6 @@ jobs:
 
       - name: Verify formatting
         run: git diff --exit-code
-
-  test:
-    name: tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: true
 
       - name: Run tests
         run: go test ./...
