@@ -22,6 +22,7 @@ type Block struct {
 	Content     string
 	Diff        string
 	State       string
+	Render      string
 	Attachments []media.Attachment
 	Meta        map[string]string
 }
@@ -403,12 +404,12 @@ func (m *Model) applyEvent(ev history.EventEnvelope) bool {
 	case "session.handoff":
 		payload := decode[history.SessionHandoffPayload](ev.Payload)
 		content := titledTimelineContent(payload.Title, payload.Body)
-		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("handoff_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done"})
+		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("handoff_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done", Render: payload.Render})
 		return true
 	case "timeline.note":
 		payload := decode[history.TimelineNotePayload](ev.Payload)
 		content := titledTimelineContent(payload.Title, payload.Body)
-		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("timeline_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done"})
+		m.blocks = append(m.blocks, Block{ID: fmt.Sprintf("timeline_%d", ev.Seq), Kind: "note", Content: cleanText(content), State: "done", Render: payload.Render})
 		return true
 	case "system.note", "system.error":
 		payload := decode[history.MessagePayload](ev.Payload)
@@ -639,8 +640,16 @@ func (m Model) renderNoteBlock(block Block, width int) string {
 	content := strings.TrimSpace(block.Content)
 	if content == "" {
 		content = "Timeline note"
+	} else if strings.EqualFold(strings.TrimSpace(block.Render), "markdown") {
+		if rendered, err := m.renderer(max(1, width-2), content); err == nil && strings.TrimSpace(rendered) != "" {
+			content = strings.TrimSpace(rendered)
+		}
 	}
-	return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(content))
+	body := m.theme.Muted.Render(content)
+	if strings.EqualFold(strings.TrimSpace(block.Render), "markdown") {
+		body = m.theme.AssistantBody.Render(content)
+	}
+	return prefixLines(body, width-2, m.theme.AssistantPrefix.Render("▎"))
 }
 
 func (m Model) renderToolBlock(block Block, width int) string {
@@ -823,13 +832,23 @@ func summarizeCollapsedOutput(content string) string {
 
 func titledTimelineContent(title, body string) string {
 	content := strings.TrimSpace(body)
+	title = strings.TrimSpace(title)
 	if content == "" {
-		return strings.TrimSpace(title)
+		return title
 	}
-	if title := strings.TrimSpace(title); title != "" {
-		return title + "\n\n" + content
+	if title == "" || contentStartsWithTitle(content, title) {
+		return content
 	}
-	return content
+	return title + "\n\n" + content
+}
+
+func contentStartsWithTitle(content, title string) bool {
+	first, _, _ := strings.Cut(strings.TrimSpace(content), "\n")
+	first = strings.TrimSpace(first)
+	for strings.HasPrefix(first, "#") {
+		first = strings.TrimSpace(strings.TrimPrefix(first, "#"))
+	}
+	return strings.EqualFold(first, strings.TrimSpace(title))
 }
 
 func shouldHideTool(name string) bool {

@@ -143,7 +143,7 @@ func New(controller *kernel.Controller) Model {
 	model := Model{
 		controller:     controller,
 		transcript:     transcript.New(th, variant),
-		inspector:      inspector.New(controller.Workspace(), controller.Session(), th),
+		inspector:      inspector.New(controller.Workspace(), controller.Session(), th, variant),
 		input:          input,
 		palette:        commands.New(registry, th),
 		modelPicker:    modelspicker.New(controller.Registry(), th),
@@ -666,7 +666,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.replyRuntimeAction(msg.response, luruntime.UIResult{ActionID: msg.action.ID, Accepted: true}, nil)
 		m.setStatus("Timeline note added")
-		return m, nil
+		return m, waitForEvent(m.controller.Events())
 	case runtimeViewLoadedMsg:
 		if msg.Err != nil {
 			if m.runtimePage.open && m.runtimePage.view.ID == msg.ViewID {
@@ -1279,7 +1279,7 @@ func (m *Model) resetSessionViews() {
 	th, variant, _ := theme.Load(m.controller.Config().UI.Theme, m.controller.Workspace().Root)
 	m.theme = th
 	m.transcript = transcript.New(m.theme, variant)
-	m.inspector = inspector.New(m.controller.Workspace(), m.controller.Session(), m.theme)
+	m.inspector = inspector.New(m.controller.Workspace(), m.controller.Session(), m.theme, variant)
 	m.palette = commands.New(m.registry, m.theme)
 	m.modelPicker = modelspicker.New(m.controller.Registry(), m.theme)
 	m.sessionPicker = sessionpicker.New(m.theme)
@@ -1338,7 +1338,7 @@ func (m *Model) applyTheme(name string) {
 	}
 	m.theme = th
 	m.transcript = transcript.New(m.theme, variant)
-	m.inspector = inspector.New(m.controller.Workspace(), m.controller.Session(), m.theme)
+	m.inspector = inspector.New(m.controller.Workspace(), m.controller.Session(), m.theme, variant)
 	m.palette = commands.New(m.registry, m.theme)
 	m.modelPicker = modelspicker.New(m.controller.Registry(), m.theme)
 	m.sessionPicker = sessionpicker.New(m.theme)

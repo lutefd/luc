@@ -58,6 +58,7 @@ func TestRunDoctorAndReload(t *testing.T) {
 }
 
 func TestRunRPCEntrypoints(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("OPENAI_API_KEY", "token")
 
 	for _, tc := range []struct {

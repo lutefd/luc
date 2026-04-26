@@ -50,6 +50,7 @@ type Model struct {
 	errorCount          int
 	reloadVersion       uint64
 	theme               theme.Theme
+	variant             string
 	activeTab           int
 	viewport            viewport.Model
 	runtimeViews        []luruntime.RuntimeView
@@ -62,7 +63,11 @@ type Model struct {
 	detailCache         string
 }
 
-func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
+func New(ws workspace.Info, session history.SessionMeta, th theme.Theme, variant ...string) Model {
+	resolvedVariant := theme.VariantLight
+	if len(variant) > 0 && strings.TrimSpace(variant[0]) != "" {
+		resolvedVariant = variant[0]
+	}
 	vp := viewport.New()
 	vp.MouseWheelEnabled = false
 	vp.SoftWrap = false
@@ -71,6 +76,7 @@ func New(ws workspace.Info, session history.SessionMeta, th theme.Theme) Model {
 		session:             session,
 		status:              "Ready",
 		theme:               th,
+		variant:             resolvedVariant,
 		activeTab:           tabOverview,
 		viewport:            vp,
 		runtimeContent:      map[string]string{},
@@ -466,6 +472,7 @@ func (m *Model) refreshContent() {
 	default:
 		content = m.runtimeView()
 	}
+	content = lipgloss.NewStyle().Width(max(1, m.viewport.Width())).Render(content)
 	lines := strings.Split(content, "\n")
 	if len(lines) == 1 && strings.TrimSpace(lines[0]) == "" {
 		lines = []string{""}
@@ -715,15 +722,29 @@ func (m Model) runtimeView() string {
 	content := strings.TrimSpace(m.runtimeContent[view.ID])
 	if content == "" {
 		content = "Loading runtime view..."
+	} else if strings.EqualFold(strings.TrimSpace(view.Render), "markdown") {
+		content = m.renderMarkdown(content, max(1, m.viewport.Width()))
 	}
 	parts := []string{
 		m.theme.SidebarLabel.Render(title),
-		m.theme.SidebarValue.Render(content),
+		m.theme.SidebarValue.Width(max(1, m.viewport.Width())).Render(content),
 	}
 	if actions := m.runtimeViewActions(view); actions != "" {
 		parts = append(parts, "", actions)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func (m Model) renderMarkdown(content string, width int) string {
+	renderer, err := theme.NewMarkdownRenderer(width, m.variant)
+	if err != nil {
+		return content
+	}
+	rendered, err := renderer.Render(content)
+	if err != nil || strings.TrimSpace(rendered) == "" {
+		return content
+	}
+	return strings.TrimSpace(rendered)
 }
 
 func (m Model) runtimeViewActions(view luruntime.RuntimeView) string {

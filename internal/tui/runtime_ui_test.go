@@ -106,7 +106,58 @@ views:
 	}
 }
 
+func TestModelRendersRuntimeTimelineNoteMarkdown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteRuntimeFile(t, filepath.Join(root, ".luc", "ui", "timeline.yaml"), `schema: luc.ui/v1
+id: timeline-ui
+commands:
+  - id: plan.updated
+    name: Plan updated
+    action:
+      kind: timeline.note
+      title: Updated Plan
+      body: |
+        ### Updated Plan
+
+        - [x] Inspect shell environment and confirm basic repo state
+      render: markdown
+`)
+
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	m := updated.(Model)
+	updated, cmd := m.Update(runRuntimeCommandMsg{CommandID: "plan.updated"})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected timeline note command")
+	}
+	updated, cmd = m.Update(cmd())
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected timeline note event watcher")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+
+	transcript := ansi.Strip(m.transcript.View())
+	if strings.Contains(transcript, "### Updated Plan") {
+		t.Fatalf("expected markdown heading marker to be styled away, got %q", transcript)
+	}
+	if !strings.Contains(transcript, "Updated Plan") || !strings.Contains(transcript, "Inspect shell environment") {
+		t.Fatalf("expected rendered timeline note in transcript, got %q", transcript)
+	}
+}
+
 func TestModelRunsRuntimeTimelineNoteAction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -135,16 +186,15 @@ commands:
 	if cmd == nil {
 		t.Fatal("expected timeline note command")
 	}
-	updated, _ = m.Update(cmd())
+	updated, cmd = m.Update(cmd())
 	m = updated.(Model)
-	updated, _ = m.Update(appEventsMsg(controller.SessionEvents()))
+	if cmd == nil {
+		t.Fatal("expected timeline note event watcher")
+	}
+	updated, _ = m.Update(cmd())
 	m = updated.(Model)
 	if m.status != "Timeline note added" {
 		t.Fatalf("expected timeline status, got %q", m.status)
-	}
-	events := controller.SessionEvents()
-	if len(events) != 1 || events[0].Kind != "timeline.note" {
-		t.Fatalf("expected timeline note event, got %#v", events)
 	}
 	if transcript := ansi.Strip(m.transcript.View()); !strings.Contains(transcript, "Review approved") || !strings.Contains(transcript, "Ready for implementation.") {
 		t.Fatalf("expected timeline note in transcript, got %q", transcript)
@@ -152,6 +202,7 @@ commands:
 }
 
 func TestModelRunsRuntimeSessionHandoffAction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)

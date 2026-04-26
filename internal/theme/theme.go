@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/glamour/v2"
+	glamouransi "charm.land/glamour/v2/ansi"
 	"charm.land/glamour/v2/styles"
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/lutefd/luc/internal/extensions"
@@ -167,15 +168,46 @@ func fromPalette(p palette) Theme {
 }
 
 func NewMarkdownRenderer(width int, variant string) (*glamour.TermRenderer, error) {
-	style := styles.LightStyle
+	style := headingMarkdownStyle(styles.LightStyleConfig)
 	if ResolveVariant(variant) == VariantDark {
-		style = styles.TokyoNightStyle
+		style = headingMarkdownStyle(styles.TokyoNightStyleConfig)
 	}
 	return glamour.NewTermRenderer(
-		glamour.WithStandardStyle(style),
-		glamour.WithWordWrap(width),
+		glamour.WithStyles(style),
+		glamour.WithWordWrap(max(20, width)),
 	)
 }
+
+func headingMarkdownStyle(style glamouransi.StyleConfig) glamouransi.StyleConfig {
+	style.H1.StylePrimitive.Prefix = ""
+	style.H1.StylePrimitive.Suffix = ""
+	style.H1.StylePrimitive.BackgroundColor = nil
+	style.H1.StylePrimitive.Bold = boolPtr(true)
+	style.H2.StylePrimitive.Prefix = ""
+	style.H2.StylePrimitive.Suffix = ""
+	style.H2.StylePrimitive.BackgroundColor = nil
+	style.H2.StylePrimitive.Bold = boolPtr(true)
+	style.H2.StylePrimitive.Underline = boolPtr(true)
+	style.H3.StylePrimitive.Prefix = ""
+	style.H3.StylePrimitive.Suffix = ""
+	style.H3.StylePrimitive.BackgroundColor = nil
+	style.H3.StylePrimitive.Bold = boolPtr(true)
+	style.H4.StylePrimitive.Prefix = ""
+	style.H4.StylePrimitive.Suffix = ""
+	style.H4.StylePrimitive.BackgroundColor = nil
+	style.H4.StylePrimitive.Italic = boolPtr(true)
+	style.H5.StylePrimitive.Prefix = ""
+	style.H5.StylePrimitive.Suffix = ""
+	style.H5.StylePrimitive.BackgroundColor = nil
+	style.H5.StylePrimitive.Italic = boolPtr(true)
+	style.H6.StylePrimitive.Prefix = ""
+	style.H6.StylePrimitive.Suffix = ""
+	style.H6.StylePrimitive.BackgroundColor = nil
+	style.H6.StylePrimitive.Faint = boolPtr(true)
+	return style
+}
+
+func boolPtr(v bool) *bool { return &v }
 
 func ResolveVariant(variant string) string {
 	switch strings.ToLower(strings.TrimSpace(variant)) {
