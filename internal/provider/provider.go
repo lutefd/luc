@@ -66,6 +66,29 @@ type Provider interface {
 
 var ErrExceededToolLimits = errors.New("exceeded_tool_limits")
 
+func IsToolLimitReason(value string) bool {
+	text := strings.ToLower(strings.TrimSpace(value))
+	if text == "" {
+		return false
+	}
+	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(text)
+	if normalized == ErrExceededToolLimits.Error() {
+		return true
+	}
+	compact := strings.NewReplacer("_", "", " ", "", "-", "").Replace(text)
+	if strings.Contains(compact, "toollimit") || strings.Contains(compact, "toolcalllimit") || strings.Contains(compact, "toolooplimit") || strings.Contains(compact, "functioncalllimit") {
+		return strings.Contains(compact, "exceed") || strings.Contains(compact, "max") || strings.Contains(compact, "limit")
+	}
+	if strings.Contains(text, "function call") {
+		return (strings.Contains(text, "limit") || strings.Contains(text, "maximum") || strings.Contains(text, "max") || strings.Contains(text, "too many")) &&
+			(strings.Contains(text, "exceed") || strings.Contains(text, "too many") || strings.Contains(text, "reached") || strings.Contains(text, "hit"))
+	}
+	return strings.Contains(text, "tool") &&
+		(strings.Contains(text, "limit") || strings.Contains(text, "maximum") || strings.Contains(text, "max") || strings.Contains(text, "too many")) &&
+		(strings.Contains(text, "exceed") || strings.Contains(text, "too many") || strings.Contains(text, "reached") || strings.Contains(text, "hit")) &&
+		!strings.Contains(text, "context") && !strings.Contains(text, "token")
+}
+
 func (m Message) ContentParts() []ContentPart {
 	if len(m.Parts) > 0 {
 		out := make([]ContentPart, len(m.Parts))

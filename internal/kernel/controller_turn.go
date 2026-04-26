@@ -329,11 +329,7 @@ func shouldAutoContinueToolLimit(err error) bool {
 	if errors.Is(err, provider.ErrExceededToolLimits) || errors.Is(err, errExceededToolLoopLimit) {
 		return true
 	}
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(msg, provider.ErrExceededToolLimits.Error()) ||
-		strings.Contains(msg, "exceeded tool limits") ||
-		(strings.Contains(msg, "tool loop") &&
-			(strings.Contains(msg, "exceeded") || strings.Contains(msg, "limit")))
+	return provider.IsToolLimitReason(err.Error())
 }
 
 func (c *Controller) appendSyntheticUserMessage(text string) {

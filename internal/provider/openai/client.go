@@ -416,7 +416,7 @@ func responseError(field *responseErrorField) error {
 	if msg == "" {
 		msg = "provider stream failed"
 	}
-	if strings.EqualFold(strings.TrimSpace(field.Code), provider.ErrExceededToolLimits.Error()) {
+	if provider.IsToolLimitReason(field.Code) || provider.IsToolLimitReason(msg) {
 		return fmt.Errorf("%w: %s", provider.ErrExceededToolLimits, msg)
 	}
 	return errors.New(msg)
@@ -436,7 +436,7 @@ func completedResponseError(ev responseStreamEvent) error {
 	if state.Incomplete == nil {
 		return nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(state.Incomplete.Reason), provider.ErrExceededToolLimits.Error()) {
+	if !provider.IsToolLimitReason(state.Incomplete.Reason) {
 		return nil
 	}
 	return provider.ErrExceededToolLimits
