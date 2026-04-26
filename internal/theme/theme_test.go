@@ -25,7 +25,7 @@ func TestNewMarkdownRenderer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rendered, err := renderer.Render("# Title\n\nbody")
+	rendered, err := renderer.Render("# Title\n\n## Subtitle\n\n### Detail\n\nbody")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +33,10 @@ func TestNewMarkdownRenderer(t *testing.T) {
 	if !strings.Contains(plain, "Title") {
 		t.Fatalf("expected rendered markdown to include content, got %q", rendered)
 	}
-	if strings.Contains(plain, "# Title") {
-		t.Fatalf("expected markdown heading to be rendered, got %q", plain)
+	for _, marker := range []string{"# Title", "## Subtitle", "### Detail"} {
+		if strings.Contains(plain, marker) {
+			t.Fatalf("expected markdown heading marker %q to be styled away, got %q", marker, plain)
+		}
 	}
 }
 

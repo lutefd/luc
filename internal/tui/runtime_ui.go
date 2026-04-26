@@ -157,10 +157,14 @@ func runtimeViewCmd(controller *kernel.Controller, viewID string) tea.Cmd {
 		if err != nil {
 			return runtimeViewLoadedMsg{ViewID: viewID, Err: err}
 		}
+		rendered := result.RenderContent()
+		if !strings.EqualFold(strings.TrimSpace(view.Render), "markdown") || !strings.EqualFold(strings.TrimSpace(view.Placement), "inspector_tab") {
+			rendered = viewrender.Render(controller.Config().UI.Theme, controller.Workspace().Root, view, result)
+		}
 		return runtimeViewLoadedMsg{
 			ViewID:    view.ID,
 			Placement: view.Placement,
-			Rendered:  viewrender.Render(controller.Config().UI.Theme, controller.Workspace().Root, view, result),
+			Rendered:  rendered,
 		}
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/logging"
+	luruntime "github.com/lutefd/luc/internal/runtime"
 	"github.com/lutefd/luc/internal/theme"
 	"github.com/lutefd/luc/internal/workspace"
 )
@@ -59,6 +61,37 @@ func TestInspectorViewAcrossTabs(t *testing.T) {
 	model.refreshContent()
 	if view := model.DetailView(); !strings.Contains(view, `"session_id"`) {
 		t.Fatalf("expected context content in context tab, got %q", view)
+	}
+}
+
+func TestInspectorRuntimeMarkdownViewRendersAndWraps(t *testing.T) {
+	model := New(
+		workspace.Info{Root: "/tmp/work", ProjectID: "proj"},
+		history.SessionMeta{SessionID: "sess", Model: "gpt-test"},
+		theme.Default(theme.VariantLight),
+		theme.VariantLight,
+	)
+	model.SetSize(44, 24)
+	model.SetRuntimeViews([]luruntime.RuntimeView{{
+		ID:        "plan.current",
+		Title:     "Plan",
+		Placement: "inspector_tab",
+		Render:    "markdown",
+	}})
+	model.ActivateRuntimeView("plan.current")
+	model.SetRuntimeViewContent("plan.current", "### Current Plan\n\n- [x] Inspect shell environment and confirm basic repo state")
+
+	view := ansi.Strip(model.DetailView())
+	if strings.Contains(view, "### Current Plan") {
+		t.Fatalf("expected markdown heading marker to be styled away, got %q", view)
+	}
+	if !strings.Contains(view, "Current Plan") || !strings.Contains(view, "Inspect shell environment") {
+		t.Fatalf("expected rendered plan content, got %q", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Inspect") && len(strings.TrimSpace(line)) > 40 {
+			t.Fatalf("expected runtime content line to wrap within inner width, got %d chars: %q\nview:\n%s", len(strings.TrimSpace(line)), line, view)
+		}
 	}
 }
 
