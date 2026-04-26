@@ -1,6 +1,13 @@
 # Runtime Extensions
 
-`luc` can now load several extension types at runtime without recompiling.
+`luc` can load several runtime surfaces without recompiling.
+
+Terminology:
+
+- **Runtime surface**: a specific extension point such as a tool, UI manifest, hook, provider, prompt, skill, theme, or config-backed preference.
+- **Extension host**: a programmable long-lived `luc.extension/v1` process.
+- **Package**: a bundle containing one or more runtime surfaces.
+- **Runtime extension**: umbrella wording for the overall ecosystem; technical docs prefer the more specific terms above.
 
 For a single surface-selection guide, see [extension-model.md](/Users/lfdourado/dev/p/luc/docs/extension-model.md).
 
@@ -376,7 +383,7 @@ Hook notes:
 
 ### Extension Hosts
 
-Runtime extension host manifests live in:
+Extension host manifests live in:
 
 - `~/.luc/extensions`
 - `~/.luc/packages/*/extensions`
@@ -602,7 +609,7 @@ luc merges config in this order:
 2. `~/.luc/config.yaml`
 3. `<workspace>/.luc/config.yaml`
 
-Later files override earlier files. Use `~/.luc/config.yaml` for user-wide luc customizations that live with the rest of your runtime extensions, and project `.luc/config.yaml` for workspace-specific behavior.
+Later files override earlier files. Use `~/.luc/config.yaml` for user-wide luc customizations that live with the rest of your runtime surfaces, and project `.luc/config.yaml` for workspace-specific behavior.
 
 ```yaml
 ui:

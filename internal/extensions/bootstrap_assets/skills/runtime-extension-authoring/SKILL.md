@@ -2,8 +2,15 @@
 name: runtime-extension-authoring
 description: How luc expands itself at runtime through tools, providers, UI, hooks, themes, prompts, and skills.
 ---
-When the task is about extending luc, prefer runtime extension mechanisms before
-proposing core code changes.
+When the task is about extending luc, prefer runtime surfaces before proposing
+core code changes.
+
+Terminology:
+
+- Runtime surface: a specific extension point such as a tool, UI manifest, hook, provider, prompt, skill, theme, or config-backed preference.
+- Extension host: a programmable long-lived `luc.extension/v1` process.
+- Package: a bundle containing one or more runtime surfaces.
+- Runtime extension: umbrella wording for the ecosystem; prefer the specific terms above in technical guidance.
 
 Use this lookup order:
 
@@ -12,7 +19,7 @@ Use this lookup order:
 3. Project installed package layer in `<workspace>/.luc/packages/*/...`
 4. Project-local override in `<workspace>/.luc/...`
 
-Supported runtime extension types:
+Supported runtime surfaces:
 
 - Tools in `~/.luc/tools`, `~/.luc/packages/*/tools`, `<workspace>/.luc/packages/*/tools`, and `<workspace>/.luc/tools`
 - Extension hosts in `~/.luc/extensions`, `~/.luc/packages/*/extensions`, `<workspace>/.luc/packages/*/extensions`, and `<workspace>/.luc/extensions`
@@ -50,7 +57,7 @@ Rules:
 - Supported `client_action.kind` values today are `modal.open`, `confirm.request`, `view.open`, `view.refresh`, `command.run`, `tool.run`, `session.handoff`, and `timeline.note`. `session.handoff` must be blocking when emitted as a client action.
 - Capability-enabled tools and providers should be paired with `luc.ui/v1` manifests when they need reusable commands, inspector/page views, or approval policy wiring.
 - Runtime UI stays host-owned in this slice. Views are declarative and read-only.
-- luc does support creating brand-new runtime views with `luc.ui/v1`. New `inspector_tab` and `page` views are valid runtime extension targets.
+- luc does support creating brand-new runtime views with `luc.ui/v1`. New `inspector_tab` and `page` views are valid runtime UI surface targets.
 - Built-in inspector tabs such as `Overview` are core-owned. Runtime UI can add new `inspector_tab` or `page` views, but cannot inject a new field directly into the built-in `Overview` tab.
 - If the user asks for an overview/sidebar addition, prefer a new runtime `inspector_tab` or `page` as the supported extension path. Only edit core TUI code when they explicitly want to change the built-in `Overview` implementation itself.
 - If creating a runtime provider, use either:
