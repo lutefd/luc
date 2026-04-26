@@ -3,8 +3,8 @@ package tui
 import (
 	"runtime"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 )
 
 func platformPasteKeys() []string {

@@ -108,13 +108,13 @@ func TestSSHToHTTPS(t *testing.T) {
 
 func TestIsScpLikeGitURL(t *testing.T) {
 	cases := map[string]bool{
-		"git@github.com:acme/widget.git":      true,
-		"user@host.example:path/to/repo":     true,
-		"https://github.com/acme/widget":      false,
-		"ssh://git@github.com/acme/widget":    false,
-		"C:\\Users\\dev\\repo":                false,
-		"/tmp/repo":                           false,
-		"":                                    false,
+		"git@github.com:acme/widget.git":   true,
+		"user@host.example:path/to/repo":   true,
+		"https://github.com/acme/widget":   false,
+		"ssh://git@github.com/acme/widget": false,
+		"C:\\Users\\dev\\repo":             false,
+		"/tmp/repo":                        false,
+		"":                                 false,
 	}
 	for in, want := range cases {
 		if got := isScpLikeGitURL(in); got != want {
