@@ -163,6 +163,7 @@ func (c *Controller) applySession(meta history.SessionMeta, events []history.Eve
 		}
 	}
 	c.rebuildReplayState()
+	c.repairUnmatchedToolCalls()
 	c.restartExtensionHosts(context.Background(), luruntime.ExtensionEventSessionStart)
 
 	return nil
@@ -248,6 +249,49 @@ func (c *Controller) snapshotConversation() []provider.Message {
 			continue
 		}
 		out = append(out, msg)
+	}
+	return out
+}
+
+func (c *Controller) repairUnmatchedToolCalls() {
+	conversation := c.snapshotConversation()
+	missing := unmatchedToolCalls(conversation)
+	if len(missing) == 0 {
+		return
+	}
+	for _, call := range missing {
+		c.emit("tool.finished", history.ToolResultPayload{
+			ID:      call.ID,
+			Name:    call.Name,
+			Content: "Tool execution was interrupted before luc recorded a result.",
+			Error:   "tool execution interrupted",
+		})
+	}
+	c.rebuildReplayState()
+}
+
+func unmatchedToolCalls(messages []provider.Message) []provider.ToolCall {
+	pending := map[string]provider.ToolCall{}
+	order := []string{}
+	for _, msg := range messages {
+		for _, call := range msg.ToolCalls {
+			if strings.TrimSpace(call.ID) == "" {
+				continue
+			}
+			if _, ok := pending[call.ID]; !ok {
+				order = append(order, call.ID)
+			}
+			pending[call.ID] = call
+		}
+		if msg.Role == "tool" && strings.TrimSpace(msg.ToolCallID) != "" {
+			delete(pending, msg.ToolCallID)
+		}
+	}
+	out := make([]provider.ToolCall, 0, len(pending))
+	for _, id := range order {
+		if call, ok := pending[id]; ok {
+			out = append(out, call)
+		}
 	}
 	return out
 }
