@@ -67,6 +67,10 @@ func (c *Client) SetRuntimeOptions(broker luruntime.UIBroker, hostCapabilities [
 func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
 	commandPath := resolveCommand(c.spec.Command, c.spec.Dir)
 	cmd := osexec.CommandContext(ctx, commandPath, c.spec.Args...)
+	configureCommandProcess(cmd)
+	cmd.Cancel = func() error {
+		return killCommandProcess(cmd)
+	}
 	cmd.Dir = c.spec.Dir
 	cmd.Env = mergeEnv(os.Environ(), c.spec.Env)
 
@@ -193,9 +197,7 @@ func (s *stream) Close() error {
 	if s.stdout != nil {
 		_ = s.stdout.Close()
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
-	}
+	_ = killCommandProcess(s.cmd)
 	return s.wait()
 }
 
