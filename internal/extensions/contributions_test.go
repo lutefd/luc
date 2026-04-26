@@ -121,6 +121,43 @@ approval_policies:
 	}
 }
 
+func TestRuntimePackageDirsPreservesPackageLayerPrecedence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+
+	mustWriteRuntimeManifest(t, filepath.Join(home, ".luc", "packages", "zzz-user@1.0.0", "ui", "package.yaml"), `schema: luc.ui/v1
+id: user-package
+views:
+  - id: package.layer
+    title: User Package
+    placement: page
+    source_tool: status
+    render: markdown
+`)
+	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "packages", "aaa-project@1.0.0", "ui", "package.yaml"), `schema: luc.ui/v1
+id: project-package
+views:
+  - id: package.layer
+    title: Project Package
+    placement: page
+    source_tool: status
+    render: markdown
+`)
+
+	set, err := LoadRuntimeContributions(root, luruntime.DefaultHostCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, ok := set.UI.View("package.layer")
+	if !ok {
+		t.Fatal("expected package view")
+	}
+	if view.Title != "Project Package" {
+		t.Fatalf("expected project package to override user package regardless of absolute path sort, got %#v", view)
+	}
+}
+
 func TestLoadRuntimeContributionsReportsRuntimeCommandShortcutCollisions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

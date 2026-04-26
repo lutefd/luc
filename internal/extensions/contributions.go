@@ -499,28 +499,37 @@ func layeredManifestFiles(workspaceRoot, category string) ([]string, error) {
 
 func runtimePackageDirs(workspaceRoot, category string) ([]string, error) {
 	var dirs []string
-	roots := []string{}
 	globalRoot, err := configRoot()
 	if err != nil {
 		return nil, err
 	}
-	roots = append(roots, filepath.Join(globalRoot, "packages"))
-	roots = append(roots, filepath.Join(workspaceRoot, ".luc", "packages"))
-
-	for _, root := range roots {
-		entries, err := os.ReadDir(root)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
+	for _, root := range []string{
+		filepath.Join(globalRoot, "packages"),
+		filepath.Join(workspaceRoot, ".luc", "packages"),
+	} {
+		rootDirs, err := runtimePackageDirsForRoot(root, category)
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			dirs = append(dirs, filepath.Join(root, entry.Name(), category))
+		dirs = append(dirs, rootDirs...)
+	}
+	return dirs, nil
+}
+
+func runtimePackageDirsForRoot(root, category string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
+		dirs = append(dirs, filepath.Join(root, entry.Name(), category))
 	}
 	sort.Strings(dirs)
 	return dirs, nil
