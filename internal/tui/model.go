@@ -276,7 +276,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case tea.MouseWheelMsg:
-		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimeDialog.open || m.runtimePage.open {
+		if m.runtimeDialog.open {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.runtimeDialog.body.ScrollUp(1)
+			case tea.MouseWheelDown:
+				m.runtimeDialog.body.ScrollDown(1)
+			}
+			return m, nil
+		}
+		if m.sessionPicker.IsOpen() || m.modelPicker.IsOpen() || m.themePicker.IsOpen() || m.palette.IsOpen() || m.runtimePage.open {
 			return m, nil
 		}
 		if !m.wheelInBody(msg) {

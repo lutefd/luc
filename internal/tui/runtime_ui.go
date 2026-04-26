@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -71,12 +72,13 @@ type runtimePageState struct {
 }
 
 type runtimeDialogState struct {
-	open     bool
-	action   luruntime.UIAction
-	active   int
-	body     viewport.Model
-	input    textarea.Model
-	response chan uiBrokerResponse
+	open         bool
+	action       luruntime.UIAction
+	active       int
+	choiceScroll int
+	body         viewport.Model
+	input        textarea.Model
+	response     chan uiBrokerResponse
 }
 
 type teaUIBroker struct {
@@ -454,21 +456,23 @@ func (m *Model) handleRuntimeDialogKey(msg tea.KeyPressMsg) tea.Cmd {
 		m.replyRuntimeAction(m.runtimeDialog.response, luruntime.UIResult{ActionID: action.ID}, nil)
 		m.runtimeDialog = runtimeDialogState{}
 		return nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "pgup"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
 		m.runtimeDialog.body, _ = m.runtimeDialog.body.Update(msg)
 		return nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "pgdown"))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
 		m.runtimeDialog.body, _ = m.runtimeDialog.body.Update(msg)
 		return nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("left")))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("up", "shift+tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("left")))):
 		if m.runtimeDialog.active > 0 {
 			m.runtimeDialog.active--
 		}
+		m.ensureRuntimeDialogChoiceVisible(len(options))
 		return nil
-	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("right")))):
+	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "tab"))) || (!m.runtimeDialog.action.Input.Enabled && key.Matches(msg, key.NewBinding(key.WithKeys("right")))):
 		if m.runtimeDialog.active < len(options)-1 {
 			m.runtimeDialog.active++
 		}
+		m.ensureRuntimeDialogChoiceVisible(len(options))
 		return nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		action := m.runtimeDialog.action
@@ -510,10 +514,12 @@ func (m Model) renderRuntimeDialog() string {
 	m.runtimeDialog.body.SetWidth(bodyWidth)
 	m.runtimeDialog.body.SetHeight(bodyHeight)
 	m.runtimeDialog.body.SetContent(m.renderRuntimeDialogBody(action, bodyWidth))
+	bodyScrollable := m.runtimeDialog.body.TotalLineCount() > m.runtimeDialog.body.Height()
+	body := m.renderRuntimeDialogBodyViewport(bodyScrollable)
 	parts := []string{
 		m.theme.HeaderBrand.Render(title),
 		"",
-		m.theme.SidebarValue.Render(m.runtimeDialog.body.View()),
+		body,
 	}
 	if action.Input.Enabled {
 		parts = append(parts, "", m.runtimeDialog.input.View())
@@ -522,19 +528,72 @@ func (m Model) renderRuntimeDialog() string {
 		"",
 		m.renderRuntimeDialogChoices(runtimeDialogOptions(action)),
 		"",
-		m.theme.Footer.Render(runtimeDialogHelp(action, m.runtimeDialog.body.TotalLineCount() > m.runtimeDialog.body.Height())),
+		m.theme.Footer.Render(runtimeDialogHelp(action, bodyScrollable)),
 	)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	box := m.theme.PaletteFrame.Width(min(72, max(40, m.width*2/3))).Render(m.theme.PaletteSurface.Render(content))
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceChars(" "))
 }
 
+func (m Model) renderRuntimeDialogBodyViewport(scrollable bool) string {
+	body := m.theme.SidebarValue.Render(m.runtimeDialog.body.View())
+	if !scrollable || m.runtimeDialog.body.Height() <= 0 {
+		return body
+	}
+	height := m.runtimeDialog.body.Height()
+	lines := make([]string, height)
+	for i := range lines {
+		lines[i] = " "
+	}
+	limit := max(0, m.runtimeDialog.body.TotalLineCount()-height)
+	pos := 0
+	if limit > 0 && height > 1 {
+		pos = m.runtimeDialog.body.YOffset() * (height - 1) / limit
+	}
+	lines[pos] = m.theme.HeaderRule.Render("│")
+	return lipgloss.JoinHorizontal(lipgloss.Top, body, strings.Join(lines, "\n"))
+}
+
+func (m *Model) ensureRuntimeDialogChoiceVisible(total int) {
+	maxRows := runtimeDialogChoiceMaxRows(m.height)
+	if m.runtimeDialog.active < m.runtimeDialog.choiceScroll {
+		m.runtimeDialog.choiceScroll = m.runtimeDialog.active
+	}
+	if m.runtimeDialog.active >= m.runtimeDialog.choiceScroll+maxRows {
+		m.runtimeDialog.choiceScroll = m.runtimeDialog.active - maxRows + 1
+	}
+	limit := max(0, total-maxRows)
+	if m.runtimeDialog.choiceScroll > limit {
+		m.runtimeDialog.choiceScroll = limit
+	}
+	if m.runtimeDialog.choiceScroll < 0 {
+		m.runtimeDialog.choiceScroll = 0
+	}
+}
+
+func runtimeDialogChoiceMaxRows(height int) int {
+	return max(2, min(8, height/4))
+}
+
 func (m Model) renderRuntimeDialogChoices(options []luruntime.UIOption) string {
 	if len(options) == 0 {
 		return ""
 	}
+	maxRows := runtimeDialogChoiceMaxRows(m.height)
+	scroll := m.runtimeDialog.choiceScroll
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll > max(0, len(options)-maxRows) {
+		scroll = max(0, len(options)-maxRows)
+	}
+	end := min(len(options), scroll+maxRows)
 	var lines []string
-	for i, option := range options {
+	if scroll > 0 {
+		lines = append(lines, m.theme.Muted.Render("  ↑ "+strconv.Itoa(scroll)+" more"))
+	}
+	for i, option := range options[scroll:end] {
+		index := scroll + i
 		label := strings.TrimSpace(option.Label)
 		if label == "" {
 			label = strings.TrimSpace(option.ID)
@@ -543,12 +602,16 @@ func (m Model) renderRuntimeDialogChoices(options []luruntime.UIOption) string {
 			label = "Option"
 		}
 		line := "  " + label
-		if i == m.runtimeDialog.active {
+		if index == m.runtimeDialog.active {
 			line = "› " + label
 			lines = append(lines, m.theme.PaletteActive.Render(line))
 		} else {
 			lines = append(lines, m.theme.SidebarValue.Render(line))
 		}
+	}
+	below := len(options) - end
+	if below > 0 {
+		lines = append(lines, m.theme.Muted.Render("  ↓ "+strconv.Itoa(below)+" more"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -586,9 +649,9 @@ func (m Model) renderRuntimeDialogBody(action luruntime.UIAction, width int) str
 }
 
 func runtimeDialogHelp(action luruntime.UIAction, scrollable bool) string {
-	parts := []string{"tab choose"}
+	parts := []string{"↑/↓ choose"}
 	if scrollable {
-		parts = append(parts, "↑/↓ scroll")
+		parts = append(parts, "mouse wheel scroll content", "pgup/pgdown scroll content")
 	}
 	if action.Input.Enabled && action.Input.Multiline {
 		parts = append(parts, "shift+enter newline")

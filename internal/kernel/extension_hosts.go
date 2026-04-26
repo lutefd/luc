@@ -649,7 +649,7 @@ func (h *managedExtensionHost) handleEvent(event luruntime.ExtensionHostEvent) {
 		if strings.TrimSpace(action.ID) == "" {
 			action.ID = nextID("extension_action")
 		}
-		actionCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		actionCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
 		var (
