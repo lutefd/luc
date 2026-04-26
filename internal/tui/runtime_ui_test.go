@@ -677,7 +677,7 @@ func TestModelHandlesRichRuntimeModalWithMarkdownChoicesAndInput(t *testing.T) {
 	if rendered := ansi.Strip(m.renderRuntimeDialog()); !strings.Contains(rendered, "Summary") || !strings.Contains(rendered, "Approve these changes?") || !strings.Contains(rendered, "Revision notes") {
 		t.Fatalf("expected markdown modal body and input placeholder, got %q", rendered)
 	}
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updated.(Model)
 	for _, r := range "Please simplify step 3." {
 		updated, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
@@ -717,12 +717,76 @@ func TestRuntimeDialogMarkdownBodyScrolls(t *testing.T) {
 		t.Fatalf("expected long body to be clipped before scrolling, got %q", before)
 	}
 	for i := 0; i < 20; i++ {
-		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 		m = updated.(Model)
 	}
 	after := ansi.Strip(m.renderRuntimeDialog())
 	if !strings.Contains(after, "line 12") {
 		t.Fatalf("expected long body to scroll, got %q", after)
+	}
+}
+
+func TestRuntimeDialogChoiceListScrollsIndependently(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 18})
+	m := updated.(Model)
+	options := make([]luruntime.UIOption, 12)
+	for i := range options {
+		options[i] = luruntime.UIOption{ID: fmt.Sprintf("choice-%02d", i+1), Label: fmt.Sprintf("Choice %02d", i+1)}
+	}
+	updated, _ = m.Update(uiBrokerActionMsg{request: uiBrokerRequest{action: luruntime.UIAction{ID: "choices", Kind: "modal.open", Title: "Choices", Body: "Pick one", Options: options}}})
+	m = updated.(Model)
+	if !m.runtimeDialog.open {
+		t.Fatal("expected runtime modal to open")
+	}
+	before := ansi.Strip(m.renderRuntimeDialog())
+	if !strings.Contains(before, "Choice 01") || strings.Contains(before, "Choice 12") {
+		t.Fatalf("expected first choices only before scrolling, got %q", before)
+	}
+	for i := 0; i < 11; i++ {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+	}
+	after := ansi.Strip(m.renderRuntimeDialog())
+	if !strings.Contains(after, "Choice 12") || strings.Contains(after, "Choice 01") {
+		t.Fatalf("expected choice list to scroll independently, got %q", after)
+	}
+}
+
+func TestRuntimeDialogMouseWheelScrollsBodyContent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := kernel.New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(controller)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	m := updated.(Model)
+	body := "# Long note\n\n" + strings.Join([]string{"line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8", "line 9", "line 10", "line 11", "line 12"}, "\n\n")
+	updated, _ = m.Update(uiBrokerActionMsg{request: uiBrokerRequest{action: luruntime.UIAction{ID: "long-mouse", Kind: "modal.open", Title: "Long", Body: body, Render: "markdown"}}})
+	m = updated.(Model)
+	before := ansi.Strip(m.renderRuntimeDialog())
+	if strings.Contains(before, "line 12") {
+		t.Fatalf("expected long body to be clipped before scrolling, got %q", before)
+	}
+	for i := 0; i < 20; i++ {
+		updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+		m = updated.(Model)
+	}
+	after := ansi.Strip(m.renderRuntimeDialog())
+	if !strings.Contains(after, "line 12") {
+		t.Fatalf("expected mouse wheel to scroll modal body, got %q", after)
 	}
 }
 
