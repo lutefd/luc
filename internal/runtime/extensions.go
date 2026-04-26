@@ -44,6 +44,7 @@ type ExtensionHost struct {
 	ID                       string                  `json:"id"`
 	ProtocolVersion          int                     `json:"protocol_version"`
 	Runtime                  ExtensionRuntime        `json:"runtime"`
+	Capabilities             []string                `json:"capabilities,omitempty"`
 	Subscriptions            []ExtensionSubscription `json:"subscriptions,omitempty"`
 	RequiresHostCapabilities []string                `json:"requires_host_capabilities,omitempty"`
 	SourcePath               string                  `json:"source_path,omitempty"`
@@ -98,6 +99,10 @@ func (r ExtensionRegistry) ObserveSubscribers(event string) []ExtensionHost {
 
 func (r ExtensionRegistry) SyncSubscribers(event string) []ExtensionBinding {
 	return append([]ExtensionBinding(nil), r.syncByEvent[strings.TrimSpace(event)]...)
+}
+
+func ExtensionHostHasCapability(host ExtensionHost, capability string) bool {
+	return HasCapability(host.Capabilities, capability)
 }
 
 func SupportsObserveEvent(event string) bool {

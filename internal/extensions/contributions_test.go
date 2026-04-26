@@ -348,6 +348,9 @@ func TestLoadRuntimeContributionsLoadsExtensionHostsWithPackagePrecedence(t *tes
 	mustWriteRuntimeManifest(t, filepath.Join(home, ".luc", "extensions", "global.yaml"), `schema: luc.extension/v1
 id: audit
 protocol_version: 1
+capabilities:
+  - client_actions
+  - extensions.storage.session
 runtime:
   kind: exec
   command: ./global-host.py
@@ -357,6 +360,9 @@ subscriptions:
 	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "packages", "audit@1.0.0", "extensions", "package.yaml"), `schema: luc.extension/v1
 id: audit
 protocol_version: 1
+capabilities:
+  - client_actions
+  - extensions.storage.session
 runtime:
   kind: exec
   command: ./package-host.py
@@ -377,6 +383,9 @@ subscriptions:
 	}
 	if hosts[0].Runtime.Command != "./package-host.py" || len(hosts[0].Subscriptions) != 2 {
 		t.Fatalf("expected package override for extension host, got %#v", hosts[0])
+	}
+	if !luruntime.HasCapability(hosts[0].Capabilities, luruntime.CapabilityClientAction) || !luruntime.HasCapability(hosts[0].Capabilities, luruntime.HostCapabilityExtensionSessionStorage) {
+		t.Fatalf("expected extension host capabilities, got %#v", hosts[0].Capabilities)
 	}
 }
 

@@ -100,6 +100,7 @@ type extensionManifest struct {
 	Schema                   string   `yaml:"schema" json:"schema"`
 	ID                       string   `yaml:"id" json:"id"`
 	ProtocolVersion          int      `yaml:"protocol_version" json:"protocol_version"`
+	Capabilities             []string `yaml:"capabilities" json:"capabilities"`
 	RequiresHostCapabilities []string `yaml:"requires_host_capabilities" json:"requires_host_capabilities"`
 	Runtime                  struct {
 		Kind    string            `yaml:"kind" json:"kind"`
@@ -769,6 +770,7 @@ func parseExtensionManifest(path string) (luruntime.ExtensionHost, error) {
 			Args:    append([]string(nil), manifest.Runtime.Args...),
 			Env:     cloneStringMap(manifest.Runtime.Env),
 		},
+		Capabilities:             luruntime.NormalizeCapabilities(manifest.Capabilities),
 		Subscriptions:            subscriptions,
 		RequiresHostCapabilities: luruntime.NormalizeCapabilities(manifest.RequiresHostCapabilities),
 		SourcePath:               path,
