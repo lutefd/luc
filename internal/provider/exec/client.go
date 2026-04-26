@@ -164,6 +164,9 @@ func (s *stream) Recv() (provider.Event, error) {
 		}
 		if ev.Error != "" {
 			_ = s.Close()
+			if provider.IsToolLimitReason(ev.Error) {
+				return provider.Event{}, fmt.Errorf("%w: %s", provider.ErrExceededToolLimits, ev.Error)
+			}
 			return provider.Event{}, errors.New(ev.Error)
 		}
 
