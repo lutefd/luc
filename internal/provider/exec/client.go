@@ -68,6 +68,9 @@ func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stre
 	commandPath := resolveCommand(c.spec.Command, c.spec.Dir)
 	cmd := osexec.CommandContext(ctx, commandPath, c.spec.Args...)
 	configureCommandProcess(cmd)
+	cmd.Cancel = func() error {
+		return killCommandProcess(cmd)
+	}
 	cmd.Dir = c.spec.Dir
 	cmd.Env = mergeEnv(os.Environ(), c.spec.Env)
 
