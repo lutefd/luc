@@ -41,7 +41,7 @@ Rules:
 - `luc pkg install` populates the user and project package layers, including package-backed skills and themes.
 - For a simple shell-style runtime tool, provide `name`, `description`, `command`, `schema`, and optional `ui`.
 - For a capability-enabled tool, use `schema: luc.tool/v1` with `runtime.kind: exec`, optional `runtime.capabilities`, and `input_schema`.
-- For a stateful hosted tool, use `schema: luc.tool/v2` with `runtime.kind: extension`, `runtime.extension_id`, `runtime.handler`, and `input_schema`.
+- For a stateful hosted tool, prefer `schema: luc.tool/v2` with `runtime.kind: extension`, `runtime.extension_id`, `runtime.handler`, and `input_schema`.
 - `structured_io` means luc writes a JSON request envelope to stdin and expects JSONL events on stdout.
 - `client_actions` means the tool, provider, or hook may emit host-owned `client_action` events and receive `client_result` responses.
 - Use `luc.extension/v1` when the capability needs session-scoped state, selected sync interception seams, or hosted tool handlers.
@@ -59,6 +59,7 @@ Rules:
 - For `type: exec` providers, assume the adapter receives one JSON request on stdin and emits JSONL provider events on stdout. The adapter translates upstream API semantics into luc provider events; luc still executes the actual tools and renders the UI cards.
 - If creating hooks, use `luc.hook/v1` with `runtime.kind: exec` and optional `runtime.capabilities`; hooks are async side effects over stdio, not turn-loop mutations.
 - If creating an extension host, use `luc.extension/v1` with `runtime.kind: exec`, `protocol_version: 1`, and explicit `subscriptions`. Extension hosts speak JSONL over stdin/stdout and can also own hosted tool handlers declared separately by `luc.tool/v2` manifests.
+- Dynamic hosted tool registration is supported but advanced: use it only when the tool catalog is discovered at runtime, such as MCP adapters. It requires `tools.dynamic`; dynamic tools are session-scoped, owned by the registering extension host, and cannot replace built-in or manifest-declared tools.
 - If the user wants a non-JS extension host, point them to `references/extension-host-protocol.md` for direct Python/Go protocol examples and the startup/message contract.
 - If creating a runtime skill, treat `skill-name/SKILL.md` as the canonical instruction body.
 - Use `skill-name/luc.yaml` only for metadata such as `interface.display_name` and `interface.short_description`.

@@ -229,6 +229,6 @@ views:
 
 - Runtime views are host-owned and read-only.
 - No arbitrary custom TUI injection.
-- No dynamic tool registration from extension code.
-- Hosted tools must still be declared by manifest.
+- Prefer declarative tool manifests. Dynamic hosted tool registration is supported only for advanced runtime-discovered catalogs such as MCP adapters and requires `tools.dynamic`.
+- Dynamic tools are session-scoped, owned by the registering extension host, and cannot replace existing built-in or manifest-declared tools.
 - Hooks are async-only and do not mutate the turn loop.

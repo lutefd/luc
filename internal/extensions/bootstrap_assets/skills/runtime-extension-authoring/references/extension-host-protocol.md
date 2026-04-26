@@ -69,6 +69,7 @@ Extension to host:
 - `ready`
 - `decision`
 - `tool_result`
+- `tools.register`
 - `storage_update`
 - `client_action`
 - `log`
@@ -107,7 +108,7 @@ Supported observe events today:
 
 ## Hosted Tools
 
-Hosted tools stay declarative. The tool manifest points to the extension host.
+Hosted tools should usually stay declarative: the tool manifest points to the extension host. Advanced integrations whose catalogs are discovered at runtime, such as MCP adapters, may emit `tools.register` when the host advertises `tools.dynamic`. Dynamic tools are session-scoped, owned by the registering extension host, use source `dynamic:<extension-id>`, and cannot replace existing built-in or manifest-declared tools.
 
 ```yaml
 schema: luc.tool/v2
@@ -123,6 +124,30 @@ input_schema:
 ```
 
 luc sends hosted tool calls as `tool_invoke` and expects `tool_result`.
+
+Dynamic tool registration example for MCP-style adapters:
+
+```json
+{
+  "type": "tools.register",
+  "tools": [
+    {
+      "name": "mcp_fetch_issue",
+      "description": "Fetch an issue from the connected MCP server.",
+      "handler": "mcp_call_tool",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" }
+        },
+        "required": ["id"]
+      }
+    }
+  ]
+}
+```
+
+The registered tool is invoked through the same `tool_invoke` path as declarative hosted tools.
 
 ## Storage
 
