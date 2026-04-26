@@ -67,7 +67,7 @@ Remove if not needed.
 ```yaml
 schema: ...
 id: ...
-````
+```
 
 ## Breaking Changes / Migration
 
@@ -76,5 +76,4 @@ None.
 ## Notes for Reviewers
 
 - Please pay special attention to ...
-    
 - Follow-up PR may cover ...
