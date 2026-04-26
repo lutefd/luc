@@ -23,6 +23,9 @@ instead.
 schema: luc.extension/v1
 id: audit
 protocol_version: 1
+capabilities:
+  - client_actions
+  - extensions.storage.session
 runtime:
   kind: exec
   command: ./host.py
@@ -43,7 +46,7 @@ Startup order:
 1. luc starts the child process
 2. luc sends `hello`
 3. the extension replies with `ready`
-4. luc sends `storage_snapshot`
+4. luc sends `storage_snapshot` with only the storage scopes declared in host `capabilities`
 5. luc sends `session_start`
 6. luc begins sending observe events, sync requests, and hosted tool calls
 
@@ -69,6 +72,7 @@ Extension to host:
 - `ready`
 - `decision`
 - `tool_result`
+- `tools.register`
 - `storage_update`
 - `client_action`
 - `log`
@@ -78,6 +82,8 @@ Extension to host:
 
 Rules:
 
+- Risky bidirectional features require explicit manifest `capabilities`: `client_action` requires `client_actions`, `tools.register` requires `tools.dynamic`, and `storage_update` requires `extensions.storage.session` or `extensions.storage.workspace` for the target scope.
+- `requires_host_capabilities` says what luc must support before loading the host; `capabilities` says what the loaded host is allowed to do.
 - stdin/stdout is JSONL only
 - sync requests always carry `request_id`
 - sync responses must echo the same `request_id`
@@ -107,7 +113,7 @@ Supported observe events today:
 
 ## Hosted Tools
 
-Hosted tools stay declarative. The tool manifest points to the extension host.
+Hosted tools should usually stay declarative: the tool manifest points to the extension host. Advanced integrations whose catalogs are discovered at runtime, such as MCP adapters, may emit `tools.register` when the host advertises `tools.dynamic` and the extension host manifest declares `capabilities: [tools.dynamic]`. Dynamic tools are session-scoped, owned by the registering extension host, use source `dynamic:<extension-id>`, and cannot replace existing built-in or manifest-declared tools.
 
 ```yaml
 schema: luc.tool/v2
@@ -124,9 +130,33 @@ input_schema:
 
 luc sends hosted tool calls as `tool_invoke` and expects `tool_result`.
 
+Dynamic tool registration example for MCP-style adapters:
+
+```json
+{
+  "type": "tools.register",
+  "tools": [
+    {
+      "name": "mcp_fetch_issue",
+      "description": "Fetch an issue from the connected MCP server.",
+      "handler": "mcp_call_tool",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" }
+        },
+        "required": ["id"]
+      }
+    }
+  ]
+}
+```
+
+The registered tool is invoked through the same `tool_invoke` path as declarative hosted tools.
+
 ## Storage
 
-luc manages two whole-value JSON stores per extension:
+luc manages two whole-value JSON stores per extension host when declared by manifest capability:
 
 - session storage
 - workspace storage
@@ -303,5 +333,3 @@ That is the preferred Phase 4 composition pattern:
 - `luc.extension/v1` owns state and sync seams
 - `luc.tool/v2` exposes hosted tools declaratively
 - `luc.ui/v1` exposes commands, views, and approval policies declaratively
-
-For a complete example, see `examples/packages/hybrid-audit`.
