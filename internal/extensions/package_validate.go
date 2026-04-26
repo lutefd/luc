@@ -116,7 +116,7 @@ func validatePackageDir(root string) (PackageValidation, error) {
 			}
 			continue
 		}
-		if _, ok := allowedTopLevelFiles[name]; ok {
+		if isAllowedTopLevelPackageFile(name) {
 			continue
 		}
 		return PackageValidation{}, fmt.Errorf("%s: unsupported top-level file %q", root, name)
