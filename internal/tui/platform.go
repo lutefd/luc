@@ -8,24 +8,15 @@ import (
 )
 
 func platformPasteKeys() []string {
-	if runtime.GOOS == "darwin" {
-		return []string{"ctrl+v", "super+v"}
-	}
-	return []string{"ctrl+v"}
+	return []string{"ctrl+v", "super+v"}
 }
 
 func platformCopyKeys() []string {
-	if runtime.GOOS == "darwin" {
-		return []string{"ctrl+y", "super+c"}
-	}
-	return []string{"ctrl+y", "ctrl+c"}
+	return []string{"ctrl+y", "super+c"}
 }
 
 func platformSelectAllMsg(msg tea.KeyPressMsg) bool {
-	if runtime.GOOS == "darwin" {
-		return msg.Code == 'a' && msg.Mod == tea.ModSuper
-	}
-	return msg.Code == 'a' && msg.Mod == tea.ModCtrl
+	return msg.Code == 'a' && (msg.Mod == tea.ModCtrl || msg.Mod == tea.ModSuper)
 }
 
 func platformHint(darwin, other string) string {
