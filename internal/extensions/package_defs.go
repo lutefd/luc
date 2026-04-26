@@ -36,6 +36,11 @@ var (
 		"luc.pkg.yaml": {},
 		".gitignore":   {},
 	}
+	allowedTopLevelDirs = map[string]struct{}{
+		"docs":     {},
+		"examples": {},
+		"tests":    {},
+	}
 )
 
 func isAllowedTopLevelPackageFile(name string) bool {
@@ -156,6 +161,11 @@ func isAllowedPackageCategory(name string) bool {
 		}
 	}
 	return false
+}
+
+func isAllowedTopLevelPackageDir(name string) bool {
+	_, ok := allowedTopLevelDirs[name]
+	return ok
 }
 
 func atomicWriteFile(path string, data []byte, mode os.FileMode) error {

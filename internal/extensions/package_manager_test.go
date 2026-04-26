@@ -22,12 +22,15 @@ func TestValidatePackagePathAndPackRoundTrip(t *testing.T) {
 		LucVersion: ">=0.1.0",
 		Name:       "luc-theme-sunrise",
 	}, map[string]string{
-		"themes/sunrise.yaml": "name: sunrise\ninherits: light\n",
-		"README.md":           "# Sunrise\n",
-		"README.pt-BR.md":     "# Sunrise\n",
-		"read.me.pt-br":       "# Sunrise\n",
-		"CHANGELOG.md":        "# Changelog\n",
-		".gitignore":          "dist/\n",
+		"themes/sunrise.yaml":   "name: sunrise\ninherits: light\n",
+		"README.md":             "# Sunrise\n",
+		"README.pt-BR.md":       "# Sunrise\n",
+		"read.me.pt-br":         "# Sunrise\n",
+		"CHANGELOG.md":          "# Changelog\n",
+		".gitignore":            "dist/\n",
+		"docs/usage.md":         "# Usage\n",
+		"examples/basic.yaml":   "name: basic\n",
+		"tests/package_test.sh": "#!/bin/sh\n",
 	})
 
 	validation, err := ValidatePackagePath(pkgRoot)
@@ -67,7 +70,7 @@ func TestValidatePackagePathAndPackRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"README.pt-BR.md", "read.me.pt-br", "CHANGELOG.md", ".gitignore"} {
+	for _, name := range []string{"README.pt-BR.md", "read.me.pt-br", "CHANGELOG.md", ".gitignore", filepath.Join("docs", "usage.md"), filepath.Join("examples", "basic.yaml"), filepath.Join("tests", "package_test.sh")} {
 		if _, err := os.Stat(filepath.Join(archiveRoot, name)); err != nil {
 			t.Fatalf("expected packed archive to include %s: %v", name, err)
 		}

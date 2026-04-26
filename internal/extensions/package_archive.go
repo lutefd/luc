@@ -285,7 +285,7 @@ func collectPackageFiles(root string) ([]string, error) {
 			continue
 		}
 		if entry.IsDir() {
-			if !isAllowedPackageCategory(name) {
+			if !isAllowedPackageCategory(name) && !isAllowedTopLevelPackageDir(name) {
 				continue
 			}
 			err := filepath.WalkDir(filepath.Join(root, name), func(path string, d os.DirEntry, err error) error {

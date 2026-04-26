@@ -98,6 +98,12 @@ func validatePackageDir(root string) (PackageValidation, error) {
 			continue
 		}
 		if entry.IsDir() {
+			if isAllowedTopLevelPackageDir(name) {
+				if err := walkPackageCategoryFiles(filepath.Join(root, name)); err != nil {
+					return PackageValidation{}, err
+				}
+				continue
+			}
 			if !isAllowedPackageCategory(name) {
 				return PackageValidation{}, fmt.Errorf("%s: unsupported top-level directory %q", root, name)
 			}
