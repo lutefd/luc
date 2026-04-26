@@ -4,7 +4,14 @@ Use this guide when deciding how to extend `luc` without changing core code.
 
 ## Mental Model
 
-`luc` has two extension styles:
+Terminology:
+
+- **Runtime surface**: a specific extension point such as a tool, UI manifest, hook, provider, prompt, skill, theme, or config-backed preference.
+- **Extension host**: a programmable long-lived `luc.extension/v1` process.
+- **Package**: a bundle containing one or more runtime surfaces.
+- **Runtime extension**: umbrella wording for the overall ecosystem; this guide uses the specific terms above when possible.
+
+`luc` has two runtime surface styles:
 
 - Declarative surfaces:
   - `luc.tool/v1` exec tools

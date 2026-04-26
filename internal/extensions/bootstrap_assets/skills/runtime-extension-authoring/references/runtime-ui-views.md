@@ -62,5 +62,5 @@ Use this when the user asks for:
 
 If they ask for "put this in Overview", translate that to one of two paths:
 
-1. runtime extension path: add a new `inspector_tab` or `page`
+1. runtime surface path: add a new `inspector_tab` or `page`
 2. core-code path: only if they explicitly want to alter the built-in `Overview` implementation
