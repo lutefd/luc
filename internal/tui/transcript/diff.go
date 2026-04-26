@@ -119,11 +119,13 @@ func renderDiff(th theme.Theme, width int, raw string) string {
 	_ = hunks
 
 	// Each side width: half the available width minus gutter (line number).
+	// Keep the rendered row bounded to width; forcing a minimum here makes
+	// narrow cards overflow and can corrupt the viewport layout.
 	const lnWidth = 4
 	const markerW = 3 // " + ", " - ", "   "
 	const gutter = 2  // " │"
-	sideW := max(20, (width-gutter)/2)
-	colW := max(10, sideW-lnWidth-markerW)
+	available := max(1, width-gutter)
+	colW := max(1, (available/2)-lnWidth-markerW)
 
 	renderCell := func(lineNo int, kind byte, text string, isLeft bool) string {
 		var lnStr string
@@ -151,10 +153,10 @@ func renderDiff(th theme.Theme, width int, raw string) string {
 		}
 		body := padOrTruncate(text, colW)
 		_ = isLeft
-		return th.DiffGutter.Render(lnStr) + style.Render(marker+body)
+		return th.DiffGutter.Render(lnStr) + style.Width(markerW+colW).MaxWidth(markerW+colW).Render(marker+body)
 	}
 
-	rowW := 2*(lnWidth+markerW+colW) + gutter
+	rowW := min(width, 2*(lnWidth+markerW+colW)+gutter)
 	var lines []string
 	for _, p := range pairs {
 		if p.oldNo == -1 {

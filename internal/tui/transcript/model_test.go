@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/lutefd/luc/internal/history"
 	"github.com/lutefd/luc/internal/theme"
@@ -453,6 +454,32 @@ func TestTranscriptHidesListToolsFromView(t *testing.T) {
 	view := ansi.Strip(model.View())
 	if strings.Contains(view, "list_tools") || strings.Contains(view, "read\nwrite") {
 		t.Fatalf("expected list_tools to stay hidden from transcript view:\n%s", view)
+	}
+}
+
+func TestTranscriptDiffRowsDoNotExceedCardWidth(t *testing.T) {
+	model := New(theme.Default(theme.VariantLight), theme.VariantLight)
+	model.SetSize(64, 20)
+	longDiff := strings.Join([]string{
+		"@@ -1,1 +1,1 @@",
+		"-" + strings.Repeat("old ", 40),
+		"+" + strings.Repeat("new ", 40),
+	}, "\n")
+	model.Apply(history.EventEnvelope{
+		Kind: "tool.finished",
+		Payload: history.ToolResultPayload{
+			ID:       "edit-long",
+			Name:     "edit",
+			Content:  "applied 1 edit",
+			Metadata: map[string]any{"diff": longDiff},
+		},
+	})
+
+	view := ansi.Strip(model.View())
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 64 {
+			t.Fatalf("expected diff line to fit width 64, got width %d: %q\nview:\n%s", lipgloss.Width(line), line, view)
+		}
 	}
 }
 

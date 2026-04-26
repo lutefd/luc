@@ -683,7 +683,7 @@ func (m Model) renderToolBlock(block Block, width int) string {
 	case block.Diff != "" && m.shouldCollapseDiff(block) && !m.isExpanded(block.ID):
 		body = m.renderCollapsedDiffBody(block, width)
 	case block.Diff != "":
-		body = m.renderDiffBody(block, width)
+		body = m.renderDiffBody(block, max(1, width-4))
 	case m.shouldCollapseToolBlock(block) && !m.isExpanded(block.ID):
 		body = m.renderCollapsedToolBody(block, width)
 	case m.isExpanded(block.ID):
@@ -750,11 +750,11 @@ func (m Model) renderExpandedToolBody(block Block, width int) string {
 
 func (m Model) renderDiffBody(block Block, width int) string {
 	if !m.isExpanded(block.ID) {
-		return renderDiff(m.theme, width-4, block.Diff)
+		return renderDiff(m.theme, width, block.Diff)
 	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		renderDiff(m.theme, width-4, block.Diff),
+		renderDiff(m.theme, width, block.Diff),
 		"",
 		m.theme.Muted.Render("Double-click to collapse."),
 	)
