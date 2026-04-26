@@ -645,7 +645,11 @@ func (m Model) renderNoteBlock(block Block, width int) string {
 			content = strings.TrimSpace(rendered)
 		}
 	}
-	return lipgloss.NewStyle().Width(width).Render(m.theme.Muted.Render(content))
+	body := m.theme.Muted.Render(content)
+	if strings.EqualFold(strings.TrimSpace(block.Render), "markdown") {
+		body = m.theme.AssistantBody.Render(content)
+	}
+	return prefixLines(body, width-2, m.theme.AssistantPrefix.Render("▎"))
 }
 
 func (m Model) renderToolBlock(block Block, width int) string {

@@ -182,23 +182,32 @@ func headingMarkdownStyle(style glamouransi.StyleConfig) glamouransi.StyleConfig
 	style.H1.StylePrimitive.Prefix = ""
 	style.H1.StylePrimitive.Suffix = ""
 	style.H1.StylePrimitive.BackgroundColor = nil
+	style.H1.StylePrimitive.Bold = boolPtr(true)
 	style.H2.StylePrimitive.Prefix = ""
 	style.H2.StylePrimitive.Suffix = ""
 	style.H2.StylePrimitive.BackgroundColor = nil
+	style.H2.StylePrimitive.Bold = boolPtr(true)
+	style.H2.StylePrimitive.Underline = boolPtr(true)
 	style.H3.StylePrimitive.Prefix = ""
 	style.H3.StylePrimitive.Suffix = ""
 	style.H3.StylePrimitive.BackgroundColor = nil
+	style.H3.StylePrimitive.Bold = boolPtr(true)
 	style.H4.StylePrimitive.Prefix = ""
 	style.H4.StylePrimitive.Suffix = ""
 	style.H4.StylePrimitive.BackgroundColor = nil
+	style.H4.StylePrimitive.Italic = boolPtr(true)
 	style.H5.StylePrimitive.Prefix = ""
 	style.H5.StylePrimitive.Suffix = ""
 	style.H5.StylePrimitive.BackgroundColor = nil
+	style.H5.StylePrimitive.Italic = boolPtr(true)
 	style.H6.StylePrimitive.Prefix = ""
 	style.H6.StylePrimitive.Suffix = ""
 	style.H6.StylePrimitive.BackgroundColor = nil
+	style.H6.StylePrimitive.Faint = boolPtr(true)
 	return style
 }
+
+func boolPtr(v bool) *bool { return &v }
 
 func ResolveVariant(variant string) string {
 	switch strings.ToLower(strings.TrimSpace(variant)) {
