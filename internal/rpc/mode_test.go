@@ -35,6 +35,7 @@ type rpcHarness struct {
 	input  *io.PipeWriter
 	frames chan rpcFrame
 	done   chan error
+	buffer []rpcFrame
 }
 
 func TestRPCGetStatePromptAndImageAttachment(t *testing.T) {
@@ -673,6 +674,13 @@ func (h *rpcHarness) SendRaw(line string) {
 func (h *rpcHarness) WaitResponse(id string) Response {
 	h.t.Helper()
 
+	for i, frame := range h.buffer {
+		if frame.Response != nil && frame.Response.ID == id {
+			h.buffer = append(h.buffer[:i], h.buffer[i+1:]...)
+			return *frame.Response
+		}
+	}
+
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
@@ -683,6 +691,7 @@ func (h *rpcHarness) WaitResponse(id string) Response {
 			if frame.Response != nil && frame.Response.ID == id {
 				return *frame.Response
 			}
+			h.buffer = append(h.buffer, frame)
 		case <-deadline:
 			h.t.Fatalf("timed out waiting for response %q", id)
 		}
@@ -691,6 +700,13 @@ func (h *rpcHarness) WaitResponse(id string) Response {
 
 func (h *rpcHarness) WaitEvent(t *testing.T, match func(history.EventEnvelope) bool) history.EventEnvelope {
 	t.Helper()
+
+	for i, frame := range h.buffer {
+		if frame.Event != nil && match(frame.Event.Event) {
+			h.buffer = append(h.buffer[:i], h.buffer[i+1:]...)
+			return frame.Event.Event
+		}
+	}
 
 	deadline := time.After(5 * time.Second)
 	for {
@@ -702,6 +718,7 @@ func (h *rpcHarness) WaitEvent(t *testing.T, match func(history.EventEnvelope) b
 			if frame.Event != nil && match(frame.Event.Event) {
 				return frame.Event.Event
 			}
+			h.buffer = append(h.buffer, frame)
 		case <-deadline:
 			t.Fatal("timed out waiting for event")
 		}
