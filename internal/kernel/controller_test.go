@@ -33,6 +33,12 @@ func TestMain(m *testing.M) {
 	}
 	defer os.RemoveAll(dir)
 	os.Setenv("LUC_STATE_DIR", dir)
+	home, err := os.MkdirTemp("", "luc-kernel-home-*")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(home)
+	os.Setenv("HOME", home)
 	os.Exit(m.Run())
 }
 
