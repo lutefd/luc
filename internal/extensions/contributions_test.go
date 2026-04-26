@@ -269,6 +269,7 @@ views:
 }
 
 func TestLoadRuntimeContributionsSkipsRequirementGatedManifestsWithDiagnostics(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
 	mustWriteRuntimeManifest(t, filepath.Join(root, ".luc", "ui", "gated.yaml"), `schema: luc.ui/v1
 id: gated-ui

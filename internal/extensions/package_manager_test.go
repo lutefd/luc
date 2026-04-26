@@ -24,6 +24,10 @@ func TestValidatePackagePathAndPackRoundTrip(t *testing.T) {
 	}, map[string]string{
 		"themes/sunrise.yaml": "name: sunrise\ninherits: light\n",
 		"README.md":           "# Sunrise\n",
+		"README.pt-BR.md":     "# Sunrise\n",
+		"read.me.pt-br":       "# Sunrise\n",
+		"CHANGELOG.md":        "# Changelog\n",
+		".gitignore":          "dist/\n",
 	})
 
 	validation, err := ValidatePackagePath(pkgRoot)
@@ -54,6 +58,21 @@ func TestValidatePackagePathAndPackRoundTrip(t *testing.T) {
 	if packedValidation.Manifest.Version != "v1.2.0" {
 		t.Fatalf("unexpected packed manifest %#v", packedValidation.Manifest)
 	}
+	stageRoot, cleanup, err := extractPackageArchive(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	archiveRoot, err := detectPackageRoot(stageRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"README.pt-BR.md", "read.me.pt-br", "CHANGELOG.md", ".gitignore"} {
+		if _, err := os.Stat(filepath.Join(archiveRoot, name)); err != nil {
+			t.Fatalf("expected packed archive to include %s: %v", name, err)
+		}
+	}
+
 	archiveValidation, err := ValidatePackagePath(archivePath)
 	if err != nil {
 		t.Fatal(err)

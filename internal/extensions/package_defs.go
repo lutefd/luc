@@ -34,16 +34,23 @@ var (
 	}
 	allowedTopLevelFiles = map[string]struct{}{
 		"luc.pkg.yaml": {},
-		"README.md":    {},
-		"LICENSE":      {},
-		"LICENSE.md":   {},
-		"LICENSE.txt":  {},
-		"COPYING":      {},
-		"COPYING.md":   {},
-		"NOTICE":       {},
-		"NOTICE.md":    {},
+		".gitignore":   {},
 	}
 )
+
+func isAllowedTopLevelPackageFile(name string) bool {
+	if _, ok := allowedTopLevelFiles[name]; ok {
+		return true
+	}
+	base := strings.ToLower(strings.TrimSpace(name))
+	compact := strings.NewReplacer(".", "", "-", "", "_", "").Replace(base)
+	for _, prefix := range []string{"readme", "changelog", "changes", "history", "license", "copying", "notice"} {
+		if compact == prefix || strings.HasPrefix(compact, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 type PackageManifest struct {
 	Schema      string   `yaml:"schema" json:"schema"`

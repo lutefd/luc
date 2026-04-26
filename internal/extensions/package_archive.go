@@ -281,7 +281,7 @@ func collectPackageFiles(root string) ([]string, error) {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, ".") {
+		if strings.HasPrefix(name, ".") && !isAllowedTopLevelPackageFile(name) {
 			continue
 		}
 		if entry.IsDir() {
@@ -311,7 +311,7 @@ func collectPackageFiles(root string) ([]string, error) {
 			}
 			continue
 		}
-		if _, ok := allowedTopLevelFiles[name]; ok {
+		if isAllowedTopLevelPackageFile(name) {
 			paths = append(paths, name)
 		}
 	}
