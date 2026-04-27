@@ -65,6 +65,18 @@ type Provider interface {
 }
 
 var ErrExceededToolLimits = errors.New("exceeded_tool_limits")
+var ErrBrokenPipe = errors.New("broken_pipe")
+
+func IsBrokenPipe(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrBrokenPipe) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "broken pipe") || strings.Contains(text, "epipe")
+}
 
 func IsToolLimitReason(value string) bool {
 	text := strings.ToLower(strings.TrimSpace(value))

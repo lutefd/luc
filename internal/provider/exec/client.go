@@ -11,6 +11,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -97,6 +98,9 @@ func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stre
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = cmd.Wait()
+		if isBrokenPipeError(err) {
+			return nil, provider.ErrBrokenPipe
+		}
 		return nil, err
 	}
 	if !luruntime.HasCapability(c.spec.Capabilities, luruntime.CapabilityClientAction) {
@@ -184,10 +188,16 @@ func (s *stream) Recv() (provider.Event, error) {
 
 	if err := s.scanner.Err(); err != nil {
 		_ = s.Close()
+		if isBrokenPipeError(err) {
+			return provider.Event{}, provider.ErrBrokenPipe
+		}
 		return provider.Event{}, err
 	}
 
 	if err := s.wait(); err != nil {
+		if isBrokenPipeError(err) {
+			return provider.Event{}, provider.ErrBrokenPipe
+		}
 		return provider.Event{}, err
 	}
 	return provider.Event{}, io.EOF
@@ -221,6 +231,23 @@ func (s *stream) wait() error {
 		s.waitErr = err
 	})
 	return s.waitErr
+}
+
+func isBrokenPipeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "broken pipe") || strings.Contains(message, "epipe") {
+		return true
+	}
+	if runtime.GOOS == "windows" && strings.Contains(message, "pipe is being closed") {
+		return true
+	}
+	return false
 }
 
 type execRequest struct {

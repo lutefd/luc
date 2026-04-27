@@ -239,6 +239,35 @@ func (c *Controller) appendMessage(msg provider.Message) {
 	c.conversation = append(c.conversation, msg)
 }
 
+func (c *Controller) discardOnlyUserMessage(eventID string) {
+	c.mu.Lock()
+	var seq uint64
+	if len(c.rawEvents) > 0 {
+		last := c.rawEvents[len(c.rawEvents)-1]
+		if last.Kind == "message.user" {
+			payload := decode[history.MessagePayload](last.Payload)
+			if payload.ID == eventID {
+				seq = last.Seq
+				if len(c.conversation) > 0 {
+					c.conversation = c.conversation[:len(c.conversation)-1]
+				}
+				c.rawEvents = c.rawEvents[:len(c.rawEvents)-1]
+				if len(c.eventLog) > 0 && c.eventLog[len(c.eventLog)-1].Seq == last.Seq {
+					c.eventLog = c.eventLog[:len(c.eventLog)-1]
+				}
+			}
+		}
+	}
+	empty := len(c.rawEvents) == 0
+	c.mu.Unlock()
+	if empty {
+		c.sessionSaved = false
+		_ = c.store.DeleteSession(c.session.SessionID)
+		return
+	}
+	c.removePersistedEvent(seq)
+}
+
 func (c *Controller) snapshotConversation() []provider.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()

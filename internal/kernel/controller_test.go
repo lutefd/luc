@@ -76,6 +76,31 @@ func (s *fakeStream) Recv() (provider.Event, error) {
 
 func (s *fakeStream) Close() error { return nil }
 
+type brokenPipeProvider struct {
+	err error
+}
+
+func (p *brokenPipeProvider) Name() string { return "broken-pipe" }
+
+func (p *brokenPipeProvider) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
+	_ = ctx
+	_ = req
+	if p.err != nil {
+		return nil, p.err
+	}
+	return nil, provider.ErrBrokenPipe
+}
+
+type brokenPipeStreamProvider struct{}
+
+func (p *brokenPipeStreamProvider) Name() string { return "broken-pipe-stream" }
+
+func (p *brokenPipeStreamProvider) Start(ctx context.Context, req provider.Request) (provider.Stream, error) {
+	_ = ctx
+	_ = req
+	return &errorStream{err: provider.ErrBrokenPipe}, nil
+}
+
 type errorThenTextProvider struct {
 	requests []provider.Request
 	calls    int
@@ -428,6 +453,79 @@ func TestControllerSubmitMessageTurnsEmptyProviderOutputIntoSyntheticError(t *te
 	conversation := controller.snapshotConversation()
 	if len(conversation) != 1 || conversation[0].Role != "user" {
 		t.Fatalf("expected empty provider output to stay out of conversation, got %#v", conversation)
+	}
+}
+
+func TestControllerSubmitBrokenPipeDoesNotPolluteNewSessionHistory(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &brokenPipeProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "do not save me"); !provider.IsBrokenPipe(err) {
+		t.Fatalf("expected broken pipe error, got %v", err)
+	}
+	if controller.SessionSaved() {
+		t.Fatal("expected broken pipe turn to leave new session unsaved")
+	}
+	if events := controller.SessionEvents(); len(events) != 0 {
+		t.Fatalf("expected no session events after broken pipe, got %#v", events)
+	}
+	if stored, err := controller.store.Load(controller.Session().SessionID); err != nil {
+		t.Fatal(err)
+	} else if len(stored) != 0 {
+		t.Fatalf("expected no stored history after broken pipe, got %#v", stored)
+	}
+	if _, ok, err := controller.store.Meta(controller.Session().SessionID); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("expected no session meta after broken pipe")
+	}
+	if conversation := controller.snapshotConversation(); len(conversation) != 0 {
+		t.Fatalf("expected no replay conversation after broken pipe, got %#v", conversation)
+	}
+}
+
+func TestControllerSubmitBrokenPipeStreamDoesNotPolluteNewSessionHistory(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return &brokenPipeStreamProvider{}, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.Submit(context.Background(), "do not save me"); !provider.IsBrokenPipe(err) {
+		t.Fatalf("expected broken pipe error, got %v", err)
+	}
+	if controller.SessionSaved() {
+		t.Fatal("expected broken pipe turn to leave new session unsaved")
+	}
+	if events := controller.SessionEvents(); len(events) != 0 {
+		t.Fatalf("expected no session events after broken pipe, got %#v", events)
 	}
 }
 
