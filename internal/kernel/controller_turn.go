@@ -15,11 +15,13 @@ import (
 )
 
 const (
-	noResponseText       = "No response."
-	noUsableResponseText = "Provider returned no usable response."
-	autoContinueText     = "continue"
-	maxToolLoopRounds    = 8
-	maxAutoContinues     = 4
+	noResponseText        = "No response."
+	noUsableResponseText  = "Provider returned no usable response."
+	autoContinueText      = "continue"
+	maxToolLoopRounds     = 8
+	maxAutoContinues      = 4
+	maxAssistantTextBytes = 1024 * 1024
+	maxToolResultBytes    = 1024 * 1024
 )
 
 var errExceededToolLoopLimit = errors.New("exceeded tool loop limit")
@@ -115,6 +117,8 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 
 			assistantID := nextID("assistant")
 			var builder strings.Builder
+			assistantTextBytes := 0
+			assistantTextTruncated := false
 			var calls []provider.ToolCall
 
 			for {
@@ -165,8 +169,23 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 					}
 					c.emit("status.thinking", history.StatusPayload{Text: text})
 				case "text_delta":
-					builder.WriteString(ev.Text)
-					c.emit("message.assistant.delta", history.MessageDeltaPayload{ID: assistantID, Delta: ev.Text})
+					if assistantTextTruncated {
+						continue
+					}
+					remainingBytes := maxAssistantTextBytes - assistantTextBytes
+					delta := ev.Text
+					if len(delta) > remainingBytes {
+						delta = delta[:remainingBytes]
+						assistantTextTruncated = true
+					}
+					assistantTextBytes += len(delta)
+					builder.WriteString(delta)
+					c.emit("message.assistant.delta", history.MessageDeltaPayload{ID: assistantID, Delta: delta})
+					if assistantTextTruncated {
+						note := fmt.Sprintf("\n\n[... truncated provider response after %d bytes to protect session history]", maxAssistantTextBytes)
+						builder.WriteString(note)
+						c.emit("message.assistant.delta", history.MessageDeltaPayload{ID: assistantID, Delta: note})
+					}
 				case "tool_call":
 					calls = append(calls, ev.ToolCall)
 				case "done":
@@ -238,6 +257,7 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 					if preflightErr == nil {
 						payload = c.applyToolResultPatches(turnCtx, preparedCall, payload)
 					}
+					payload = limitToolResultPayload(payload)
 					c.emit("tool.finished", payload)
 					completedCalls = append(completedCalls, preparedCall)
 					completedResults = append(completedResults, provider.Message{

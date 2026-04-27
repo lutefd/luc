@@ -2064,3 +2064,63 @@ func TestControllerCompactionKeepsRawHistoryVisibleButCompactsReplay(t *testing.
 		t.Fatalf("expected kept replay tail after compaction, got %#v", replayed)
 	}
 }
+
+func TestControllerTruncatesOversizedAssistantResponse(t *testing.T) {
+	oldFactory := newProvider
+	defer func() { newProvider = oldFactory }()
+
+	providerStub := &fakeProvider{streams: [][]provider.Event{{
+		{Type: "text_delta", Text: strings.Repeat("x", maxAssistantTextBytes+128)},
+		{Type: "done", Completed: true},
+	}}}
+	newProvider = func(cfg config.ProviderConfig) (provider.Provider, error) {
+		_ = cfg
+		return providerStub, nil
+	}
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".luc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".luc", "config.yaml"), []byte("compaction:\n  enabled: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	controller, err := New(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Submit(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := controller.store.Load(controller.Session().SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final history.MessagePayload
+	for _, ev := range stored {
+		if ev.Kind == "message.assistant.final" {
+			final = decode[history.MessagePayload](ev.Payload)
+		}
+	}
+	if len(final.Content) <= maxAssistantTextBytes || !strings.Contains(final.Content, "truncated provider response") {
+		t.Fatalf("expected truncated assistant final, got %d bytes", len(final.Content))
+	}
+}
+
+func TestLimitToolResultPayloadTruncatesContent(t *testing.T) {
+	payload := limitToolResultPayload(history.ToolResultPayload{
+		ID:      "call_1",
+		Name:    "bash",
+		Content: strings.Repeat("x", maxToolResultBytes+128),
+	})
+	if len(payload.Content) <= maxToolResultBytes || !strings.Contains(payload.Content, "truncated") {
+		t.Fatalf("expected truncation marker, got %d bytes", len(payload.Content))
+	}
+	if truncated, _ := payload.Metadata["truncated"].(bool); !truncated {
+		t.Fatalf("expected truncated metadata, got %#v", payload.Metadata)
+	}
+}
