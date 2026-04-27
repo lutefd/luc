@@ -112,6 +112,21 @@ func toolResponseContent(result history.ToolResultPayload) string {
 	return fmt.Sprintf("%s\nerror: %s", result.Content, result.Error)
 }
 
+func limitToolResultPayload(payload history.ToolResultPayload) history.ToolResultPayload {
+	if len(payload.Content) <= maxToolResultBytes {
+		return payload
+	}
+	originalBytes := len(payload.Content)
+	payload.Content = strings.TrimRight(payload.Content[:maxToolResultBytes], "\x00\t\n\v\f\r ") + fmt.Sprintf("\n\n[... truncated %d bytes of tool output to protect session history]", originalBytes-maxToolResultBytes)
+	if payload.Metadata == nil {
+		payload.Metadata = make(map[string]any)
+	}
+	payload.Metadata["truncated"] = true
+	payload.Metadata["original_bytes"] = originalBytes
+	payload.Metadata["stored_bytes_limit"] = maxToolResultBytes
+	return payload
+}
+
 func shouldSaveMetaForEvent(kind string) bool {
 	switch kind {
 	case "message.assistant.delta", "status.thinking":

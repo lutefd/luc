@@ -201,6 +201,11 @@ func safePath(root, target string) (string, error) {
 	return path, nil
 }
 
+const (
+	defaultReadLineLimit = 6000
+	maxReadOutputBytes   = 2 * 1024 * 1024
+)
+
 type readArgs struct {
 	Path   string `json:"path"`
 	Offset int    `json:"offset"`
@@ -239,31 +244,72 @@ func (t *readTool) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return Result{}, err
 	}
+	defer file.Close()
 
-	lines := strings.Split(string(data), "\n")
-	start := args.Offset
-	if start > len(lines) {
-		start = len(lines)
-	}
-	end := len(lines)
-	if args.Limit > 0 && start+args.Limit < end {
-		end = start + args.Limit
+	lineLimit := args.Limit
+	if lineLimit <= 0 || lineLimit > defaultReadLineLimit {
+		lineLimit = defaultReadLineLimit
 	}
 
-	content := strings.Join(lines[start:end], "\n")
+	reader := bufio.NewReader(file)
+	var builder strings.Builder
+	lineIndex := 0
+	selectedLines := 0
+	truncated := false
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return Result{}, readErr
+		}
+		if line != "" {
+			line = strings.TrimSuffix(line, "\n")
+			line = strings.TrimSuffix(line, "\r")
+			if lineIndex >= args.Offset {
+				if selectedLines >= lineLimit {
+					truncated = true
+					break
+				}
+				additionalBytes := len(line)
+				if selectedLines > 0 {
+					additionalBytes++
+				}
+				if builder.Len()+additionalBytes > maxReadOutputBytes {
+					truncated = true
+					break
+				}
+				if selectedLines > 0 {
+					builder.WriteByte('\n')
+				}
+				builder.WriteString(line)
+				selectedLines++
+			}
+			lineIndex++
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+	}
+
+	metadata := map[string]any{
+		"path":       path,
+		"offset":     args.Offset,
+		"lines":      selectedLines,
+		"line_limit": lineLimit,
+	}
+	if truncated {
+		metadata["truncated"] = true
+		metadata["stored_bytes_limit"] = maxReadOutputBytes
+	}
+
 	return Result{
-		Content:          content,
+		Content:          builder.String(),
 		DefaultCollapsed: true,
-		CollapsedSummary: readSummary(path, start, end-start),
-		Metadata: map[string]any{
-			"path":   path,
-			"offset": start,
-			"lines":  end - start,
-		},
+		CollapsedSummary: readSummary(path, args.Offset, selectedLines, truncated),
+		Metadata:         metadata,
 	}, nil
 }
 
@@ -810,12 +856,16 @@ func normalizeResult(result Result) Result {
 	return result
 }
 
-func readSummary(path string, offset, lines int) string {
+func readSummary(path string, offset, lines int, truncated bool) string {
 	lineLabel := "lines"
 	if lines == 1 {
 		lineLabel = "line"
 	}
-	return fmt.Sprintf("Read %d %s from %s starting at line %d.", lines, lineLabel, path, offset+1)
+	summary := fmt.Sprintf("Read %d %s from %s starting at line %d.", lines, lineLabel, path, offset+1)
+	if truncated {
+		summary += " Output truncated; use offset and limit to read more."
+	}
+	return summary
 }
 
 func summarizeOutput(content string, timedOut bool) string {
