@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lutefd/luc/internal/config"
@@ -145,6 +146,33 @@ EOF
 	}
 	if len(got.Request.Tools) != 1 || got.Request.Tools[0].Name != "read" {
 		t.Fatalf("expected tools in request, got %#v", got.Request.Tools)
+	}
+}
+
+func TestExecProviderClassifiesBrokenPipeAsProviderBrokenPipe(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "adapter.sh")
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := New(config.ProviderConfig{}, Spec{
+		Command: "./adapter.sh",
+		Dir:     dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	big := strings.Repeat("x", 8*1024*1024)
+	_, err = client.Start(t.Context(), provider.Request{
+		Model:    "test-model",
+		Messages: []provider.Message{{Role: "user", Content: big}},
+	})
+	if !provider.IsBrokenPipe(err) {
+		t.Fatalf("expected provider broken pipe, got %v", err)
 	}
 }
 
