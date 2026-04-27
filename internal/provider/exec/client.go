@@ -20,6 +20,11 @@ import (
 	luruntime "github.com/lutefd/luc/internal/runtime"
 )
 
+const (
+	maxExecEventLineBytes  = 2 * 1024 * 1024
+	maxExecEventErrorBytes = 64 * 1024
+)
+
 type Spec struct {
 	Name         string
 	Command      string
@@ -108,7 +113,7 @@ func (c *Client) Start(ctx context.Context, req provider.Request) (provider.Stre
 	}
 
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxExecEventLineBytes)
 
 	return &stream{
 		cmd:                cmd,
@@ -191,6 +196,9 @@ func (s *stream) Recv() (provider.Event, error) {
 		if isBrokenPipeError(err) {
 			return provider.Event{}, provider.ErrBrokenPipe
 		}
+		if strings.Contains(err.Error(), "token too long") {
+			return provider.Event{}, fmt.Errorf("exec provider emitted an event larger than %d bytes", maxExecEventLineBytes)
+		}
 		return provider.Event{}, err
 	}
 
@@ -266,6 +274,9 @@ type execEvent struct {
 }
 
 func (e execEvent) validate() error {
+	if len(e.Error) > maxExecEventErrorBytes {
+		return fmt.Errorf("exec provider event error exceeds %d bytes", maxExecEventErrorBytes)
+	}
 	switch strings.TrimSpace(e.Type) {
 	case "thinking", "text_delta", "done":
 		return nil

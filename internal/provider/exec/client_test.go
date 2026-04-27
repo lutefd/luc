@@ -207,3 +207,31 @@ printf '%s\n' '{"error":"adapter failed"}'
 		t.Fatalf("expected adapter error, got %v", err)
 	}
 }
+
+func TestExecProviderRejectsOversizedEventLine(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "adapter.sh")
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+python3 - <<'PY'
+import json
+print(json.dumps({"type":"text_delta","text":"x" * (2 * 1024 * 1024)}))
+PY
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := New(config.ProviderConfig{}, Spec{Command: "./adapter.sh", Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.Start(t.Context(), provider.Request{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	_, err = stream.Recv()
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("expected oversized event error, got %v", err)
+	}
+}
