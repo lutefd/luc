@@ -51,6 +51,66 @@ func (s *Store) Append(ev EventEnvelope) error {
 	return appender.encoder.Encode(ev)
 }
 
+func (s *Store) DeleteSession(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if appender, ok := s.appenders[sessionID]; ok {
+		_ = appender.file.Close()
+		delete(s.appenders, sessionID)
+	}
+	var errs []error
+	for _, path := range []string{s.sessionPath(sessionID), s.metaPath(sessionID)} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Store) DeleteEvent(sessionID string, seq uint64) error {
+	if seq == 0 {
+		return nil
+	}
+	events, err := s.Load(sessionID)
+	if err != nil {
+		return err
+	}
+	out := events[:0]
+	for _, ev := range events {
+		if ev.Seq != seq {
+			out = append(out, ev)
+		}
+	}
+	if len(out) == len(events) {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if appender, ok := s.appenders[sessionID]; ok {
+		if err := appender.file.Close(); err != nil {
+			return err
+		}
+		delete(s.appenders, sessionID)
+	}
+	path := s.sessionPath(sessionID)
+	if len(out) == 0 {
+		return os.Remove(path)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	for _, ev := range out {
+		if err := enc.Encode(ev); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	return f.Close()
+}
+
 func (s *Store) Load(sessionID string) ([]EventEnvelope, error) {
 	path := s.sessionPath(sessionID)
 	f, err := os.Open(path)

@@ -40,6 +40,27 @@ func (c *Controller) emit(kind string, payload any) {
 	c.dispatchExtensionObserveEvents(ev)
 }
 
+func (c *Controller) removePersistedEvent(seq uint64) {
+	if c.store == nil || !c.sessionSaved || seq == 0 {
+		return
+	}
+	_ = c.store.DeleteEvent(c.session.SessionID, seq)
+	c.mu.Lock()
+	if len(c.eventLog) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	lastAt := c.session.CreatedAt
+	for _, ev := range c.eventLog {
+		if ev.Seq != seq && ev.At.After(lastAt) {
+			lastAt = ev.At
+		}
+	}
+	c.session.UpdatedAt = lastAt
+	c.mu.Unlock()
+	c.saveSessionMeta()
+}
+
 func (c *Controller) mirrorEventToLogs(kind string, payload any) {
 	if c.logger == nil || c.logger.Ring == nil {
 		return

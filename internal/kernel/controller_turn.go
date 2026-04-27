@@ -61,11 +61,12 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 	}
 
 	userID := nextID("user")
-	c.emit("message.user", history.MessagePayload{
+	userPayload := history.MessagePayload{
 		ID:          userID,
 		Content:     text,
 		Attachments: media.ToHistoryPayloads(attachments),
-	})
+	}
+	c.emit("message.user", userPayload)
 	userMessage := provider.Message{Role: "user"}
 	if parts := media.MessageParts(text, attachments); len(parts) > 0 {
 		userMessage.Parts = parts
@@ -91,15 +92,20 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 				c.emit("system.error", history.MessagePayload{ID: nextID("error"), Content: err.Error()})
 				return err
 			}
-			stream, err := c.provider.Start(turnCtx, provider.Request{
+			request := provider.Request{
 				Model:       c.config.Provider.Model,
 				System:      systemPrompt,
 				Messages:    c.snapshotConversation(),
 				Tools:       c.toolSpecs(),
 				Temperature: c.config.Provider.Temperature,
 				MaxTokens:   c.config.Provider.MaxTokens,
-			})
+			}
+			stream, err := c.provider.Start(turnCtx, request)
 			if err != nil {
+				if provider.IsBrokenPipe(err) {
+					c.discardOnlyUserMessage(userPayload.ID)
+					return err
+				}
 				if turnCtx.Err() != nil {
 					return c.handleTurnCanceled()
 				}
@@ -130,6 +136,10 @@ func (c *Controller) SubmitMessage(ctx context.Context, input string, attachment
 					return c.handleTurnCanceled()
 				}
 				if err != nil {
+					if provider.IsBrokenPipe(err) && builder.Len() == 0 && len(calls) == 0 {
+						c.discardOnlyUserMessage(userPayload.ID)
+						return err
+					}
 					if errors.Is(err, os.ErrClosed) || errors.Is(err, context.Canceled) {
 						_ = stream.Close()
 						return c.handleTurnCanceled()
