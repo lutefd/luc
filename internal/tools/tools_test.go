@@ -297,3 +297,30 @@ schema:
 		t.Fatalf("expected tool_dir script output, got %q", result.Content)
 	}
 }
+
+func TestReadToolDefaultsToBoundedChunks(t *testing.T) {
+	root := t.TempDir()
+	manager, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := make([]string, 6500)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	args, _ := json.Marshal(map[string]any{"path": "large.txt"})
+	result, err := manager.Run(context.Background(), Request{Name: "read", Arguments: string(args)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(strings.Split(result.Content, "\n")); got != defaultReadLineLimit {
+		t.Fatalf("expected %d lines, got %d", defaultReadLineLimit, got)
+	}
+	if truncated, _ := result.Metadata["truncated"].(bool); !truncated {
+		t.Fatalf("expected truncated metadata, got %#v", result.Metadata)
+	}
+}
