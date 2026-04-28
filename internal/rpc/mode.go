@@ -29,6 +29,7 @@ type Mode struct {
 	broker     *Broker
 	busy       atomic.Bool
 	promptWG   sync.WaitGroup
+	idleNotify chan struct{}
 	reportErr  func(error)
 }
 
@@ -55,6 +56,7 @@ func Run(ctx context.Context, opts Options) error {
 		controller: opts.Controller,
 		writer:     newJSONLWriter(opts.Stdout),
 		broker:     NewBroker(),
+		idleNotify: make(chan struct{}, 1),
 	}
 	mode.controller.SetUIBroker(mode.broker)
 
@@ -139,13 +141,23 @@ func Run(ctx context.Context, opts Options) error {
 
 	go func() {
 		defer wg.Done()
+		pending := make([]history.EventEnvelope, 0, 4)
 		for {
 			select {
 			case <-runCtx.Done():
 				return
+			case <-mode.idleNotify:
+				if err := mode.writePendingEvents(&pending); err != nil {
+					recordErr(err)
+					return
+				}
 			case ev, ok := <-mode.controller.Events():
 				if !ok {
 					return
+				}
+				if mode.shouldHoldEvent(ev) {
+					pending = append(pending, ev)
+					continue
 				}
 				if err := mode.writer.WriteJSONLine(EventFrame{
 					Type:  "event",
@@ -239,7 +251,7 @@ func (m *Mode) handleCommand(ctx context.Context, command Command) error {
 		m.promptWG.Add(1)
 		go func() {
 			defer m.promptWG.Done()
-			defer m.busy.Store(false)
+			defer m.setIdle()
 			_ = m.controller.SubmitMessage(ctx, message, attachments)
 		}()
 		return m.writeSuccess(command.ID, commandType, nil)
@@ -418,9 +430,45 @@ func (m *Mode) runExclusive(fn func()) {
 	m.promptWG.Add(1)
 	go func() {
 		defer m.promptWG.Done()
-		defer m.busy.Store(false)
+		defer m.setIdle()
 		fn()
 	}()
+}
+
+func (m *Mode) setIdle() {
+	m.busy.Store(false)
+	select {
+	case m.idleNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Mode) shouldHoldEvent(ev history.EventEnvelope) bool {
+	if !m.busy.Load() {
+		return false
+	}
+	switch ev.Kind {
+	case "message.assistant.final", "system.error", "system.note":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Mode) writePendingEvents(pending *[]history.EventEnvelope) error {
+	if len(*pending) == 0 || m.busy.Load() {
+		return nil
+	}
+	for _, ev := range *pending {
+		if err := m.writer.WriteJSONLine(EventFrame{
+			Type:  "event",
+			Event: ev,
+		}); err != nil {
+			return err
+		}
+	}
+	*pending = (*pending)[:0]
+	return nil
 }
 
 func (m *Mode) reportAsyncWrite(err error) {
